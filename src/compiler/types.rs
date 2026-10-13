@@ -456,6 +456,25 @@ impl AbstractType {
       )),
     }
   }
+  /// An array type: concrete when its size and element type both are,
+  /// otherwise abstract until its generics are filled (like a generic
+  /// struct).
+  pub fn array(
+    size: AbstractArraySize,
+    inner_type: AbstractType,
+    source_trace: SourceTrace,
+  ) -> Self {
+    match (size.concrete(), inner_type) {
+      (Some(size), AbstractType::Type(inner_type)) => AbstractType::Type(
+        Type::Array(Some(size), Box::new(inner_type.known().into())),
+      ),
+      (_, inner_type) => AbstractType::AbstractArray {
+        size,
+        inner_type: Box::new(inner_type),
+        source_trace,
+      },
+    }
+  }
   pub fn fill_abstract_generics(
     self,
     generics: &HashMap<Arc<str>, AbstractType>,
@@ -484,11 +503,11 @@ impl AbstractType {
         size,
         inner_type,
         source_trace,
-      } => AbstractType::AbstractArray {
+      } => AbstractType::array(
         size,
+        inner_type.fill_abstract_generics(generics),
         source_trace,
-        inner_type: inner_type.fill_abstract_generics(generics).into(),
-      },
+      ),
     }
   }
   pub fn fill_const_generics(self, bindings: &HashMap<Arc<str>, u32>) -> Self {
@@ -499,36 +518,13 @@ impl AbstractType {
         source_trace,
       } => {
         let inner = inner_type.fill_const_generics(bindings);
-        match size {
-          AbstractArraySize::Generic(ref name) => {
-            if let Some(&value) = bindings.get(name) {
-              AbstractType::Type(Type::Array(
-                Some(ConcreteArraySize::Literal(value)),
-                Box::new(
-                  match inner {
-                    AbstractType::Type(t) => t,
-                    _ => panic!(
-                      "expected concrete inner type after fill_const_generics"
-                    ),
-                  }
-                  .known()
-                  .into(),
-                ),
-              ))
-            } else {
-              AbstractType::AbstractArray {
-                size,
-                inner_type: Box::new(inner),
-                source_trace,
-              }
-            }
+        let size = match size {
+          AbstractArraySize::Generic(name) if bindings.contains_key(&name) => {
+            AbstractArraySize::Literal(bindings[&name])
           }
-          _ => AbstractType::AbstractArray {
-            size,
-            inner_type: Box::new(inner),
-            source_trace,
-          },
-        }
+          size => size,
+        };
+        AbstractType::array(size, inner, source_trace)
       }
       AbstractType::AbstractStruct(s) => {
         let mut s = Arc::unwrap_or_clone(s);
@@ -700,25 +696,22 @@ impl AbstractType {
         array_children,
       ) => {
         let source_trace: SourceTrace = position.into();
-        let array_type = parse_array_type_tree(
-          array_children,
-          source_trace.clone(),
-          typedefs,
-          skolems,
-        )?;
-        // If the array has a Skolem size, it's a const-generic array that needs
-        // to stay abstract until monomorphization.
-        if let Type::Array(Some(ConcreteArraySize::Skolem(name)), inner) =
-          array_type
-        {
-          Ok(AbstractType::AbstractArray {
-            size: AbstractArraySize::Generic(name),
-            inner_type: Box::new(AbstractType::Type(inner.unwrap_known())),
-            source_trace,
-          })
-        } else {
-          Ok(AbstractType::Type(array_type))
-        }
+        let (size, inner_tree) =
+          split_array_type_tree(array_children, source_trace.clone(), skolems)?;
+        let inner_type =
+          AbstractType::from_easl_tree(inner_tree, typedefs, skolems)?;
+        let size = match size {
+          ConcreteArraySize::Literal(n) => AbstractArraySize::Literal(n),
+          ConcreteArraySize::Constant(name) => {
+            AbstractArraySize::Constant(name)
+          }
+          ConcreteArraySize::Skolem(name) => AbstractArraySize::Generic(name),
+          ConcreteArraySize::Unsized => AbstractArraySize::Unsized,
+          ConcreteArraySize::UnificationVariable(_) => {
+            unreachable!("a parsed array size is never a unification variable")
+          }
+        };
+        Ok(AbstractType::array(size, inner_type, source_trace))
       }
       _ => err(InvalidStructFieldType, tree.position().clone().into()),
     }
@@ -954,6 +947,17 @@ pub enum ConcreteArraySize {
 }
 
 impl AbstractArraySize {
+  /// This size as a concrete one, unless it's still generic.
+  pub fn concrete(&self) -> Option<ConcreteArraySize> {
+    match self {
+      AbstractArraySize::Literal(n) => Some(ConcreteArraySize::Literal(*n)),
+      AbstractArraySize::Constant(name) => {
+        Some(ConcreteArraySize::Constant(name.clone()))
+      }
+      AbstractArraySize::Unsized => Some(ConcreteArraySize::Unsized),
+      AbstractArraySize::Generic(_) => None,
+    }
+  }
   pub fn compile_type(&self) -> String {
     match self {
       AbstractArraySize::Literal(size) => format!("{size}"),
@@ -1226,12 +1230,13 @@ fn parse_array_size(
   }
 }
 
-fn parse_array_type_tree(
+/// Splits the contents of an array type's `[...]` into its size and its
+/// element type's tree: `[N: T]` or, runtime-sized, `[T]`.
+fn split_array_type_tree(
   array_children: Vec<EaslTree>,
   source_trace: SourceTrace,
-  typedefs: &TypeDefs,
   skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
-) -> CompileResult<Type> {
+) -> CompileResult<(ConcreteArraySize, EaslTree)> {
   if array_children.len() != 1 {
     return err(InvalidArraySignature, source_trace);
   }
@@ -1241,28 +1246,49 @@ fn parse_array_type_tree(
       (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
       mut type_annotation_children,
     ) => {
-      let source_trace: SourceTrace = position.into();
       if let EaslTree::Leaf(_, num_str) = type_annotation_children.remove(0) {
-        let inner_type = Type::from_easl_tree(
+        Ok((
+          parse_array_size(&num_str, skolems),
           type_annotation_children.remove(0),
-          typedefs,
-          skolems,
-        )?;
-        Ok(Type::Array(
-          Some(parse_array_size(&num_str, skolems)),
-          Box::new(inner_type.known().into()),
         ))
       } else {
-        err(InvalidArraySignature, source_trace)
+        err(InvalidArraySignature, position.into())
       }
     }
-    other => {
-      let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
-      Ok(Type::Array(
-        Some(ConcreteArraySize::Unsized),
-        Box::new(inner_type.known().into()),
-      ))
-    }
+    other => Ok((ConcreteArraySize::Unsized, other)),
+  }
+}
+
+fn parse_array_type_tree(
+  array_children: Vec<EaslTree>,
+  source_trace: SourceTrace,
+  typedefs: &TypeDefs,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
+) -> CompileResult<Type> {
+  let (size, inner_tree) =
+    split_array_type_tree(array_children, source_trace, skolems)?;
+  let inner_type = Type::from_easl_tree(inner_tree, typedefs, skolems)?;
+  Ok(Type::Array(Some(size), Box::new(inner_type.known().into())))
+}
+
+/// A const generic argument written in a type: a `u32` literal, or a
+/// const generic in scope.
+fn parse_const_generic_arg(
+  tree: EaslTree,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
+) -> CompileResult<ConstGenericResolution> {
+  let EaslTree::Leaf(position, leaf) = tree else {
+    return err(InvalidTypeName, tree.position().clone().into());
+  };
+  if let Ok(n) = leaf
+    .trim_end_matches(|c: char| c == 'u' || c == 'i')
+    .parse::<u32>()
+  {
+    Ok(ConstGenericResolution::Literal(n))
+  } else if skolems.iter().any(|(name, _)| **name == *leaf) {
+    Ok(ConstGenericResolution::Skolem(leaf.as_str().into()))
+  } else {
+    err(UnrecognizedTypeName(leaf.to_string()), position.into())
   }
 }
 
@@ -1327,6 +1353,11 @@ impl ConstGenericValue {
   pub fn fresh() -> Self {
     Self {
       value: Arc::new(RwLock::new(None)),
+    }
+  }
+  pub fn resolved(resolution: ConstGenericResolution) -> Self {
+    Self {
+      value: Arc::new(RwLock::new(Some(resolution))),
     }
   }
 }
@@ -1995,8 +2026,34 @@ impl Type {
             if signature_leaves.len() == 0 {
               return err(InvalidTypeName, source_trace);
             } else {
+              let generic_arg_kinds = typedefs
+                .structs
+                .iter()
+                .find(|s| &*s.name.0 == type_name)
+                .map(|s| &s.generic_args)
+                .or_else(|| {
+                  typedefs
+                    .enums
+                    .iter()
+                    .find(|e| &*e.name.0 == type_name)
+                    .map(|e| &e.generic_args)
+                });
+              // Each argument is parsed as the kind of generic it fills: a
+              // type, or a `u32` constant (a literal or a const generic).
               let generic_args: Vec<GenericArgumentValue> = signature_leaves
-                .map(|signature_arg| {
+                .enumerate()
+                .map(|(i, signature_arg)| {
+                  if let Some(kinds) = generic_arg_kinds
+                    && let Some((_, GenericArgument::Constant, _)) =
+                      kinds.get(i)
+                  {
+                    return Ok(GenericArgumentValue::Constant(
+                      ConstGenericValue::resolved(parse_const_generic_arg(
+                        signature_arg,
+                        skolems,
+                      )?),
+                    ));
+                  }
                   Ok(GenericArgumentValue::Type(
                     AbstractType::from_easl_tree(
                       signature_arg,

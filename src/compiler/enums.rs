@@ -594,19 +594,19 @@ impl AbstractEnum {
       .collect();
     Some(AbstractEnum {
       name: self.name.clone(),
-      filled_generics,
       generic_args: vec![],
       variants: self
         .variants
         .iter()
         .map(|variant| {
           let mut new_variant = variant.clone();
-          if let AbstractType::Generic(generic_var) = &new_variant.inner_type {
-            if let Some(concrete_type) = generic_arg_type_map.get(generic_var) {
-              new_variant.inner_type =
-                AbstractType::Type(concrete_type.clone());
-            }
-          }
+          // Fills the generic wherever it appears: the payload itself, an
+          // array's elements, a generic struct's or enum's arguments.
+          new_variant.inner_type = new_variant
+            .inner_type
+            .fill_abstract_generics(&filled_generics);
+          // A generic nested inside a concrete type (`(Fn [T] T)`) is a
+          // skolem there.
           new_variant
             .inner_type
             .replace_bound_skolems(&generic_arg_type_map);
@@ -618,6 +618,7 @@ impl AbstractEnum {
           new_variant
         })
         .collect(),
+      filled_generics,
       abstract_ancestor: Some(self.clone().into()),
       source_trace: self.source_trace.clone(),
     })

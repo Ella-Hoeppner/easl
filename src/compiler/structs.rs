@@ -515,19 +515,17 @@ impl AbstractStruct {
       .collect();
     Some(AbstractStruct {
       name: self.name.clone(),
-      filled_generics,
       generic_args: vec![],
       fields: self
         .fields
         .iter()
         .map(|field| {
           let mut new_field = field.clone();
-          if let AbstractType::Generic(generic_var) = &new_field.field_type {
-            if let Some(concrete_type) = generic_type_bindings.get(generic_var)
-            {
-              new_field.field_type = AbstractType::Type(concrete_type.clone());
-            }
-          }
+          // Fills the generic wherever it appears: the field itself, an
+          // array's elements, a generic struct's or enum's arguments.
+          new_field.field_type = new_field
+            .field_type
+            .fill_abstract_generics(&filled_generics);
           // A generic nested inside a concrete type (`(Fn [T] T)`) is a
           // skolem there.
           new_field
@@ -541,6 +539,7 @@ impl AbstractStruct {
           new_field
         })
         .collect(),
+      filled_generics,
       abstract_ancestor: Some(self.clone().into()),
       source_trace: self.source_trace.clone(),
       opaque: self.opaque,

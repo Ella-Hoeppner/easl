@@ -1,0 +1,54 @@
+; Generic structs and enums holding arrays of their type parameter, on the
+; GPU and the CPU: a fixed `[4: T]` field, a const-generic `[N: T]` field
+; in a storage global, and an enum whose payload is a generic struct.
+(struct (Quad T)
+  items: [4: T]
+  scale: T)
+
+(struct (Ring T N: u32)
+  slots: [N: T]
+  head: u32)
+
+(struct (Pair T)
+  a: T
+  b: T)
+
+(enum (Maybe T)
+  (Both (Pair T))
+  (Neither u32))
+
+(defn (quad-pick T) [q: (Quad T) i: u32]: T
+  (q.items i))
+
+(defn (ring-current T N: u32) [@ref r: (Ring T N)]: T
+  (r.slots r.head))
+
+(defn (maybe-second T) [m: (Maybe T) fallback: T]: T
+  (match m
+    (Maybe/Both p) p.b
+    _ fallback))
+
+@storage-write
+(var ring: (Ring f32 3u))
+
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn work []
+  (let [q (Quad [1. 2. 3. 4.] 2.)
+        qu (Quad [2u 1u 1u 1u] 3u)
+        m: (Maybe f32) (Maybe/Both (Pair 5. 6.))]
+    (= (out 0u) (* (quad-pick q 3u) q.scale))
+    (= (out 1u) (f32 (* (quad-pick qu 0u) qu.scale)))
+    (= (out 2u) (ring-current ring))
+    (= (out 3u) (maybe-second m 0.))))
+
+@cpu
+(defn main []
+  (= ring (Ring [10. 20. 30.] 2u))
+  (dispatch-compute-shader work (vec3u 1u))
+  (print out)
+  (print (ring-current ring))
+  (print (maybe-second (Maybe/Both (Pair 1u 2u)) 0u))
+  (print (quad-pick (Quad [5i 6i 7i 8i] 1i) 2u)))

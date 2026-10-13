@@ -5091,21 +5091,17 @@ impl Program {
       // `allowed_on_gpu` check; composite functions get the equivalent
       // signature check there. GPU code reaching a CPU-only function is a
       // validation error; here it's simply not emitted.
-      let signature_is_cpu_only = f
-        .arg_types
-        .iter()
-        .map(|(t, _)| t)
-        .chain(std::iter::once(&f.return_type))
-        .any(|t| match t {
-          AbstractType::Type(t) => t.involves_runtime_sized_array(),
-          AbstractType::AbstractEnum(e) => e.variants.iter().any(|v| {
-            matches!(
-              &v.inner_type,
-              AbstractType::Type(t) if t.involves_runtime_sized_array()
-            )
-          }),
-          _ => false,
-        });
+      // (A still-generic signature isn't emitted at all.)
+      let signature_is_cpu_only = f.generic_args.is_empty()
+        && f
+          .arg_types
+          .iter()
+          .map(|(t, _)| t)
+          .chain(std::iter::once(&f.return_type))
+          .any(|t| {
+            t.concretize(&vec![], &self.typedefs, SourceTrace::empty())
+              .is_ok_and(|t| t.involves_runtime_sized_array())
+          });
       if signature_is_cpu_only {
         continue;
       }
@@ -5119,15 +5115,21 @@ impl Program {
             let AbstractType::AbstractEnum(e) = f.return_type else {
               unreachable!("EnumConstructor fn had a non-enum type")
             };
-            let (discriminant, variant) = e
+            let discriminant = e
               .variants
               .iter()
-              .enumerate()
-              .find(|(_, v)| v.name == original_variant_name)
+              .position(|v| v.name == original_variant_name)
               .expect("EnumConstructor fn name didn't match any variant");
-            let AbstractType::Type(inner_type) = &variant.inner_type else {
-              unreachable!()
-            };
+            let variant_types: Vec<Type> = e
+              .variants
+              .iter()
+              .map(|v| {
+                v.inner_type
+                  .concretize(&vec![], &self.typedefs, SourceTrace::empty())
+                  .expect("a monomorphized enum's payloads are concrete")
+              })
+              .collect();
+            let inner_type = &variant_types[discriminant];
             let args_str = if *inner_type == Type::Unit {
               String::new()
             } else {
@@ -5141,21 +5143,12 @@ impl Program {
                 CompilerTarget::VM => panic!(),
               }
             };
-            let enum_name = compile_word(
-              e.original_ancestor().monomorphized_name(
-                &e.variants
-                  .iter()
-                  .map(|variant| {
-                    let AbstractType::Type(t) = &variant.inner_type else {
-                      unreachable!()
-                    };
-                    t.clone()
-                  })
-                  .collect(),
+            let enum_name =
+              compile_word(e.original_ancestor().monomorphized_name(
+                &variant_types,
                 &mut names,
                 target,
-              ),
-            );
+              ));
             compiled_string += &match target {
               CompilerTarget::WGSL => {
                 let bitcast_inner_values = inner_type

@@ -200,6 +200,7 @@ buffer_test!(short_circuit_gpu);
 buffer_test!(for_update_runs_on_continue_gpu);
 buffer_test!(storage_ref_gpu_roundtrip);
 buffer_test!(storage_element_ref_gpu);
+buffer_test!(generic_struct_arrays_gpu);
 buffer_test!(gpu_read_outside_application);
 buffer_test!(gpu_read_outside_application_dynamic);
 buffer_test!(matrix_bindings);

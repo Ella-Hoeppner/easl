@@ -1,0 +1,69 @@
+; Generic structs and enums holding arrays of their type parameter: a
+; growable `(Vec T)` at several element types, built and mutated through
+; generic functions; a generic struct nested in another's field (with an
+; array argument); an array of generic structs; a generic enum with an
+; array payload; and a const-generic struct, also as a global's type.
+(struct (Vec T)
+  items: [T]
+  count: u32)
+
+(defn (vec-new T) [first: T]: (Vec T)
+  (Vec (into-dynamic-array [first]) 1u))
+
+(defn (vec-push T) [@var @ref v: (Vec T) x: T]
+  (= v.items (push v.items x))
+  (+= v.count 1u))
+
+(defn (vec-get T) [v: (Vec T) i: u32]: T
+  (v.items i))
+
+(defn (vec-last T) [@ref v: (Vec T)]: T
+  (v.items (- v.count 1u)))
+
+(struct (Pair T)
+  a: T
+  b: T)
+
+(struct (Ring T N: u32)
+  slots: [N: T]
+  head: u32)
+
+(enum (Tree T)
+  (Leaf [T])
+  (Node u32))
+
+(defn (tree-size T) [t: (Tree T)]: u32
+  (match t
+    (Tree/Leaf items) (array-length items)
+    (Tree/Node n) n))
+
+(struct (Bag T)
+  vecs: [(Vec T)]
+  pair: (Pair [T]))
+
+(var ring: (Ring u32 2u))
+
+@cpu
+(defn main []
+  (= ring (Ring [4u 5u] 1u))
+  (print (ring.slots ring.head))
+  (let [@var fs (vec-new 1.)
+        @var us (vec-new 7u)
+        @var ps (vec-new (Pair 1i 2i))]
+    (vec-push fs 2.5)
+    (vec-push fs 4.)
+    (vec-push us 8u)
+    (vec-push ps (Pair 3i 4i))
+    (print fs.count)
+    (print (vec-get fs 2u))
+    (print (vec-last us))
+    (let [p (vec-get ps 1u)]
+      (print p.b))
+    (print fs)
+    (let [r: (Ring f32 3u) (Ring [1. 2. 3.] 1u)
+          t: (Tree u32) (Tree/Leaf (into-dynamic-array [1u 2u 3u]))
+          bag (Bag (into-dynamic-array [fs fs]) (Pair fs.items (push fs.items 9.)))]
+      (print (r.slots r.head))
+      (print (tree-size t))
+      (print (array-length bag.vecs))
+      (print (bag.pair.b 1u)))))
