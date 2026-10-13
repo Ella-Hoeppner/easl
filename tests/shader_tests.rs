@@ -250,6 +250,7 @@ success_test!(reserved_wgsl_names);
 success_test!(static_array_length);
 success_test!(length_alias_gpu);
 success_test!(storage_ref_gpu);
+success_test!(data_packing_builtins);
 success_test!(storage_ref_gpu_fragment);
 success_test!(midi_cpu_with_shader);
 success_test!(midi_in_shader);

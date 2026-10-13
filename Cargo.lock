@@ -691,6 +691,7 @@ dependencies = [
  "cpal",
  "ffmpeg-sidecar",
  "fsexp",
+ "half",
  "hound",
  "image",
  "lazy_static",

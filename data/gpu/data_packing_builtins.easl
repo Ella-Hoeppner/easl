@@ -1,0 +1,34 @@
+; Every data-packing builtin, emitted under its WGSL name.
+@storage-write
+(var out-u: [9: u32])
+
+@storage-write
+(var out-f: [5: vec4f])
+
+@storage-write
+(var out-i: [1: vec4i])
+
+@storage-write
+(var out-u4: [1: vec4u])
+
+@compute
+(defn pack-all []
+  (= (out-u 0u) (pack-4x8-snorm (vec4f 0.5 -0.5 1. -1.)))
+  (= (out-u 1u) (pack-4x8-unorm (vec4f 0. 0.25 0.5 1.)))
+  (= (out-u 2u) (pack-4x8-i8 (vec4i 1i -1i 127i -128i)))
+  (= (out-u 3u) (pack-4x8-u8 (vec4u 1u 2u 3u 255u)))
+  (= (out-u 4u) (pack-4x8-i8-clamp (vec4i 300i -300i 5i -5i)))
+  (= (out-u 5u) (pack-4x8-u8-clamp (vec4u 300u 2u 3u 4u)))
+  (= (out-u 6u) (pack-2x16-snorm (vec2f 0.5 -1.)))
+  (= (out-u 7u) (pack-2x16-unorm (vec2f 0.25 1.)))
+  (= (out-u 8u) (pack-2x16-float (vec2f 1.5 -2.))))
+
+@compute
+(defn unpack-all []
+  (= (out-f 0u) (unpack-4x8-snorm (out-u 0u)))
+  (= (out-f 1u) (unpack-4x8-unorm (out-u 1u)))
+  (= (out-i 0u) (unpack-4x8-i8 (out-u 2u)))
+  (= (out-u4 0u) (unpack-4x8-u8 (out-u 3u)))
+  (= (out-f 2u) (vec4f (unpack-2x16-snorm (out-u 6u)) 0. 0.))
+  (= (out-f 3u) (vec4f (unpack-2x16-unorm (out-u 7u)) 0. 0.))
+  (= (out-f 4u) (vec4f (unpack-2x16-float (out-u 8u)) 0. 0.)))

@@ -2625,6 +2625,24 @@ impl BytecodeCompilationState {
         Some(result)
       }
       "pack-4x8-i8" => Some(self.emit_unary(Op::Pack4xI8, arg_positions[0])),
+      "pack-4x8-i8-clamp" => {
+        Some(self.emit_unary(Op::Pack4xI8Clamp, arg_positions[0]))
+      }
+      "pack-4x8-u8-clamp" => {
+        Some(self.emit_unary(Op::Pack4xU8Clamp, arg_positions[0]))
+      }
+      "pack-2x16-float" => {
+        Some(self.emit_unary(Op::Pack2x16Float, arg_positions[0]))
+      }
+      "unpack-2x16-float" => {
+        let result = self.take_stack_slot(2);
+        self.push_instruction(Instruction {
+          op: Op::Unpack2x16Float,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
       "unpack-4x8-i8" => {
         let result = self.take_stack_slot(4);
         self.push_instruction(Instruction {

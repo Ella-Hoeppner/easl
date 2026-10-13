@@ -48,7 +48,8 @@ use crate::thread_sync::{
 use crate::video::VideoRegistry;
 use crate::vm::bytecode::{
   DynMemory, HeapCell, SharedAtomic, Trap, alloc_heap_cell, heap_index,
-  heap_string_words, release_heap_id, string_to_words, words_to_string,
+  heap_string_words, pack_2x16_float, release_heap_id, string_to_words,
+  unpack_2x16_float, words_to_string,
 };
 use crate::vm::compile::vm_stack_size;
 #[cfg(feature = "window")]
@@ -2018,8 +2019,32 @@ fn apply_builtin_fn<IO: IOManager>(
           .collect(),
       ))
     }
-    "pack-2x16-float" | "unpack-2x16-float" => {
-      todo!("pack/unpack-2x16-float requires f16 conversion")
+    "pack-2x16-float" => {
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
+      let component = |f: &str| match v[f] {
+        Value::Prim(Primitive::F32(x)) => x,
+        _ => panic!(),
+      };
+      Ok(Value::Prim(Primitive::U32(pack_2x16_float([
+        component("x"),
+        component("y"),
+      ]))))
+    }
+    "unpack-2x16-float" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      let [x, y] = unpack_2x16_float(*e);
+      Ok(Value::Struct(
+        [
+          ("x".into(), Value::Prim(Primitive::F32(x))),
+          ("y".into(), Value::Prim(Primitive::F32(y))),
+        ]
+        .into_iter()
+        .collect(),
+      ))
     }
     // todo!() matrix access (column indexing, etc.)
     // todo!() texture functions, for now I guess these should just error

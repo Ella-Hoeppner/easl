@@ -1,0 +1,57 @@
+; Every data-packing builtin on the GPU and both CPU runtimes, which must
+; agree. Inputs are exactly representable, and the clamping variants get
+; out-of-range values.
+@storage-write
+(var packed: [9: u32])
+
+@storage-write
+(var floats: [5: vec4f])
+
+@storage-write
+(var ints: [1: vec4i])
+
+@storage-write
+(var uints: [1: vec4u])
+
+(defn pack-all []
+  (= (packed 0u) (pack-4x8-snorm (vec4f 1. -1. 0. 1.)))
+  (= (packed 1u) (pack-4x8-unorm (vec4f 0. 1. 0. 1.)))
+  (= (packed 2u) (pack-4x8-i8 (vec4i 1i -1i 127i -128i)))
+  (= (packed 3u) (pack-4x8-u8 (vec4u 1u 2u 3u 255u)))
+  (= (packed 4u) (pack-4x8-i8-clamp (vec4i 300i -300i 5i -5i)))
+  (= (packed 5u) (pack-4x8-u8-clamp (vec4u 300u 2u 3u 4u)))
+  (= (packed 6u) (pack-2x16-snorm (vec2f 1. -1.)))
+  (= (packed 7u) (pack-2x16-unorm (vec2f 0. 1.)))
+  (= (packed 8u) (pack-2x16-float (vec2f 1.5 -2.))))
+
+(defn unpack-all []
+  (= (floats 0u) (unpack-4x8-snorm (packed 0u)))
+  (= (floats 1u) (unpack-4x8-unorm (packed 1u)))
+  (= (ints 0u) (unpack-4x8-i8 (packed 2u)))
+  (= (uints 0u) (unpack-4x8-u8 (packed 3u)))
+  (= (floats 2u) (vec4f (unpack-2x16-snorm (packed 6u)) 0. 0.))
+  (= (floats 3u) (vec4f (unpack-2x16-unorm (packed 7u)) 0. 0.))
+  (= (floats 4u) (vec4f (unpack-2x16-float (packed 8u)) 0. 0.)))
+
+@compute
+(defn gpu-pack-all []
+  (pack-all))
+
+@compute
+(defn gpu-unpack-all []
+  (unpack-all))
+
+(defn print-all []
+  (print packed)
+  (print floats)
+  (print ints)
+  (print uints))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader gpu-pack-all (vec3u 1u))
+  (dispatch-compute-shader gpu-unpack-all (vec3u 1u))
+  (print-all)
+  (pack-all)
+  (unpack-all)
+  (print-all))

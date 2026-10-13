@@ -582,6 +582,7 @@ dependencies = [
  "arc-swap",
  "cpal",
  "fsexp",
+ "half",
  "hound",
  "image",
  "lazy_static",

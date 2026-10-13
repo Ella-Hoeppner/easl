@@ -5,6 +5,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use half::f16;
 use serde::{Deserialize, Serialize};
 
 use crate::compiler::{types::Type, vars::VariableAddressSpace};
@@ -356,6 +357,10 @@ pub enum Op {
   Unpack4xU8,
   Pack4xI8,
   Unpack4xI8,
+  Pack4xI8Clamp,
+  Pack4xU8Clamp,
+  Pack2x16Float,
+  Unpack2x16Float,
   Dot4U8Packed,
   Dot4I8Packed,
 
@@ -1024,6 +1029,20 @@ pub enum HostOp {
   },
 }
 
+/// WGSL's `pack2x16float`: each component rounded to the nearest IEEE
+/// binary16, the first in the low bits.
+pub fn pack_2x16_float(v: [f32; 2]) -> u32 {
+  v.iter()
+    .enumerate()
+    .map(|(i, x)| (f16::from_f32(*x).to_bits() as u32) << (i * 16))
+    .sum()
+}
+
+/// WGSL's `unpack2x16float`, the inverse of [`pack_2x16_float`].
+pub fn unpack_2x16_float(e: u32) -> [f32; 2] {
+  [0, 1].map(|i| f16::from_bits((e >> (i * 16)) as u16).to_f32())
+}
+
 /// Why `execute_with_host` returned before running to completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostSuspendReason {
@@ -1634,6 +1653,40 @@ impl BytecodeProgram {
           for i in 0..4 {
             *stack.get_unchecked_mut(r + i) =
               (((e >> (i * 8)) & 0xFF) as u8 as i8 as i32) as u32;
+          }
+        },
+        Op::Pack4xI8Clamp => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..4 {
+            let v = (*stack.get_unchecked(a + i) as i32).clamp(-128, 127);
+            result |= (v as u8 as u32) << (i * 8);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::Pack4xU8Clamp => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..4 {
+            result |= (*stack.get_unchecked(a + i)).min(255) << (i * 8);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::Pack2x16Float => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            pack_2x16_float([
+              f32::from_bits(*stack.get_unchecked(a)),
+              f32::from_bits(*stack.get_unchecked(a + 1)),
+            ]);
+        },
+        Op::Unpack2x16Float => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for (i, v) in unpack_2x16_float(e).into_iter().enumerate() {
+            *stack.get_unchecked_mut(r + i) = v.to_bits();
           }
         },
         Op::Dot4U8Packed => unsafe {
