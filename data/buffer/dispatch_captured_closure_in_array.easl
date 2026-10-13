@@ -1,0 +1,18 @@
+; A dispatched closure's captured closure built into an array and called
+; out of it: a captured closure's global holds its scope, so it's an
+; ordinary value in GPU code too.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [g (make-scale 2.)]
+    (dispatch-compute-shader
+      (fn []
+        (let [fs [g g]]
+          (= (out 0u) ((fs 0u) 1.))))
+      (vec3u 1u))
+    (print out)))

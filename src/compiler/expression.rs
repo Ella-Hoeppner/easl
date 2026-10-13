@@ -31,7 +31,7 @@ use crate::{
     functions::{
       AbstractFunctionSignature, EffectsMemo, FunctionArgumentAnnotation,
       FunctionSignature, FunctionTargetConfiguration, Ownership, RefMutability,
-      SpecialCasedBuiltinFunction, SpecializationOrigin,
+      SpecialCasedBuiltinFunction, SpecializationOrigin, TopLevelFunction,
     },
     program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
@@ -627,6 +627,44 @@ pub struct LocalBindings {
   pub owned_params: HashSet<Arc<str>>,
   pub reference_params: HashSet<Arc<str>>,
 }
+
+/// How a call passes one reference argument to a function variant made by
+/// `TypedExp::monomorphize_reference_address_spaces`.
+enum RefArgPassing {
+  /// Substituted into the variant: a global, or a static field path into
+  /// one.
+  Inlined {
+    root: Arc<str>,
+    path: Vec<Arc<str>>,
+    /// The argument itself, substituted for the parameter.
+    place: TypedExp,
+    user_written: bool,
+  },
+  /// A read-only reference to a place in a storage/uniform global that
+  /// isn't a static path (a runtime index): the variant takes the value
+  /// instead, the snapshot the reference reads on every runtime.
+  Copied,
+  Pointer(VariableAddressSpace, RefMutability),
+}
+
+impl RefArgPassing {
+  fn key(&self) -> String {
+    match self {
+      RefArgPassing::Inlined { root, path, .. } => {
+        format!("inlined {root}.{}", path.join("."))
+      }
+      RefArgPassing::Copied => "copied".to_string(),
+      RefArgPassing::Pointer(space, mutability) => {
+        format!("pointer {space:?} {mutability:?}")
+      }
+    }
+  }
+}
+
+/// The variants `monomorphize_reference_address_spaces` has made, by
+/// (implementation address, each ref arg's `RefArgPassing::key`).
+pub type ReferenceVariants =
+  HashMap<(usize, Vec<String>), Arc<RwLock<AbstractFunctionSignature>>>;
 
 impl TypedExp {
   /// Expands n-ary applications of associative functions into nested
@@ -4513,19 +4551,30 @@ impl TypedExp {
     Ok(())
   }
   /// Replaces every usage of the ref parameter `param_name` in this
-  /// (function) expression with a direct usage of the top-level variable
-  /// `global_name`, marking the rewritten nodes and every accessor/lookup
-  /// chain rooted at them globally bound — mirroring what inference
-  /// produces for expressions rooted at an ordinary global (the
-  /// mutable-ref effect derivation reads the *outer* node's flag, and a
-  /// stale local flag would turn writes through the inlined global into
-  /// `ModifiesLocalVar` — invisible to the sync and sharing machinery;
-  /// see `rewrite_dispatched_scope_body`).
-  fn inline_global_in_place_of_ref_param(
+  /// (function) expression with `place` — a global, or a static field path
+  /// into one — marking the rewritten nodes and every accessor/lookup chain
+  /// rooted at them globally bound, mirroring what inference produces for
+  /// expressions rooted at an ordinary global (the mutable-ref effect
+  /// derivation reads the *outer* node's flag, and a stale local flag would
+  /// turn writes through the inlined global into `ModifiesLocalVar` —
+  /// invisible to the sync and sharing machinery).
+  fn inline_global_place_in_place_of_ref_param(
     &mut self,
     param_name: &Arc<str>,
-    global_name: &Arc<str>,
+    place: &TypedExp,
   ) {
+    let (global_name, _) = place
+      .static_field_path()
+      .expect("an inlined reference argument is a static global place");
+    let global_name = global_name.clone();
+    let mut inlined_place = place.clone();
+    inlined_place
+      .walk_mut::<Never>(&mut |e| {
+        e.data.is_globally_bound = true;
+        e.data.ownership = Ownership::Owned;
+        Ok(true)
+      })
+      .unwrap();
     self
       .walk_mut::<Never>(&mut |e| {
         let param_rooted = |exp: &TypedExp| {
@@ -4536,17 +4585,21 @@ impl TypedExp {
               // An array-lookup application is rooted at its callee.
               ExpKind::Application(callee, _) => root = callee,
               ExpKind::Name(name) => {
-                break name == param_name || name == global_name;
+                break name == param_name || *name == global_name;
               }
               _ => break false,
             }
           }
         };
-        if let ExpKind::Name(name) = &mut e.kind {
+        if let ExpKind::Name(name) = &e.kind {
           if name == param_name {
-            *name = global_name.clone();
+            // The parameter's own node becomes the place's outermost
+            // access (keeping the parameter's type); the accesses below it
+            // read the global.
+            e.kind = inlined_place.kind.clone();
             e.data.is_globally_bound = true;
             e.data.ownership = Ownership::Owned;
+            return Ok(false);
           }
         } else if matches!(
           e.kind,
@@ -4569,7 +4622,10 @@ impl TypedExp {
     &mut self,
     base_program: &Program,
     new_program: &mut Program,
+    variants: &mut ReferenceVariants,
+    walked: &mut HashMap<usize, Arc<RwLock<TopLevelFunction>>>,
   ) -> bool {
+    self.resolve_split_globals(&base_program.split_globals);
     // Only calls to composite functions with reference parameters are
     // rewritten, so a body without one has nothing to walk.
     if !self.any_subexpression(|exp| {
@@ -4613,6 +4669,161 @@ impl TypedExp {
                 let reference_arg_positions =
                   abstract_ancestor.read().unwrap().reference_arg_positions();
                 if !reference_arg_positions.is_empty() {
+                  // A ref arg that names a storage/uniform-space global, or
+                  // a static field path into one, doesn't become a pointer
+                  // at all: the variant inlines a direct usage of that
+                  // specific place in place of the parameter, and the
+                  // argument disappears from the call. WGSL has no storage
+                  // pointer parameters, but a per-(function, place)
+                  // variant needs none — its body reads and writes the
+                  // module-scope variable itself, so these refs work in
+                  // GPU code and behave identically on the CPU (effects
+                  // flow from the body's direct accesses). A split
+                  // global's own name counts too, even when nothing's left
+                  // for it to hold: accesses through it resolve to its
+                  // parts. Element refs (a runtime index) can't be inlined
+                  // this way: a read-only one passes the element's value
+                  // (element refs are snapshots everywhere), and a mutable
+                  // one keeps the pointer path, which
+                  // `validate_context_exclusivity` restricts to cpu/audio
+                  // contexts.
+                  let passings: Vec<(usize, RefArgPassing)> =
+                    reference_arg_positions
+                      .into_iter()
+                      .map(|i| {
+                        let inlined = args[i].static_field_path().and_then(
+                          |(root, path)| {
+                            let user_written = base_program
+                              .top_level_vars
+                              .iter()
+                              .find_map(|v| {
+                                if v.name == *root
+                                  && let TopLevelVariableKind::Var {
+                                    address_space,
+                                    ..
+                                  } = v.kind
+                                  && matches!(
+                                    address_space,
+                                    VariableAddressSpace::Uniform
+                                      | VariableAddressSpace::StorageRead
+                                      | VariableAddressSpace::StorageReadWrite
+                                  )
+                                {
+                                  Some(v.directly_user_written)
+                                } else {
+                                  None
+                                }
+                              })
+                              .or_else(|| {
+                                base_program
+                                  .split_globals
+                                  .contains_key(root)
+                                  .then_some(false)
+                              })?;
+                            Some(RefArgPassing::Inlined {
+                              root: root.clone(),
+                              path,
+                              place: args[i].clone(),
+                              user_written,
+                            })
+                          },
+                        );
+                        if let Some(inlined) = inlined {
+                          return (i, inlined);
+                        }
+                        let name =
+                          args[i].name_or_inner_accessed_name().unwrap();
+                        let address_space = base_program
+                          .top_level_vars
+                          .iter()
+                          .find_map(|v| {
+                            if v.name == *name
+                              && let TopLevelVariableKind::Var {
+                                address_space,
+                                ..
+                              } = v.kind
+                            {
+                              Some(address_space)
+                            } else {
+                              None
+                            }
+                          })
+                          .or_else(|| {
+                            if let Some((v, _)) = ctx.variables.get(name)
+                              && let Ownership::Pointer(address_space, _) =
+                                v.var_type.ownership
+                            {
+                              Some(address_space)
+                            } else {
+                              None
+                            }
+                          })
+                          .unwrap_or(VariableAddressSpace::Function);
+                        // Preserve the reference's mutability through the
+                        // pointer conversion — write-back emission depends
+                        // on it after the Reference/MutableReference
+                        // distinction is gone.
+                        let mutability = match abstract_ancestor
+                          .read()
+                          .unwrap()
+                          .arg_types[i]
+                          .1
+                        {
+                          Ownership::Reference => RefMutability::Immutable,
+                          Ownership::Pointer(_, m) => m,
+                          _ => RefMutability::Mutable,
+                        };
+                        if mutability == RefMutability::Immutable
+                          && matches!(
+                            address_space,
+                            VariableAddressSpace::Uniform
+                              | VariableAddressSpace::StorageRead
+                              | VariableAddressSpace::StorageReadWrite
+                          )
+                        {
+                          return (i, RefArgPassing::Copied);
+                        }
+                        (i, RefArgPassing::Pointer(address_space, mutability))
+                      })
+                      .collect();
+                  // The call site's own view and arguments: pointer
+                  // ownerships, and the inlined arguments dropped
+                  // (descending, so earlier indices stay valid).
+                  for (i, passing) in passings.iter() {
+                    let ownership = match passing {
+                      RefArgPassing::Inlined { .. } => continue,
+                      RefArgPassing::Copied => Ownership::Owned,
+                      RefArgPassing::Pointer(address_space, mutability) => {
+                        Ownership::Pointer(*address_space, *mutability)
+                      }
+                    };
+                    if let Some((arg, _)) = signature.args.get_mut(*i) {
+                      arg.var_type.ownership = ownership;
+                    }
+                  }
+                  for (i, passing) in passings.iter().rev() {
+                    if matches!(passing, RefArgPassing::Inlined { .. }) {
+                      if *i < signature.args.len() {
+                        signature.args.remove(*i);
+                      }
+                      args.remove(*i);
+                    }
+                  }
+                  // One variant per (function, how each ref arg is
+                  // passed), shared by every call site passing them alike.
+                  let key = (
+                    Arc::as_ptr(&top_level_f) as usize,
+                    passings
+                      .iter()
+                      .map(|(_, passing)| passing.key())
+                      .collect::<Vec<_>>(),
+                  );
+                  if let Some(variant) = variants.get(&key) {
+                    *f_name = variant.read().unwrap().name.clone();
+                    *abstract_ancestor = variant.clone();
+                    changed = true;
+                    return Ok(true);
+                  }
                   let mut new_abstract_ancestor =
                     (**abstract_ancestor).read().unwrap().clone();
                   // Deliberately `.clone()`, not `.derived_from()`: this
@@ -4628,114 +4839,72 @@ impl TypedExp {
                   // predicate's pointer-space check instead).
                   let mut new_top_level_f = top_level_f.read().unwrap().clone();
                   let mut variant_name_parts: Vec<Arc<str>> = vec![];
-                  // A ref arg that names a storage/uniform-space global
-                  // outright doesn't become a pointer at all: the variant
-                  // inlines a direct usage of that specific global in
-                  // place of the parameter, and the argument disappears
-                  // from the call. WGSL has no storage pointer
-                  // parameters, but a per-(function, global) variant
-                  // needs none — its body reads and writes the
-                  // module-scope variable itself, so whole-global storage
-                  // refs work in GPU code and behave identically on the
-                  // CPU (effects flow from the body's direct accesses).
-                  // Accessor-chain refs into these spaces (element or
-                  // field refs) can't be inlined this way and keep the
-                  // pointer path, which `validate_context_exclusivity`
-                  // restricts to cpu/audio contexts.
-                  let mut inlined_arg_positions: Vec<usize> = vec![];
-                  for i in reference_arg_positions {
-                    let inlined_global: Option<Arc<str>> =
-                      if let ExpKind::Name(arg_name) = &args[i].kind {
-                        base_program.top_level_vars.iter().find_map(|v| {
-                          if v.name == *arg_name
-                            && let TopLevelVariableKind::Var {
-                              address_space,
-                              ..
-                            } = v.kind
-                            && matches!(
-                              address_space,
-                              VariableAddressSpace::Uniform
-                                | VariableAddressSpace::StorageRead
-                                | VariableAddressSpace::StorageReadWrite
-                            )
-                          {
-                            Some(v.name.clone())
-                          } else {
-                            None
-                          }
-                        })
-                      } else {
-                        None
-                      };
-                    if let Some(global_name) = inlined_global {
-                      let param_name = new_top_level_f.arg_names[i].0.clone();
-                      new_top_level_f
-                        .expression
-                        .inline_global_in_place_of_ref_param(
-                          &param_name,
-                          &global_name,
-                        );
-                      inlined_arg_positions.push(i);
-                      variant_name_parts.push(global_name);
-                      continue;
+                  for (i, passing) in passings.iter() {
+                    match passing {
+                      RefArgPassing::Inlined {
+                        root,
+                        path,
+                        place,
+                        user_written,
+                      } => {
+                        let param_name =
+                          new_top_level_f.arg_names[*i].0.clone();
+                        new_top_level_f
+                          .expression
+                          .inline_global_place_in_place_of_ref_param(
+                            &param_name,
+                            place,
+                          );
+                        // A variant reading a compiler-generated global (a
+                        // lifted closure capture) exists only for the code
+                        // that generated it, so it's emitted only when
+                        // something emitted calls it.
+                        if !user_written {
+                          new_top_level_f.directly_user_written = false;
+                        }
+                        variant_name_parts.push(root.clone());
+                        variant_name_parts.extend(path.iter().cloned());
+                      }
+                      RefArgPassing::Copied => {
+                        let param_name =
+                          new_top_level_f.arg_names[*i].0.clone();
+                        new_top_level_f.expression.mark_name_owned(&param_name);
+                        let TypeState::Known(Type::Function(new_signature)) =
+                          &mut new_top_level_f.expression.data.kind
+                        else {
+                          panic!()
+                        };
+                        new_abstract_ancestor.arg_types[*i].1 =
+                          Ownership::Owned;
+                        // A by-value copy of a place the variant only reads.
+                        let param = &mut new_signature.args[*i].0;
+                        param.var_type.ownership = Ownership::Owned;
+                        param.kind = VariableKind::Let;
+                        variant_name_parts.push("value".into());
+                      }
+                      RefArgPassing::Pointer(address_space, mutability) => {
+                        let ownership =
+                          Ownership::Pointer(*address_space, *mutability);
+                        let TypeState::Known(Type::Function(new_signature)) =
+                          &mut new_top_level_f.expression.data.kind
+                        else {
+                          panic!()
+                        };
+                        new_abstract_ancestor.arg_types[*i].1 = ownership;
+                        new_signature.args[*i].0.var_type.ownership = ownership;
+                        variant_name_parts.push(address_space.name().into());
+                      }
                     }
-                    let name = args[i].name_or_inner_accessed_name().unwrap();
-                    let address_space = base_program
-                      .top_level_vars
-                      .iter()
-                      .find_map(|v| {
-                        if v.name == *name
-                          && let TopLevelVariableKind::Var {
-                            address_space, ..
-                          } = v.kind
-                        {
-                          Some(address_space)
-                        } else {
-                          None
-                        }
-                      })
-                      .or_else(|| {
-                        if let Some((v, _)) = ctx.variables.get(name)
-                          && let Ownership::Pointer(address_space, _) =
-                            v.var_type.ownership
-                        {
-                          Some(address_space)
-                        } else {
-                          None
-                        }
-                      })
-                      .unwrap_or(VariableAddressSpace::Function);
-                    // Preserve the reference's mutability through the
-                    // pointer conversion — write-back emission depends
-                    // on it after the Reference/MutableReference
-                    // distinction is gone.
-                    let mutability = match new_abstract_ancestor.arg_types[i].1
-                    {
-                      Ownership::Reference => RefMutability::Immutable,
-                      Ownership::Pointer(_, m) => m,
-                      _ => RefMutability::Mutable,
-                    };
-                    let TypeState::Known(Type::Function(new_signature)) =
-                      &mut new_top_level_f.expression.data.kind
-                    else {
-                      panic!()
-                    };
-                    new_abstract_ancestor.arg_types[i].1 =
-                      Ownership::Pointer(address_space, mutability);
-                    signature.args.get_mut(i).map(|x| {
-                      x.0.var_type.ownership =
-                        Ownership::Pointer(address_space, mutability)
-                    });
-                    new_signature.args[i].0.var_type.ownership =
-                      Ownership::Pointer(address_space, mutability);
-                    variant_name_parts.push(address_space.name().into());
                   }
                   // Drop the inlined parameters from every parallel arg
-                  // list — the ancestor's arg_types, the variant's own
-                  // function type, expression arg names, and metadata,
-                  // and the call site's signature view and argument list.
+                  // list of the variant — the ancestor's arg_types, its
+                  // own function type, expression arg names, and metadata.
                   // Descending, so earlier indices stay valid.
-                  for i in inlined_arg_positions.into_iter().rev() {
+                  for (i, passing) in passings.iter().rev() {
+                    if !matches!(passing, RefArgPassing::Inlined { .. }) {
+                      continue;
+                    }
+                    let i = *i;
                     new_abstract_ancestor.arg_types.remove(i);
                     new_top_level_f.expression.data.as_known_mut(|t| {
                       if let Type::Function(function_signature) = t {
@@ -4750,15 +4919,19 @@ impl TypedExp {
                     expression_arg_names.remove(i);
                     new_top_level_f.arg_names.remove(i);
                     new_top_level_f.arg_annotations.remove(i);
-                    if i < signature.args.len() {
-                      signature.args.remove(i);
-                    }
-                    args.remove(i);
                   }
+                  if passings.iter().any(|(_, passing)| {
+                    matches!(passing, RefArgPassing::Copied)
+                  }) {
+                    new_top_level_f
+                      .make_referenced_params_addressable(&new_program.names);
+                  }
+                  let variant_implementation =
+                    Arc::new(RwLock::new(new_top_level_f));
                   new_abstract_ancestor.implementation =
-                    FunctionImplementationKind::Composite(Arc::new(
-                      RwLock::new(new_top_level_f),
-                    ));
+                    FunctionImplementationKind::Composite(
+                      variant_implementation.clone(),
+                    );
                   let new_name = new_program
                     .names
                     .write()
@@ -4769,6 +4942,25 @@ impl TypedExp {
                   *abstract_ancestor = new_program.add_abstract_function(
                     Arc::new(RwLock::new(new_abstract_ancestor)),
                   );
+                  variants.insert(key, abstract_ancestor.clone());
+                  // The variant's own calls are rewritten right away, so a
+                  // chain of them (a captured closure calling its own
+                  // captured closures, each through a field path of the
+                  // last) takes one pass, not one per link.
+                  walked.insert(
+                    Arc::as_ptr(&variant_implementation) as usize,
+                    variant_implementation.clone(),
+                  );
+                  variant_implementation
+                    .write()
+                    .unwrap()
+                    .expression
+                    .monomorphize_reference_address_spaces(
+                      base_program,
+                      new_program,
+                      variants,
+                      walked,
+                    );
                   changed = true;
                 }
               };
@@ -4781,6 +4973,20 @@ impl TypedExp {
       )
       .unwrap();
     changed
+  }
+  /// Marks every use of `name` owned, with the accessor chains rooted at
+  /// it: it names a value, not a reference.
+  fn mark_name_owned(&mut self, name: &str) {
+    let _ = self.walk_mut::<Never>(&mut |e| {
+      if matches!(e.kind, ExpKind::Name(_) | ExpKind::Access(..))
+        && e
+          .name_or_inner_accessed_name()
+          .is_some_and(|n| &**n == name)
+      {
+        e.data.ownership = Ownership::Owned;
+      }
+      Ok(true)
+    });
   }
   pub fn inline_higher_order_arguments(
     &mut self,
@@ -6912,35 +7118,5 @@ impl TypedExp {
       },
       _ => false,
     }
-  }
-  /// The closure this expression constructs, when it's a closure's scope
-  /// construction: what `extract_inner_functions` turns a capturing lambda
-  /// into, an application of the scope struct's constructor whose own type
-  /// is the closure's function type.
-  pub fn constructed_closure(
-    &self,
-  ) -> Option<Arc<RwLock<AbstractFunctionSignature>>> {
-    let Application(f, _) = &self.kind else {
-      return None;
-    };
-    let applies_struct_constructor = f.data.kind.with_dereferenced(|t| {
-      matches!(t, TypeState::Known(Type::Function(signature))
-      if signature.abstract_ancestor.as_ref().is_some_and(|ancestor| {
-        matches!(
-          ancestor.read().unwrap().implementation,
-          FunctionImplementationKind::StructConstructor
-        )
-      }))
-    });
-    if !applies_struct_constructor {
-      return None;
-    }
-    self.data.kind.with_dereferenced(|t| match t {
-      TypeState::Known(Type::Function(signature)) => signature
-        .abstract_ancestor
-        .clone()
-        .filter(|ancestor| ancestor.read().unwrap().captured_scope.is_some()),
-      _ => None,
-    })
   }
 }

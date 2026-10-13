@@ -2,7 +2,6 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use std::hash::Hash;
-use std::mem;
 use std::sync::{Arc, RwLock};
 
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
@@ -36,7 +35,10 @@ use crate::{
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
     exp_builder::{ExpBuilder, struct_constructor},
-    expression::{Accessor, ExpKind, ExpressionCompilationPosition, Number},
+    expression::{
+      Accessor, ExpKind, ExpressionCompilationPosition, Number,
+      ReferenceVariants,
+    },
     function_values::holds_function,
     functions::{
       AbstractFunctionSignature, EffectsMemo, FunctionArgumentAnnotation,
@@ -62,6 +64,7 @@ use super::{
     ABNORMAL_CONSTRUCTOR_STRUCTS, built_in_enums, built_in_structs,
     built_in_type_aliases,
   },
+  closure_lift::{CaptureLift, ClosureLiftTarget, LiftedCaptures, SplitGlobal},
   error::{
     CompileErrorKind::{self, *},
     CompileResult, ErrorLog,
@@ -388,41 +391,6 @@ impl TypeDefs {
   }
 }
 
-/// How one field of a dispatched closure's captured scope is rewritten by
-/// `extract_dispatched_closure_scopes`: data captures become reads of
-/// their own lifted binding global, and captured closures are called
-/// through a clone whose own captures are lifted recursively.
-enum CaptureRewrite {
-  Global(Arc<str>),
-  /// The captured closure's lifted clone family — the body's calls of
-  /// (and passes of) the closure are rewritten against it.
-  CalleeClone {
-    family: ClosureFamily,
-  },
-}
-
-/// One lifted captured-closure clone: its new name and signature.
-type CapturedClosureClone = (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>);
-
-/// The lifted clone family of one captured closure: clones of every
-/// member — the original definition *and* its higher-order-argument
-/// specializations, which are what call sites actually name after
-/// inlining — keyed by the pre-clone callee name. All members share one
-/// set of lifted capture globals (they read the same scope instance).
-/// `key` identifies the family (scope-struct name + entry scope/capture
-/// path) for memoizing the receiver clones derived against it.
-#[derive(Clone)]
-struct ClosureFamily {
-  key: (Arc<str>, String),
-  clones: Arc<HashMap<Arc<str>, CapturedClosureClone>>,
-}
-
-/// The transitive set of lifted-capture global names for a closure chain
-/// rooted at `scope_struct` (`<scope>_audio_data_<capture>` for every data
-/// field, recursing through captured closures' own scopes) — the same
-/// traversal the runtime seed writers walk, so the set matches exactly
-/// what `start-audio` seeds at handoff.
-
 /// Execution-context bit indices shared by the context-exclusivity
 /// validation (`validate_context_exclusivity`) and target emission
 /// (`compile_to_target`), both driven by
@@ -474,190 +442,6 @@ pub(crate) struct FnContexts {
     [Option<(SourceTrace, Arc<str>)>; execution_context::CONTEXT_COUNT],
 }
 
-/// The two host-invoked closure-entry systems — GPU dispatch and audio —
-/// share all closure-lift mechanics (clone a scope-less version of each
-/// captured closure, lift every data capture to its own global, rewrite
-/// scope accesses into global accesses via `CaptureRewrite` /
-/// `rewrite_dispatched_scope_body`) and differ only in what a capture
-/// *becomes* and how clones are named:
-///
-/// - **GpuDispatch**: captures are per-dispatch *inputs* — implicit
-///   read-only storage bindings (elided numbers), re-written and uploaded
-///   at every dispatch; mutating one is a compile error
-///   (`catch_dispatched_closure_scope_mutations`). Read-only storage
-///   rather than uniform because storage has relaxed layout rules and
-///   permits runtime-sized array captures. Clones get gensym'd `_gpu`
-///   names, resolved through the registry at dispatch-record time.
-/// - **Audio**: captures are owned mutable *state* — ordinary
-///   storage-write globals, shared between main and audio through the
-///   standard usage-derived analysis (main's one-shot seed write at the
-///   `start-audio` handoff is visible as a `SeedsGlobalVar` effect on
-///   the call site), thereafter mutated per-sample by the audio thread
-///   and synced at batch boundaries. No GPU entry ever references them,
-///   so they never become runtime GPU bindings. Clones get deterministic
-///   `<original>_audio` names so both runtimes can derive the entry name
-///   at `start-audio` time. Clone bodies are CPU-semantics and are kept
-///   out of WGSL/C output by usage-based emission (they're reachable
-///   only from audio context — see `compile_to_target`).
-/// The record of one closure entry's lifted captures, stored in
-/// `Program::lifted_audio_captures` / `lifted_gpu_captures` by the
-/// closure-entry lift passes and read by the seed/effect walkers in both
-/// runtimes. Entries are positionally aligned with the scope struct's
-/// fields: a data capture carries its lifted global's name, a captured
-/// closure carries its scope struct and the record of that scope's lift
-/// (the walkers read the scope struct from here: a closure captured
-/// through a higher-order parameter has its scope struct, not a function
-/// type, as its field type). Names are minted
-/// once, by `NameContext::gensym`, and carried here — never reconstructed
-/// by convention: underscore-concatenated capture paths aren't injective
-/// (entry field `a_b` with capture `c` collides with field `a` and
-/// capture `b_c`), which silently merged distinct captures into one
-/// global (pinned by the `capture_path_injectivity` thread_sync golden).
-#[derive(Debug, Clone, PartialEq)]
-pub enum LiftedCapture {
-  Global(Arc<str>),
-  Closure {
-    scope: AbstractStruct,
-    captures: Arc<LiftedCaptures>,
-  },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LiftedCaptures {
-  pub fields: Vec<LiftedCapture>,
-}
-
-impl LiftedCaptures {
-  /// Every lifted global name in the tree, depth-first in field order.
-  pub fn global_names(&self, out: &mut Vec<Arc<str>>) {
-    for field in &self.fields {
-      match field {
-        LiftedCapture::Global(name) => out.push(name.clone()),
-        LiftedCapture::Closure { captures, .. } => captures.global_names(out),
-      }
-    }
-  }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum ClosureLiftTarget {
-  GpuDispatch,
-  Audio,
-}
-
-impl ClosureLiftTarget {
-  /// `entry_scope_name` is the *entry* closure's scope struct (unique per
-  /// closure definition), and `capture_path` the chain of closure-field
-  /// names from there down to (but not including) `field_name`,
-  /// underscore-joined with a trailing underscore (empty at the entry's
-  /// own scope). Together they make capture globals per-instance and
-  /// per-entry: several fields of one entry can hold closures of the same
-  /// definition (a comb bank), and two entries can capture same-named
-  /// fields of the same definition — leaf-scope-keyed names collapsed the
-  /// former, and path-only keys would collapse the latter. Global names
-  /// must be *derivable* (no gensym): the seed emitters in both runtimes
-  /// and the seeds-effect enumeration reconstruct them independently from
-  /// the scope-struct tree.
-  fn capture_global_name(
-    &self,
-    entry_scope_name: &str,
-    capture_path: &str,
-    field_name: &str,
-  ) -> Arc<str> {
-    match self {
-      ClosureLiftTarget::GpuDispatch => {
-        format!("{entry_scope_name}_data_{capture_path}{field_name}").into()
-      }
-      ClosureLiftTarget::Audio => {
-        format!("{entry_scope_name}_audio_data_{capture_path}{field_name}")
-          .into()
-      }
-    }
-  }
-  fn capture_address_space(&self) -> VariableAddressSpace {
-    match self {
-      ClosureLiftTarget::GpuDispatch => VariableAddressSpace::StorageRead,
-      ClosureLiftTarget::Audio => VariableAddressSpace::StorageReadWrite,
-    }
-  }
-  /// Which capture types each target can carry: GPU capture bindings obey
-  /// the same rule as explicit bindings (may involve a runtime-sized
-  /// array only by *being* one — `validate_gpu_runtime_sized_use` runs
-  /// before the lift, so it can't see the bindings created here). Audio
-  /// captures cross threads through the shared-snapshot system, whose
-  /// wire encoding handles any heap-embedding value (a runtime-sized
-  /// array, or a struct/enum/fixed-array embedding one) — see
-  /// `needs_wire_encoding` in vm/shared_sync.rs. Only Strings stay
-  /// rejected: the wire could carry them, but audio-mode compilation
-  /// filters `CPUExclusiveType("String")` functions, so an audio body
-  /// could never read a String capture anyway.
-  fn validate_capture(
-    &self,
-    field_type: &Type,
-    source_trace: &SourceTrace,
-    errors: &mut ErrorLog,
-  ) {
-    let embeds_runtime_sized = field_type.involves_runtime_sized_array()
-      && !matches!(
-        field_type,
-        Type::Array(Some(ConcreteArraySize::Unsized), _)
-      );
-    match self {
-      ClosureLiftTarget::GpuDispatch => {
-        if embeds_runtime_sized {
-          errors.log(CompileError {
-            kind: RuntimeSizedFieldInBinding,
-            source_trace: source_trace.clone(),
-          });
-        }
-      }
-      ClosureLiftTarget::Audio => {
-        // A capture that IS a runtime-sized array lifts to a dyn-region
-        // global; one that EMBEDS a runtime-sized array (a struct/enum/
-        // fixed-array field) lifts to a slot-backed global. Both share
-        // through the wire encoding (`needs_wire_encoding`), which
-        // dereferences embedded heap ids and inlines their contents, so
-        // no heap id crosses the thread boundary. String captures stay
-        // rejected — audio-mode compilation filters String-using
-        // functions, so an audio body could never read one.
-        if field_type.involves_string() {
-          errors.log(CompileError {
-            kind: UnshareableAudioCapture("String".to_string()),
-            source_trace: source_trace.clone(),
-          });
-        }
-      }
-    }
-  }
-}
-
-/// Accumulator for a closure-entry lift pass: globals and clones are
-/// created while iterating the registry, so they're collected here and
-/// installed at the end of the pass.
-struct ClosureLiftState {
-  new_vars: Vec<TopLevelVar>,
-  /// (Captured closure's scope-struct name, entry scope + capture path) →
-  /// its (memoized) clone family and lifted-capture record. Per-path, not
-  /// per-closure: each instance a distinct capture path reaches needs its
-  /// own clones reading its own globals.
-  clones: HashMap<(Arc<str>, String), (ClosureFamily, Arc<LiftedCaptures>)>,
-  /// (Pre-clone callee name, argument position, family key) → the
-  /// (memoized) clone of a function *receiving* a lifted closure as an
-  /// argument, with that parameter removed (see
-  /// `cloneify_closure_receiver`).
-  receiver_clones:
-    HashMap<(Arc<str>, usize, (Arc<str>, String)), CapturedClosureClone>,
-  /// (Nested closure's scope-struct name, its captured families' keys) →
-  /// the (memoized) clone family of a closure constructed inside a lifted
-  /// body whose every capture is a lifted closure (see
-  /// `cloneify_nested_closure_family`).
-  nested_clones: HashMap<(Arc<str>, String), ClosureFamily>,
-  new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
-  /// Entry-fn-name → lifted-capture record, installed into the Program's
-  /// registry at the end of the pass.
-  lifted_captures: Vec<(Arc<str>, Arc<LiftedCaptures>)>,
-}
-
 /// A target's emitted functions (see `Program::emitted_function_closure`).
 struct EmittedFunctions {
   /// Every composite function, callees first (the deterministic emission
@@ -692,6 +476,10 @@ pub struct Program {
   pub lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
   /// As `lifted_audio_captures`, for dispatched GPU closure entries.
   pub lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  /// Globals whose runtime-sized arrays live in globals of their own (see
+  /// [`SplitGlobal`]), by name. Storage-ref inlining redirects accesses
+  /// through the split paths of a substituted global.
+  pub split_globals: HashMap<Arc<str>, SplitGlobal>,
   /// Overload groups created by module resolution (see
   /// [`crate::compiler::modules`]): each group's name and the registry
   /// buckets its candidates come from. References to a group are rewritten
@@ -714,6 +502,7 @@ impl Clone for Program {
       window_info_bindings: self.window_info_bindings.clone(),
       lifted_audio_captures: self.lifted_audio_captures.clone(),
       lifted_gpu_captures: self.lifted_gpu_captures.clone(),
+      split_globals: self.split_globals.clone(),
       overload_groups: self.overload_groups.clone(),
       main_file_index: self.main_file_index.clone(),
     }
@@ -738,6 +527,7 @@ impl Program {
       window_info_bindings: vec![],
       lifted_audio_captures: HashMap::new(),
       lifted_gpu_captures: HashMap::new(),
+      split_globals: HashMap::new(),
       overload_groups: HashMap::new(),
       main_file_index: MainFileIndex::default(),
     }
@@ -1707,6 +1497,7 @@ impl Program {
       monomorphized_ctx.window_info_bindings = old_ctx.window_info_bindings;
       monomorphized_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
       monomorphized_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
+      monomorphized_ctx.split_globals = old_ctx.split_globals;
       monomorphized_ctx
     });
   }
@@ -2114,9 +1905,11 @@ impl Program {
   }
   /// Checks one dispatched closure's body for mutations of its captured
   /// scope: any argument rooted at the scope parameter that's passed to a
-  /// mutable-reference parameter counts as a mutation, except the trailing
-  /// scope-forwarding argument of a call to a nested closure, which is
-  /// checked recursively against that closure's own scope instead.
+  /// mutable-reference parameter is mutated (closure-reference parameters
+  /// are mutable only when written through — see
+  /// `refine_closure_reference_mutability`). A captured closure is mutated
+  /// by its own body, so that body is checked, and the error names what it
+  /// mutates.
   fn check_dispatched_closure_scope_mutations(
     &self,
     closure: Arc<RwLock<AbstractFunctionSignature>>,
@@ -2200,30 +1993,9 @@ impl Program {
             let Some(captured_name) = scope_rooted_capture_name(arg) else {
               continue;
             };
-            if i + 1 == args.len()
-              && let Some(applied_ancestor) =
-                &applied_signature.abstract_ancestor
-              && applied_ancestor.read().unwrap().captured_scope.is_some()
-            {
+            if let Some(captured_closure) = self.closure_of_value(arg) {
               self.check_dispatched_closure_scope_mutations(
-                applied_ancestor.clone(),
-                errors,
-                checked_closures,
-              );
-              continue;
-            }
-            // A captured closure passed onward to a higher-order
-            // specialization (mutable only for the CPU write-back
-            // convention): a receiver sees the value opaquely, so capture
-            // mutation through it can only happen inside the closure's
-            // own body — check that body instead of rejecting the pass.
-            if let TypeState::Known(Type::Function(arg_signature)) =
-              &arg.data.kind
-              && let Some(arg_ancestor) = &arg_signature.abstract_ancestor
-              && arg_ancestor.read().unwrap().captured_scope.is_some()
-            {
-              self.check_dispatched_closure_scope_mutations(
-                arg_ancestor.clone(),
+                captured_closure,
                 errors,
                 checked_closures,
               );
@@ -2239,316 +2011,29 @@ impl Program {
       })
       .unwrap();
   }
-  /// Rewrites references to a dispatched closure's captured scope within
-  /// `body` so the scope is accessed as lifted per-capture data rather
-  /// than through the (removed) scope parameter: each `scope.field`
-  /// access to a data capture is replaced with a read of that capture's
-  /// own global, and each call forwarding a captured *closure* (its
-  /// trailing `scope.field` arg) is repointed to the callee's GPU clone
-  /// with the scope arg dropped — the clone reads its own lifted globals
-  /// instead (see `cloneify_captured_closure_family`). A closure built in
-  /// the body whose every capture is a lifted closure becomes a lifted
-  /// family itself (`cloneify_nested_closure_family`): a `let` binding of
-  /// it is dropped and its name denotes the family, like a captured
-  /// closure's field does. Reference-ownership chains rooted at the scope
-  /// become owned — naga doesn't allow storage-space pointers, and scopes
-  /// are read-only on the GPU.
-  fn rewrite_dispatched_scope_body(
+  /// The closure a value is, when it is one: typed as the closure's function
+  /// type, or as its scope struct (how a closure field or a closure passed
+  /// by its scope is typed).
+  fn closure_of_value(
     &self,
-    body: &mut TypedExp,
-    scope_name: Option<&Arc<str>>,
-    rewrites: &HashMap<Arc<str>, CaptureRewrite>,
-    closure_params: &HashMap<Arc<str>, ClosureFamily>,
-    target: ClosureLiftTarget,
-    state: &mut ClosureLiftState,
-    errors: &mut ErrorLog,
-  ) {
-    let lifted_globals: HashSet<Arc<str>> = rewrites
-      .values()
-      .filter_map(|r| match r {
-        CaptureRewrite::Global(global_name) => Some(global_name.clone()),
-        CaptureRewrite::CalleeClone { .. } => None,
-      })
-      .collect();
-    let scope_field_name = |exp: &TypedExp| -> Option<Arc<str>> {
-      if let Some(scope_name) = scope_name
-        && let ExpKind::Access(Accessor::Field(field_name), inner) = &exp.kind
-        && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name)
-      {
-        Some(field_name.clone())
-      } else {
-        None
-      }
-    };
-    // The ways an expression can denote a lifted closure: a field of the
-    // (removed) scope param, or a name in `families` — inside a receiver
-    // clone the (removed) closure-valued param, or a lifted nested
-    // closure's binding.
-    let denoted_family = |exp: &TypedExp,
-                          families: &HashMap<Arc<str>, ClosureFamily>|
-     -> Option<(Arc<str>, ClosureFamily)> {
-      if let Some(field_name) = scope_field_name(exp) {
-        if let Some(CaptureRewrite::CalleeClone { family }) =
-          rewrites.get(&field_name)
-        {
-          return Some((field_name, family.clone()));
-        }
-        return None;
-      }
-      if let ExpKind::Name(name) = &exp.kind
-        && let Some(family) = families.get(name)
-      {
-        return Some((name.clone(), family.clone()));
-      }
-      None
-    };
-    // A closure construction whose every capture denotes a lifted closure:
-    // the closure, and the denoted captures in scope-field order.
-    let lifted_nested_closure =
-      |exp: &TypedExp,
-       families: &HashMap<Arc<str>, ClosureFamily>|
-       -> Option<(
-        Arc<RwLock<AbstractFunctionSignature>>,
-        Vec<(Arc<str>, ClosureFamily)>,
-      )> {
-        let closure = exp.constructed_closure()?;
-        let ExpKind::Application(_, args) = &exp.kind else {
-          unreachable!()
-        };
-        let field_count = closure
-          .read()
-          .unwrap()
-          .captured_scope
-          .as_ref()
-          .map_or(0, |scope| scope.fields.len());
-        if args.len() != field_count {
-          return None;
-        }
-        let captures = args
-          .iter()
-          .map(|arg| denoted_family(arg, families))
-          .collect::<Option<Vec<_>>>()?;
-        Some((closure, captures))
-      };
-    let mut families: HashMap<Arc<str>, ClosureFamily> = closure_params.clone();
-    // Each placeholder name standing for a lifted nested closure built as
-    // an argument, with the captured closure errors name it by.
-    let mut placeholder_display_names: HashMap<Arc<str>, Arc<str>> =
-      HashMap::new();
-    body
-      .walk_mut(&mut |e| {
-        if let ExpKind::Let(bindings, _) = &mut e.kind {
-          // In order: a later binding can capture an earlier lifted one.
-          let mut kept = Vec::with_capacity(bindings.len());
-          for binding in mem::take(bindings) {
-            match lifted_nested_closure(&binding.3, &families) {
-              Some((closure, captures)) => {
-                let family = self.cloneify_nested_closure_family(
-                  closure,
-                  captures.into_iter().map(|(_, family)| family).collect(),
-                  target,
-                  state,
-                  errors,
-                );
-                families.insert(binding.0, family);
-              }
-              None => kept.push(binding),
-            }
-          }
-          let all_lifted = kept.is_empty();
-          *bindings = kept;
-          if all_lifted {
-            take(e, |e| {
-              let ExpKind::Let(_, body) = e.kind else {
-                unreachable!()
-              };
-              *body
-            });
-          }
-        }
-        if let ExpKind::Application(_, args) = &mut e.kind {
-          for arg in args.iter_mut() {
-            let Some((closure, captures)) =
-              lifted_nested_closure(arg, &families)
-            else {
-              continue;
-            };
-            let display_name = captures[0].0.clone();
-            let family = self.cloneify_nested_closure_family(
-              closure,
-              captures.into_iter().map(|(_, family)| family).collect(),
-              target,
-              state,
-              errors,
-            );
-            let placeholder: Arc<str> =
-              self.names.write().unwrap().gensym("lifted_closure");
-            *arg = ExpBuilder::at(&arg.source_trace)
-              .with_data(ExpKind::Name(placeholder.clone()), arg.data.clone());
-            families.insert(placeholder.clone(), family);
-            placeholder_display_names.insert(placeholder, display_name);
-          }
-        }
-        let closure_family_of = |exp: &TypedExp| denoted_family(exp, &families);
-        let scope_rooted = |exp: &TypedExp| {
-          let mut root = exp;
-          loop {
-            match &root.kind {
-              ExpKind::Access(_, inner) => root = inner,
-              // An array-lookup application is rooted at its callee.
-              ExpKind::Application(callee, _) => root = callee,
-              ExpKind::Name(name) => {
-                break scope_name.is_some_and(|s| s == name)
-                  || lifted_globals.contains(name);
-              }
-              _ => break false,
-            }
-          }
-        };
-        if let ExpKind::Application(f_exp, args) = &mut e.kind {
-          // A closure denotation as the *trailing* arg of a call to one
-          // of its own family members is the forwarding convention (the
-          // scope arg the inlining passes append): drop it and repoint
-          // the call at the member's clone.
-          if let Some((_, family)) = args.last().and_then(&closure_family_of)
-            && matches!(&f_exp.kind, ExpKind::Name(callee_name)
-              if family.clones.contains_key(callee_name))
-          {
-            args.pop();
-            let ExpKind::Name(callee_name) = &mut f_exp.kind else {
-              unreachable!()
-            };
-            let (clone_name, clone_signature) =
-              family.clones.get(callee_name).unwrap().clone();
-            *callee_name = clone_name;
-            f_exp.data.as_known_mut(|t| {
-              let Type::Function(signature) = t else {
-                panic!("captured closure call had a non-function callee type")
-              };
-              signature.args.pop();
-              signature.abstract_ancestor = Some(clone_signature.clone());
-            });
-          }
-          // Any other closure denotation in argument position passes the
-          // closure *onward*: the callee gets a receiver clone with that
-          // parameter removed (its state lives in the family's lifted
-          // globals), and its body rewritten against the same family.
-          let denoted: Vec<(usize, Arc<str>, ClosureFamily)> = args
-            .iter()
-            .enumerate()
-            .filter_map(|(i, arg)| {
-              closure_family_of(arg).map(|(name, family)| (i, name, family))
-            })
-            .collect();
-          for (i, display_name, family) in denoted.into_iter().rev() {
-            let ancestor = if let TypeState::Known(Type::Function(signature)) =
-              &f_exp.data.kind
-            {
-              signature.abstract_ancestor.clone()
-            } else {
-              None
-            };
-            let receivable = ancestor.as_ref().is_some_and(|ancestor| {
-              matches!(
-                ancestor.read().unwrap().implementation,
-                FunctionImplementationKind::Composite(_)
-              )
-            });
-            if !receivable {
-              errors.log(CompileError::new(
-                CapturedClosureUsedAsValue(display_name.to_string()),
-                e.source_trace.clone(),
-              ));
-              continue;
-            }
-            let (clone_name, clone_signature) = self.cloneify_closure_receiver(
-              ancestor.unwrap(),
-              i,
-              &family,
-              target,
-              state,
-              errors,
-            );
-            args.remove(i);
-            let ExpKind::Name(callee_name) = &mut f_exp.kind else {
-              panic!(
-                "dispatched closure passes a captured closure to a \
-                 non-Name callee"
-              )
-            };
-            *callee_name = clone_name;
-            f_exp.data.as_known_mut(|t| {
-              let Type::Function(signature) = t else {
-                panic!(
-                  "captured closure receiver call had a non-function \
-                   callee type"
-                )
-              };
-              signature.args.remove(i);
-              signature.abstract_ancestor = Some(clone_signature.clone());
-            });
-          }
-        }
-        if let Some(field_name) = scope_field_name(e) {
-          match rewrites.get(&field_name) {
-            Some(CaptureRewrite::Global(global_name)) => {
-              e.kind = ExpKind::Name(global_name.clone());
-              e.data.is_globally_bound = true;
-              e.data.ownership = Ownership::Owned;
-            }
-            Some(CaptureRewrite::CalleeClone { .. }) => {
-              errors.log(CompileError::new(
-                CapturedClosureUsedAsValue(field_name.to_string()),
-                e.source_trace.clone(),
-              ));
-              return Ok(false);
-            }
-            None => panic!(
-              "dispatched closure scope field `{field_name}` has no lifted \
-               rewrite"
-            ),
-          }
-        } else if let ExpKind::Name(name) = &e.kind
-          && families.contains_key(name)
-        {
-          let display_name =
-            placeholder_display_names.get(name).unwrap_or(name);
-          errors.log(CompileError::new(
-            CapturedClosureUsedAsValue(display_name.to_string()),
-            e.source_trace.clone(),
-          ));
-          return Ok(false);
-        } else if matches!(&e.kind, ExpKind::Name(name)
-          if scope_name.is_some_and(|s| s == name))
-        {
-          panic!(
-            "dispatched closure body uses its whole captured scope as a \
-             value; captures are lifted to per-field globals, which only \
-             supports field accesses"
-          );
-        } else if matches!(
-          &e.kind,
-          ExpKind::Access(_, _) | ExpKind::Application(_, _)
-        ) && scope_rooted(e)
-        {
-          // Mirror what inference produces for expressions rooted at an
-          // ordinary global: accessor/lookup nodes over the lifted
-          // global are globally bound (the mutable-ref effect derivation
-          // reads the *outer* node's flag, and a stale local flag would
-          // turn the write into `ModifiesLocalVar` — invisible to
-          // shared-dirty marking, so the audio thread's element writes
-          // would never publish).
-          e.data.is_globally_bound = true;
-          if matches!(
-            e.data.ownership,
-            Ownership::Reference | Ownership::MutableReference
-          ) {
-            e.data.ownership = Ownership::Owned;
-          }
-        }
-        Ok::<bool, Never>(true)
-      })
-      .unwrap();
+    exp: &TypedExp,
+  ) -> Option<Arc<RwLock<AbstractFunctionSignature>>> {
+    match exp.data.kind.try_unwrap_known()? {
+      Type::Function(signature) => signature
+        .abstract_ancestor
+        .filter(|ancestor| ancestor.read().unwrap().captured_scope.is_some()),
+      Type::Struct(s) => self
+        .abstract_functions_iter()
+        .find(|f| {
+          f.read()
+            .unwrap()
+            .captured_scope
+            .as_ref()
+            .is_some_and(|scope| scope.name.0 == s.name)
+        })
+        .cloned(),
+      _ => None,
+    }
   }
   /// Whether a struct field of this type makes the struct's WGSL
   /// declaration impossible: runtime-sized arrays and strings have no
@@ -2711,558 +2196,6 @@ impl Program {
       }),
       _ => false,
     }
-  }
-  /// Lifts every capture of a closure-entry scope struct (see
-  /// `ClosureLiftTarget` for what each target turns captures into): data
-  /// captures each get their own implicit global, and captured *closures*
-  /// recurse — their own captures are lifted the same way and the closure
-  /// gets a memoized clone family via `cloneify_captured_closure_family`
-  /// (the original plus its higher-order specializations). Returns the
-  /// per-field rewrite map `rewrite_dispatched_scope_body` applies to the
-  /// body.
-  fn lift_closure_entry_captures(
-    &self,
-    scope_struct: &AbstractStruct,
-    source_trace: &SourceTrace,
-    target: ClosureLiftTarget,
-    entry_scope_name: &str,
-    capture_path: &str,
-    state: &mut ClosureLiftState,
-    errors: &mut ErrorLog,
-  ) -> (HashMap<Arc<str>, CaptureRewrite>, Arc<LiftedCaptures>) {
-    let mut rewrites = HashMap::new();
-    let mut lifted_fields = Vec::with_capacity(scope_struct.fields.len());
-    for field in scope_struct.fields.iter() {
-      let AbstractType::Type(field_type) = &field.field_type else {
-        panic!("captured scope field with non-concrete type")
-      };
-      if let Some(field_ancestor) = self.captured_closure_ancestor(field_type) {
-        let scope = field_ancestor
-          .read()
-          .unwrap()
-          .captured_scope
-          .clone()
-          .expect("captured closure without a scope struct");
-        let (family, nested_captures) = self.cloneify_captured_closure_family(
-          field_ancestor,
-          target,
-          entry_scope_name,
-          &format!("{capture_path}{}_", field.name),
-          state,
-          errors,
-        );
-        lifted_fields.push(LiftedCapture::Closure {
-          scope,
-          captures: nested_captures,
-        });
-        rewrites
-          .insert(field.name.clone(), CaptureRewrite::CalleeClone { family });
-      } else {
-        target.validate_capture(field_type, source_trace, errors);
-        // The entry-scope/path concatenation is only a *readable base* —
-        // `gensym` is what guarantees uniqueness (concatenated paths
-        // aren't injective), and the resulting name is recorded in the
-        // `LiftedCaptures` tree rather than ever being re-derived.
-        let global_name: Arc<str> =
-          self
-            .names
-            .write()
-            .unwrap()
-            .gensym(&target.capture_global_name(
-              entry_scope_name,
-              capture_path,
-              &field.name,
-            ));
-        state.new_vars.push(TopLevelVar {
-          name: global_name.clone(),
-          kind: TopLevelVariableKind::Var {
-            address_space: target.capture_address_space(),
-            // Binding numbers are assigned centrally at the end of
-            // validation. (Audio capture globals never become
-            // runtime GPU bindings — no GPU entry references them —
-            // but carry elided numbers like any storage var.)
-            group_and_binding: Some(BindingSpec::Elided),
-          },
-          var_type: field_type.clone(),
-          value: None,
-          source_trace: source_trace.clone(),
-          external: false,
-          directly_user_written: false,
-        });
-        lifted_fields.push(LiftedCapture::Global(global_name.clone()));
-        rewrites
-          .insert(field.name.clone(), CaptureRewrite::Global(global_name));
-      }
-    }
-    (
-      rewrites,
-      Arc::new(LiftedCaptures {
-        fields: lifted_fields,
-      }),
-    )
-  }
-  /// The closure a captured scope field holds, if it holds one: a field of
-  /// function type, or a field typed as a closure's scope struct (what a
-  /// closure passed through a higher-order parameter is captured as once
-  /// that parameter is inlined), which is that closure.
-  fn captured_closure_ancestor(
-    &self,
-    field_type: &Type,
-  ) -> Option<Arc<RwLock<AbstractFunctionSignature>>> {
-    match field_type {
-      Type::Function(signature) => {
-        let Some(ancestor) = &signature.abstract_ancestor else {
-          panic!("captured closure without an abstract ancestor")
-        };
-        if ancestor.read().unwrap().captured_scope.is_none() {
-          panic!(
-            "captured scope-less closure; these are unit-like and \
-             shouldn't be captured"
-          )
-        }
-        Some(ancestor.clone())
-      }
-      Type::Struct(s) => self
-        .abstract_functions_iter()
-        .find(|f| {
-          f.read()
-            .unwrap()
-            .captured_scope
-            .as_ref()
-            .is_some_and(|scope| scope.name.0 == s.name)
-        })
-        .cloned(),
-      _ => None,
-    }
-  }
-  /// Creates (and memoizes) the scope-less clones of a closure captured —
-  /// directly or transitively — by a closure entry. The whole *family* is
-  /// cloned — the original definition and every higher-order-argument
-  /// specialization of it (any function whose trailing parameter is the
-  /// closure's scope struct), since specializations are what call sites
-  /// actually name after inlining — except members that still have raw
-  /// function-typed parameters, which nothing can call post-inlining. All
-  /// clones share the one set of per-capture globals lifted here
-  /// (recursing into further captured closures); each clone's trailing
-  /// scope parameter is dropped and its body reads those globals instead
-  /// of the scope. The originals are left untouched, so direct CPU calls
-  /// of the closure keep working. Naming and capture semantics per
-  /// `ClosureLiftTarget`.
-  fn cloneify_captured_closure_family(
-    &self,
-    ancestor: Arc<RwLock<AbstractFunctionSignature>>,
-    target: ClosureLiftTarget,
-    entry_scope_name: &str,
-    capture_path: &str,
-    state: &mut ClosureLiftState,
-    errors: &mut ErrorLog,
-  ) -> (ClosureFamily, Arc<LiftedCaptures>) {
-    let (ancestor_name, scope_struct) = {
-      let ancestor = ancestor.read().unwrap();
-      let Some(scope_struct) = ancestor.captured_scope.clone() else {
-        panic!(
-          "cloneify_captured_closure_family called on a scope-less closure"
-        )
-      };
-      (ancestor.name.clone(), scope_struct)
-    };
-    let scope_struct_name = scope_struct.name.0.clone();
-    let memo_key = (
-      scope_struct_name.clone(),
-      format!("{entry_scope_name}/{capture_path}"),
-    );
-    if let Some(existing) = state.clones.get(&memo_key) {
-      return existing.clone();
-    }
-    let (rewrites, lifted_captures) = self.lift_closure_entry_captures(
-      &scope_struct,
-      &scope_struct.source_trace,
-      target,
-      entry_scope_name,
-      capture_path,
-      state,
-      errors,
-    );
-    let mut clones: HashMap<Arc<str>, CapturedClosureClone> = HashMap::new();
-    for member in self.closure_family_members(&scope_struct_name) {
-      let member_name = member.read().unwrap().name.clone();
-      if clones.contains_key(&member_name) {
-        continue;
-      }
-      let clone = self.cloneify_captured_closure_member(
-        member,
-        &scope_struct_name,
-        &rewrites,
-        target,
-        capture_path,
-        state,
-        errors,
-      );
-      clones.insert(member_name, clone);
-    }
-    // The entry closure itself is cloned even when it retains
-    // function-typed parameters (audio entries are invoked by name, not
-    // through a rewritten call site).
-    if !clones.contains_key(&ancestor_name) {
-      let clone = self.cloneify_captured_closure_member(
-        ancestor,
-        &scope_struct_name,
-        &rewrites,
-        target,
-        capture_path,
-        state,
-        errors,
-      );
-      clones.insert(ancestor_name, clone);
-    }
-    let result = (
-      ClosureFamily {
-        key: memo_key.clone(),
-        clones: Arc::new(clones),
-      },
-      lifted_captures,
-    );
-    state.clones.insert(memo_key, result.clone());
-    result
-  }
-  /// The members of the closure family whose scope struct is
-  /// `scope_struct_name`: the closure's definition and its higher-order
-  /// specializations, i.e. every composite function whose trailing
-  /// parameter is that scope struct.
-  fn closure_family_members(
-    &self,
-    scope_struct_name: &Arc<str>,
-  ) -> Vec<Arc<RwLock<AbstractFunctionSignature>>> {
-    let mut members = vec![];
-    for f in self.abstract_functions_iter() {
-      let member = f.read().unwrap();
-      if let Some((AbstractType::AbstractStruct(s), _)) =
-        member.arg_types.last()
-        && s.name.0 == *scope_struct_name
-        && matches!(
-          member.implementation,
-          FunctionImplementationKind::Composite(_)
-        )
-        // A function-typed arg with no inlined ancestor means this member
-        // never went through higher-order-argument inlining, so nothing
-        // can call it anymore (specializations keep the — unit-like,
-        // ancestor-carrying — arg entry in their signatures).
-        && !member.arg_types[..member.arg_types.len() - 1].iter().any(
-          |(t, _)| {
-            matches!(
-              t,
-              AbstractType::Type(Type::Function(f))
-                if f.abstract_ancestor.is_none()
-            )
-          },
-        )
-      {
-        drop(member);
-        members.push(f.clone());
-      }
-    }
-    members
-  }
-  /// The clone family of a closure constructed *inside* a lifted body
-  /// (`(let [h (fn [x] (g x))] ...)` in a dispatched or audio closure
-  /// that captures `g`) whose every capture is a lifted closure:
-  /// `field_families[i]` is the family of the closure its `i`th scope
-  /// field captures. Such a closure needs no state of its own, so like a
-  /// captured closure it becomes scope-less clones of its family members
-  /// whose bodies call the captured closures' clones; the construction
-  /// then denotes this family instead of building a value. Memoized per
-  /// (closure, captured families).
-  fn cloneify_nested_closure_family(
-    &self,
-    closure: Arc<RwLock<AbstractFunctionSignature>>,
-    field_families: Vec<ClosureFamily>,
-    target: ClosureLiftTarget,
-    state: &mut ClosureLiftState,
-    errors: &mut ErrorLog,
-  ) -> ClosureFamily {
-    let (closure_name, scope_struct) = {
-      let closure = closure.read().unwrap();
-      let Some(scope_struct) = closure.captured_scope.clone() else {
-        panic!("cloneify_nested_closure_family called on a scope-less closure")
-      };
-      (closure.name.clone(), scope_struct)
-    };
-    let scope_struct_name = scope_struct.name.0.clone();
-    let memo_key = (
-      scope_struct_name.clone(),
-      format!(
-        "nested:{}",
-        field_families
-          .iter()
-          .map(|family| format!("{}/{}", family.key.0, family.key.1))
-          .collect::<Vec<_>>()
-          .join(";")
-      ),
-    );
-    if let Some(existing) = state.nested_clones.get(&memo_key) {
-      return existing.clone();
-    }
-    let rewrites: HashMap<Arc<str>, CaptureRewrite> = scope_struct
-      .fields
-      .iter()
-      .zip(field_families)
-      .map(|(field, family)| {
-        (field.name.clone(), CaptureRewrite::CalleeClone { family })
-      })
-      .collect();
-    let mut clones: HashMap<Arc<str>, CapturedClosureClone> = HashMap::new();
-    let mut members = self.closure_family_members(&scope_struct_name);
-    members.push(closure);
-    for member in members {
-      let member_name = member.read().unwrap().name.clone();
-      if clones.contains_key(&member_name) {
-        continue;
-      }
-      let clone = self.cloneify_captured_closure_member(
-        member,
-        &scope_struct_name,
-        &rewrites,
-        target,
-        "nested_",
-        state,
-        errors,
-      );
-      clones.insert(member_name, clone);
-    }
-    debug_assert!(clones.contains_key(&closure_name));
-    let family = ClosureFamily {
-      key: memo_key.clone(),
-      clones: Arc::new(clones),
-    };
-    state.nested_clones.insert(memo_key, family.clone());
-    family
-  }
-  /// Clones one member of a captured closure's family: trailing scope
-  /// parameter dropped, body rewritten via `rewrites` to read the shared
-  /// lifted capture globals. See `cloneify_captured_closure_family`.
-  fn cloneify_captured_closure_member(
-    &self,
-    ancestor: Arc<RwLock<AbstractFunctionSignature>>,
-    scope_struct_name: &Arc<str>,
-    rewrites: &HashMap<Arc<str>, CaptureRewrite>,
-    target: ClosureLiftTarget,
-    capture_path: &str,
-    state: &mut ClosureLiftState,
-    errors: &mut ErrorLog,
-  ) -> CapturedClosureClone {
-    let (original_name, original_implementation) = {
-      let ancestor = ancestor.read().unwrap();
-      let FunctionImplementationKind::Composite(implementation) =
-        ancestor.implementation.clone()
-      else {
-        panic!("captured closure wasn't composite")
-      };
-      (ancestor.name.clone(), implementation)
-    };
-    let mut implementation =
-      original_implementation.read().unwrap().derived_from();
-    implementation.expression.data.as_known_mut(|t| {
-      let Type::Function(signature) = t else {
-        panic!("captured closure had a non-function type")
-      };
-      if let Some((v, _)) = signature.args.last()
-        && let Type::Struct(s) = v.var_type.unwrap_known()
-        && s.name == *scope_struct_name
-      {
-        signature.args.pop();
-      }
-    });
-    let scope_param_name = implementation.arg_names.pop().unwrap().0;
-    implementation.arg_annotations.pop();
-    let ExpKind::Function(fn_arg_names, body) =
-      &mut implementation.expression.kind
-    else {
-      panic!("captured closure implementation wasn't a Function")
-    };
-    fn_arg_names.pop();
-    self.rewrite_dispatched_scope_body(
-      body,
-      Some(&scope_param_name),
-      rewrites,
-      &HashMap::new(),
-      target,
-      state,
-      errors,
-    );
-    let clone_name: Arc<str> = match target {
-      ClosureLiftTarget::GpuDispatch => self
-        .names
-        .write()
-        .unwrap()
-        .gensym(&format!("{original_name}_gpu"))
-        .into(),
-      ClosureLiftTarget::Audio => {
-        // The *entry* clone's name is deterministic — both runtimes
-        // derive it from the closure's ancestor at `start-audio` time.
-        // Nested clones are referenced only by the bodies rewritten in
-        // this same pass, so they're gensym'd (with the capture path in
-        // the base for readability), which also keeps two entries'
-        // same-path clones distinct.
-        let clone_name: Arc<str> = if capture_path.is_empty() {
-          format!("{original_name}_audio").into()
-        } else {
-          self
-            .names
-            .write()
-            .unwrap()
-            .gensym(&format!(
-              "{original_name}_audio_{}",
-              capture_path.trim_end_matches('_')
-            ))
-            .into()
-        };
-        assert!(
-          !self.abstract_functions.contains_key(&clone_name),
-          "audio clone name `{clone_name}` collides with an existing function"
-        );
-        self.names.write().unwrap().track_user_name(&clone_name);
-        clone_name
-      }
-    };
-    let clone_signature = {
-      let original = ancestor.read().unwrap();
-      let mut arg_types = original.arg_types.clone();
-      if let Some((AbstractType::AbstractStruct(s), _)) = arg_types.last()
-        && s.name.0 == *scope_struct_name
-      {
-        arg_types.pop();
-      }
-      Arc::new(RwLock::new(AbstractFunctionSignature {
-        name: clone_name.clone(),
-        generic_args: vec![],
-        arg_types,
-        return_type: original.return_type.clone(),
-        implementation: FunctionImplementationKind::Composite(Arc::new(
-          RwLock::new(implementation),
-        )),
-        associative: false,
-        captured_scope: None,
-        entry_point: None,
-        specialized_from: None,
-      }))
-    };
-    state.new_functions.push(clone_signature.clone());
-    (clone_name, clone_signature)
-  }
-  /// Clones a function that *receives* a lifted captured closure as an
-  /// argument — a higher-order specialization the rewritten body passes
-  /// the closure to, e.g. `(apply-twice helper x)` where `helper` is a
-  /// capture. The closure-valued parameter is removed (its state lives in
-  /// the family's lifted globals) and the body's uses of that parameter —
-  /// forwarding it as the trailing scope arg of a family-member call, or
-  /// passing it onward to a further receiver — are rewritten against the
-  /// same family, so receiver chains of any depth compose. Memoized per
-  /// (callee, argument position, family).
-  fn cloneify_closure_receiver(
-    &self,
-    ancestor: Arc<RwLock<AbstractFunctionSignature>>,
-    arg_index: usize,
-    family: &ClosureFamily,
-    target: ClosureLiftTarget,
-    state: &mut ClosureLiftState,
-    errors: &mut ErrorLog,
-  ) -> CapturedClosureClone {
-    let (original_name, original_implementation) = {
-      let ancestor = ancestor.read().unwrap();
-      let FunctionImplementationKind::Composite(implementation) =
-        ancestor.implementation.clone()
-      else {
-        panic!("closure receiver wasn't composite")
-      };
-      (ancestor.name.clone(), implementation)
-    };
-    let memo_key = (original_name.clone(), arg_index, family.key.clone());
-    if let Some(existing) = state.receiver_clones.get(&memo_key) {
-      return existing.clone();
-    }
-    let mut implementation =
-      original_implementation.read().unwrap().derived_from();
-    implementation.expression.data.as_known_mut(|t| {
-      let Type::Function(signature) = t else {
-        panic!("closure receiver had a non-function type")
-      };
-      signature.args.remove(arg_index);
-    });
-    let param_name = implementation.arg_names.remove(arg_index).0;
-    implementation.arg_annotations.remove(arg_index);
-    let ExpKind::Function(fn_arg_names, body) =
-      &mut implementation.expression.kind
-    else {
-      panic!("closure receiver implementation wasn't a Function")
-    };
-    fn_arg_names.remove(arg_index);
-    let closure_params = HashMap::from([(param_name, family.clone())]);
-    self.rewrite_dispatched_scope_body(
-      body,
-      None,
-      &HashMap::new(),
-      &closure_params,
-      target,
-      state,
-      errors,
-    );
-    let clone_name: Arc<str> = self
-      .names
-      .write()
-      .unwrap()
-      .gensym(&format!(
-        "{original_name}_{}",
-        match target {
-          ClosureLiftTarget::GpuDispatch => "gpu",
-          ClosureLiftTarget::Audio => "audio",
-        }
-      ))
-      .into();
-    let clone_signature = {
-      let original = ancestor.read().unwrap();
-      let mut arg_types = original.arg_types.clone();
-      // Map the call-site argument position onto `arg_types`, which can
-      // retain phantom entries for unitlike args the value-level lists
-      // (and call sites) no longer carry.
-      let remove_at = {
-        let mut names = self.names.write().unwrap();
-        let mut value_position = 0;
-        arg_types
-          .iter()
-          .position(|(t, _)| {
-            if t.is_unitlike(&mut names) {
-              return false;
-            }
-            let found = value_position == arg_index;
-            value_position += 1;
-            found
-          })
-          .expect("closure receiver's arg position not found in arg_types")
-      };
-      arg_types.remove(remove_at);
-      Arc::new(RwLock::new(AbstractFunctionSignature {
-        name: clone_name.clone(),
-        generic_args: vec![],
-        arg_types,
-        return_type: original.return_type.clone(),
-        implementation: FunctionImplementationKind::Composite(Arc::new(
-          RwLock::new(implementation),
-        )),
-        associative: false,
-        // Receivers reach this point with their own calling convention
-        // already scope-free (a receiver that is itself a captured
-        // closure is receiver-cloned from its *member clone*, whose
-        // trailing scope was dropped by the family lift).
-        captured_scope: None,
-        entry_point: None,
-        specialized_from: None,
-      }))
-    };
-    state.new_functions.push(clone_signature.clone());
-    state
-      .receiver_clones
-      .insert(memo_key, (clone_name.clone(), clone_signature.clone()));
-    (clone_name, clone_signature)
   }
   /// The unified context-exclusivity pass: one analysis of *which
   /// execution contexts each function can run in* (CPU, vertex, fragment,
@@ -3489,18 +2422,18 @@ impl Program {
                 ));
               }
               // Storage/uniform-space lvalues passed as references: a
-              // whole-global ref — a bare name — is legal in every
-              // context (the reference monomorphizer inlines a direct
-              // usage of the specific global in place of the parameter,
-              // so no pointer ever exists), but an accessor-chain ref
-              // into one of these spaces (an element or field ref)
-              // still becomes a real pointer parameter, which base WGSL
-              // only permits in the function/private address spaces —
-              // so those call sites are restricted to cpu/audio
-              // contexts (the VM binds regions/slots directly; the
-              // tree-walker copies + writes back). (Workgroup/handle
-              // refs are rejected everywhere, in the ownership walk —
-              // they have no CPU storage at all.)
+              // ref to a whole global or a static field path into one is
+              // legal in every context (the reference monomorphizer
+              // inlines a direct usage of that place in place of the
+              // parameter, so no pointer ever exists), and so is a
+              // read-only element ref (a runtime index), which passes the
+              // element's value. A mutable element ref becomes a real
+              // pointer parameter, which base WGSL only permits in the
+              // function/private address spaces — so those call sites
+              // are restricted to cpu/audio contexts (the VM binds
+              // regions/slots directly; the tree-walker copies + writes
+              // back). (Workgroup/handle refs are rejected everywhere, in
+              // the ownership walk — they have no CPU storage at all.)
               if let TypeState::Known(Type::Function(signature)) =
                 &applied_f.data.kind
                 && let Some(ancestor) = &signature.abstract_ancestor
@@ -3512,11 +2445,9 @@ impl Program {
                 let ancestor = ancestor.read().unwrap();
                 for (i, (_, ownership)) in ancestor.arg_types.iter().enumerate()
                 {
-                  if matches!(
-                    ownership,
-                    Ownership::Reference | Ownership::MutableReference
-                  ) && let Some(arg) = args.get(i)
-                    && !matches!(arg.kind, ExpKind::Name(_))
+                  if *ownership == Ownership::MutableReference
+                    && let Some(arg) = args.get(i)
+                    && arg.static_field_path().is_none()
                     && let Some(root) = arg.name_or_inner_accessed_name()
                     && let Some(TopLevelVar {
                       kind: TopLevelVariableKind::Var { address_space, .. },
@@ -3844,24 +2775,19 @@ impl Program {
     self.top_level_vars.extend(new_vars);
   }
   /// Rewrites `start-audio` calls whose function is a *scoped closure* so
-  /// they can run on the audio thread: the closure chain is cloned into
-  /// scope-less audio versions (`cloneify_captured_closure_family`) whose
-  /// captures live in plain thread-shared globals, and the clone becomes
-  /// the `@audio` entry point in place of the original (which the
-  /// reference-address-space rebuild would drop from the registry — it
-  /// has a non-owned trailing scope param). At runtime, `start-audio`
-  /// seeds the lifted globals from the closure value's scope and starts
-  /// the audio thread on the clone; the existing bootstrap force-publish
-  /// ships the seeds to the audio replica's first adopt.
+  /// they can run on the audio thread: the closure gets a scope-less clone
+  /// (`{original}_audio`) whose captures live in plain thread-shared
+  /// globals (`lift_closure_captures`), and the clone becomes the `@audio`
+  /// entry point in place of the original (which the
+  /// reference-address-space rebuild would drop from the registry — it has
+  /// a non-owned trailing scope param). At runtime, `start-audio` seeds the
+  /// lifted globals from the closure value's scope and starts the audio
+  /// thread on the clone; the bootstrap force-publish ships the seeds to
+  /// the audio replica's first adopt.
   pub fn extract_audio_closure_scopes(&mut self, errors: &mut ErrorLog) {
-    let mut state = ClosureLiftState {
-      new_vars: vec![],
-      clones: HashMap::new(),
-      receiver_clones: HashMap::new(),
-      nested_clones: HashMap::new(),
-      new_functions: vec![],
-      lifted_captures: vec![],
-    };
+    let mut lift = CaptureLift::default();
+    let mut lifted: HashMap<Arc<str>, Arc<LiftedCaptures>> = HashMap::new();
+    let mut new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>> = vec![];
     for f in self.abstract_functions_iter() {
       let FunctionImplementationKind::Composite(implementation) =
         f.read().unwrap().implementation.clone()
@@ -3893,62 +2819,32 @@ impl Program {
             else {
               return Ok(true);
             };
-            // The entry-marking pass marked the original closure; move
-            // the marking to the audio clone, which is what actually
-            // runs on the audio thread (and survives the
-            // reference-address-space rebuild). Both steps are idempotent
-            // (`cloneify_captured_closure_family` memoizes), so repeat
-            // call
-            // sites of the same closure need no guard.
             let original_name = ancestor.read().unwrap().name.clone();
-            {
-              let mut ancestor = ancestor.write().unwrap();
-              ancestor.entry_point = None;
-              if let FunctionImplementationKind::Composite(implementation) =
-                &ancestor.implementation
-              {
-                implementation.write().unwrap().entry_point = None;
+            let captures = match lifted.get(&original_name) {
+              Some(captures) => captures.clone(),
+              None => {
+                let (clone, captures) = self.audio_entry_clone(
+                  &ancestor,
+                  &scope_struct,
+                  &source_trace,
+                  &mut lift,
+                  errors,
+                );
+                new_functions.push(clone);
+                let captures = Arc::new(captures);
+                lifted.insert(original_name.clone(), captures.clone());
+                captures
               }
-            }
-            let (family, lifted_captures) = self
-              .cloneify_captured_closure_family(
-                ancestor.clone(),
-                ClosureLiftTarget::Audio,
-                &scope_struct.name.0.clone(),
-                "",
-                &mut state,
-                errors,
-              );
-            let (_, clone_signature) = family
-              .clones
-              .get(&original_name)
-              .expect(
-                "audio entry closure missing from its own lifted clone family",
-              )
-              .clone();
-            state
-              .lifted_captures
-              .push((original_name.clone(), lifted_captures.clone()));
-            {
-              let mut clone = clone_signature.write().unwrap();
-              clone.entry_point = Some(EntryPoint::Audio);
-              if let FunctionImplementationKind::Composite(implementation) =
-                &clone.implementation
-              {
-                implementation.write().unwrap().entry_point =
-                  Some(EntryPoint::Audio);
-              }
-            }
+            };
             // Record the seed writes on this call site's callee: at
             // runtime the builtin copies the closure value's captured
-            // fields into the lifted globals on the call that starts the
-            // audio thread, and this private ancestor clone makes those
-            // writes visible to the sharing-audience analysis as
-            // `SeedsGlobalVar` effects — the standard analysis then sees
-            // the main thread touching the lifted globals, with no
-            // force-membership flag anywhere.
+            // fields into the lifted globals on every call, and this
+            // private ancestor clone makes those writes visible to the
+            // sharing-audience analysis as `SeedsGlobalVar` effects — the
+            // standard analysis then sees the main thread touching the
+            // lifted globals, with no force-membership flag anywhere.
             let mut seeded_names: Vec<Arc<str>> = vec![];
-            lifted_captures.global_names(&mut seeded_names);
+            captures.global_names(&mut seeded_names);
             applied_f.data.as_known_mut(|t| {
               if let Type::Function(callee_signature) = t
                 && let Some(builtin_ancestor) =
@@ -3972,17 +2868,91 @@ impl Program {
         })
         .unwrap();
     }
-    let ClosureLiftState {
-      new_vars,
-      new_functions,
-      lifted_captures,
-      ..
-    } = state;
-    self.top_level_vars.extend(new_vars);
+    lift.install(self);
     for f in new_functions {
       self.add_abstract_function(f);
     }
-    self.lifted_audio_captures.extend(lifted_captures);
+    self.lifted_audio_captures.extend(lifted);
+  }
+  /// The audio-thread version of a `start-audio`d closure: a clone without
+  /// the trailing scope parameter, its captures lifted to globals, marked
+  /// as the `@audio` entry in place of the original. Its name is
+  /// `{original}_audio`, which both runtimes derive at `start-audio` time.
+  fn audio_entry_clone(
+    &self,
+    ancestor: &Arc<RwLock<AbstractFunctionSignature>>,
+    scope_struct: &AbstractStruct,
+    source_trace: &SourceTrace,
+    lift: &mut CaptureLift,
+    errors: &mut ErrorLog,
+  ) -> (Arc<RwLock<AbstractFunctionSignature>>, LiftedCaptures) {
+    let (original_name, original_implementation) = {
+      let mut ancestor = ancestor.write().unwrap();
+      // The entry-marking pass marked the original closure; the clone is
+      // what actually runs on the audio thread.
+      ancestor.entry_point = None;
+      let FunctionImplementationKind::Composite(implementation) =
+        ancestor.implementation.clone()
+      else {
+        panic!("audio entry closure wasn't composite")
+      };
+      implementation.write().unwrap().entry_point = None;
+      (ancestor.name.clone(), implementation)
+    };
+    let mut implementation =
+      original_implementation.read().unwrap().derived_from();
+    let Type::Function(mut signature) =
+      implementation.expression.data.unwrap_known()
+    else {
+      panic!("audio entry closure had a non-function type")
+    };
+    signature.args.pop();
+    implementation.expression.data.kind =
+      TypeState::Known(Type::Function(signature));
+    let scope_param = implementation.arg_names.pop().unwrap().0;
+    implementation.arg_annotations.pop();
+    implementation.entry_point = Some(EntryPoint::Audio);
+    let ExpKind::Function(fn_arg_names, body) =
+      &mut implementation.expression.kind
+    else {
+      panic!("audio entry closure implementation wasn't a Function")
+    };
+    fn_arg_names.pop();
+    let captures = self.lift_closure_captures(
+      scope_struct,
+      &scope_param,
+      body,
+      ClosureLiftTarget::Audio,
+      source_trace,
+      lift,
+      errors,
+    );
+    let clone_name: Arc<str> = format!("{original_name}_audio").into();
+    assert!(
+      !self.abstract_functions.contains_key(&clone_name),
+      "audio clone name `{clone_name}` collides with an existing function"
+    );
+    self.names.write().unwrap().track_user_name(&clone_name);
+    let clone = {
+      let original = ancestor.read().unwrap();
+      let mut arg_types = original.arg_types.clone();
+      if let Some((AbstractType::AbstractStruct(s), _)) = arg_types.last()
+        && s.name.0 == scope_struct.name.0
+      {
+        arg_types.pop();
+      }
+      AbstractFunctionSignature {
+        name: clone_name,
+        arg_types,
+        return_type: original.return_type.clone(),
+        implementation: FunctionImplementationKind::Composite(Arc::new(
+          RwLock::new(implementation),
+        )),
+        entry_point: Some(EntryPoint::Audio),
+        ..Default::default()
+      }
+    };
+    (Arc::new(RwLock::new(clone)), captures)
   }
   /// Rewrites every window-info query (`window-time`, `mouse-coords`,
   /// `key-down?`, etc.) into a read of an implicit uniform binding, creating
@@ -4220,14 +3190,8 @@ impl Program {
   /// accept builtin-annotated arguments. This pass converts each dispatched
   /// closure's scope argument into an implicit binding: the scope struct
   pub fn extract_dispatched_closure_scopes(&mut self, errors: &mut ErrorLog) {
-    let mut state = ClosureLiftState {
-      new_vars: vec![],
-      clones: HashMap::new(),
-      receiver_clones: HashMap::new(),
-      nested_clones: HashMap::new(),
-      new_functions: vec![],
-      lifted_captures: vec![],
-    };
+    let mut lift = CaptureLift::default();
+    let mut lifted_captures: Vec<(Arc<str>, Arc<LiftedCaptures>)> = vec![];
     let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
     for f in self.abstract_functions_iter() {
       let FunctionImplementationKind::Composite(implementation) =
@@ -4320,53 +3284,23 @@ impl Program {
                 panic!("dispatched closure implementation wasn't a Function")
               };
               fn_arg_names.pop();
-              // Each captured var becomes its own binding rather than one
-              // scope-struct binding: a capture's type is then an ordinary
-              // global type, so runtime-sized captures work like any other
-              // storage-bound array — including several of them per
-              // closure, which a single struct binding could never
-              // express (WGSL allows at most one runtime-sized member,
-              // and only in last position). Captured *closures* recurse:
-              // their captures are lifted the same way and the body calls
-              // a GPU clone (see `cloneify_captured_closure_family`).
-              let (rewrites, lifted_captures) = self
-                .lift_closure_entry_captures(
-                  &scope_struct,
-                  &exp.source_trace,
-                  ClosureLiftTarget::GpuDispatch,
-                  &scope_struct.name.0.clone(),
-                  "",
-                  &mut state,
-                  errors,
-                );
-              state
-                .lifted_captures
-                .push((entry_name.clone(), lifted_captures));
-              self.rewrite_dispatched_scope_body(
+              let captures = self.lift_closure_captures(
+                &scope_struct,
+                &scope_arg_name,
                 body,
-                Some(&scope_arg_name),
-                &rewrites,
-                &HashMap::new(),
                 ClosureLiftTarget::GpuDispatch,
-                &mut state,
+                &exp.source_trace,
+                &mut lift,
                 errors,
               );
+              lifted_captures.push((entry_name.clone(), Arc::new(captures)));
             }
           }
           Ok::<bool, Never>(true)
         })
         .unwrap();
     }
-    let ClosureLiftState {
-      new_vars,
-      new_functions,
-      lifted_captures,
-      ..
-    } = state;
-    self.top_level_vars.extend(new_vars);
-    for f in new_functions {
-      self.add_abstract_function(f);
-    }
+    lift.install(self);
     self.lifted_gpu_captures.extend(lifted_captures);
   }
   pub fn monomorphize_reference_address_spaces(&mut self) {
@@ -4381,6 +3315,7 @@ impl Program {
       let mut monomorphized_ctx = Program::default();
       monomorphized_ctx.names = RwLock::new(self.names.read().unwrap().clone());
       monomorphized_ctx.typedefs = self.typedefs.clone();
+      let mut variants = ReferenceVariants::new();
       let mut changed = false;
       for f in self.abstract_functions_iter() {
         let borrowed_f = f.read().unwrap();
@@ -4398,6 +3333,8 @@ impl Program {
                 .monomorphize_reference_address_spaces(
                   &self,
                   &mut monomorphized_ctx,
+                  &mut variants,
+                  &mut walked,
                 );
             }
             let mut new_f = (**f).read().unwrap().clone();
@@ -4415,6 +3352,7 @@ impl Program {
         monomorphized_ctx.window_info_bindings = old_ctx.window_info_bindings;
         monomorphized_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
         monomorphized_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
+        monomorphized_ctx.split_globals = old_ctx.split_globals;
         monomorphized_ctx
       });
       if !changed {
@@ -5822,6 +4760,7 @@ impl Program {
       inlined_ctx.window_info_bindings = old_ctx.window_info_bindings;
       inlined_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
       inlined_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
+      inlined_ctx.split_globals = old_ctx.split_globals;
       inlined_ctx
     });
     changed
@@ -8256,6 +7195,7 @@ impl Program {
     }
     self.remove_unitlike_values();
     self.extract_non_bound_mutable_references();
+    self.refine_closure_reference_mutability();
     // Rewrites window-info queries into binding reads before effect
     // validation, so GPU entries no longer contain the queries (or the
     // String key literals they take).

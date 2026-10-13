@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use std::sync::{Arc, RwLock, Weak};
 
 use take_mut::take;
 
 use crate::compiler::entry::BuiltinIOAttribute;
-use crate::compiler::exp_builder::ExpBuilder;
+use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::expression::compile_typed_name;
 use crate::compiler::types::AbstractArraySize;
 use crate::vm::compile::{
@@ -126,6 +126,73 @@ impl PartialEq for SpecializationOrigin {
 }
 
 impl TopLevelFunction {
+  /// Makes owned parameters the body passes by reference addressable, by
+  /// shadowing each with a `@var` local copy — function parameters aren't
+  /// addressable in WGSL. The counterpart of deexpressionification's
+  /// parameter rebinding, for parameters that become owned after it (a
+  /// stateful function value read out of an array parameter, a scope
+  /// parameter whose variant takes it by value).
+  pub fn make_referenced_params_addressable(
+    &mut self,
+    names: &RwLock<NameContext>,
+  ) {
+    let Some(Type::Function(sig)) =
+      self.expression.data.kind.try_unwrap_known()
+    else {
+      return;
+    };
+    let ExpKind::Function(arg_names, body) = &mut self.expression.kind else {
+      return;
+    };
+    let owned_params: HashMap<Arc<str>, usize> = arg_names
+      .iter()
+      .enumerate()
+      .filter(|(i, _)| {
+        sig.args.get(*i).is_some_and(|(a, _)| {
+          a.var_type.ownership == Ownership::Owned
+            && a.kind != VariableKind::Var
+        })
+      })
+      .map(|(i, (n, _))| (n.clone(), i))
+      .collect();
+    let mut referenced: BTreeSet<usize> = BTreeSet::new();
+    let _ = body.walk(&mut |e| {
+      if let ExpKind::Application(f, args) = &e.kind
+        && let Some(Type::Function(callee)) = f.data.kind.try_unwrap_known()
+      {
+        for (a, (param, _)) in args.iter().zip(callee.args.iter()) {
+          if param.var_type.ownership != Ownership::Owned
+            && let Some(root) = a.name_or_inner_accessed_name()
+            && let Some(i) = owned_params.get(root)
+          {
+            referenced.insert(*i);
+          }
+        }
+      }
+      Ok::<bool, Never>(true)
+    });
+    if referenced.is_empty() {
+      return;
+    }
+    let mut bindings = vec![];
+    for i in referenced {
+      let (name, source) = arg_names[i].clone();
+      let incoming = names.write().unwrap().gensym(&format!("{name}_in"));
+      arg_names[i].0 = incoming.clone();
+      let t = sig.args[i].0.var_type.unwrap_known();
+      bindings.push((
+        name,
+        source.clone(),
+        VariableKind::Var,
+        ExpBuilder::at(&source).name(&incoming, &t),
+      ));
+    }
+    take(body.as_mut(), |body| let_around(bindings, body));
+    let ExpKind::Function(expression_names, _) = &self.expression.kind else {
+      unreachable!()
+    };
+    self.arg_names = expression_names.clone();
+  }
   pub fn derived_from(&self) -> Self {
     let mut derived = self.clone();
     derived.directly_user_written = false;

@@ -779,9 +779,9 @@ error_test!(
   )
 );
 error_test!(
-  user_reference_failure_uniform,
+  user_reference_failure_storage_element_mutable,
   CompileErrorKind::PassedReferenceFromInvalidAddressSpace(
-    VariableAddressSpace::Uniform
+    VariableAddressSpace::StorageReadWrite
   ),
 );
 error_test!(
@@ -1059,8 +1059,12 @@ error_test!(
   CompileErrorKind::CopiedStatefulClosure("osc".into())
 );
 error_test!(
-  nested_closure_mixed_capture_failure,
-  CompileErrorKind::CapturedClosureUsedAsValue("g".into())
+  dispatched_captured_closure_bool_failure,
+  CompileErrorKind::UnshareableBindingType("bool".into())
+);
+error_test!(
+  audio_handoff_then_main_use_failure,
+  CompileErrorKind::CopiedStatefulClosure("osc".into())
 );
 error_test!(
   fn_value_dynamic_start_audio_failure,

@@ -1,0 +1,13 @@
+main-publish: <audio-scope>_g
+main-publish: <audio-scope>_phase
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_g
+audio-adopt: <audio-scope>_phase
+samples: 0.078125 0.15625 0.234375 0.3125
+audio-publish: <audio-scope>_phase
+audio-batch 1 x4
+samples: 0.390625 0.46875 0.546875 0.625
+audio-publish: <audio-scope>_phase

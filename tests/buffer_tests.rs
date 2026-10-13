@@ -169,6 +169,7 @@ macro_rules! screen_test {
 screen_test!(screen_draw_order);
 screen_test!(screen_draw_flushes);
 screen_test!(screen_draw_frames);
+screen_test!(screen_fragment_captured_closures);
 
 macro_rules! buffer_test {
   ($name:ident) => {
@@ -187,12 +188,18 @@ buffer_test!(overloaded_entry_ascription);
 buffer_test!(dispatch_captured_closure_unused);
 buffer_test!(dispatch_closure_param_captures_closure);
 buffer_test!(nested_closure_captures_gpu);
+buffer_test!(nested_closure_mixed_captures_gpu);
+buffer_test!(dispatch_captured_closure_layouts);
+buffer_test!(dispatch_captured_closure_per_dispatch);
+buffer_test!(dispatch_shared_dynamic_array_paths);
+buffer_test!(dispatch_captured_closure_in_array);
 buffer_test!(dispatch_closure_param_captures_closure_deep);
 buffer_test!(dispatch_struct_typed_captures_every_depth);
 buffer_test!(argument_order_gpu);
 buffer_test!(short_circuit_gpu);
 buffer_test!(for_update_runs_on_continue_gpu);
 buffer_test!(storage_ref_gpu_roundtrip);
+buffer_test!(storage_element_ref_gpu);
 buffer_test!(gpu_read_outside_application);
 buffer_test!(gpu_read_outside_application_dynamic);
 buffer_test!(matrix_bindings);

@@ -3139,13 +3139,6 @@ struct Lowering<'p> {
   /// Whether each generated dispatcher takes its union by reference (some
   /// member mutates its scope), by dispatcher name.
   dispatcher_by_reference: HashMap<Arc<str>, bool>,
-  /// By-value twins of lowered closures that don't mutate their scope, by
-  /// the lowered closure's name (see `by_value_twin`).
-  by_value_twins: HashMap<Arc<str>, Arc<RwLock<AbstractFunctionSignature>>>,
-  /// The twins' signatures and bodies, added to the program with the
-  /// lowered clones.
-  by_value_twin_outputs:
-    Vec<(Arc<RwLock<AbstractFunctionSignature>>, TopLevelFunction)>,
   /// The instance each lowered function name was produced from.
   instance_by_name: HashMap<Arc<str>, usize>,
   /// Payload getters, by (enum name, variant name, whether the scrutinee is
@@ -4768,27 +4761,9 @@ impl<'p> Lowering<'p> {
             if member.payload.is_some() {
               value.data.kind =
                 TypeState::Known(params.last().cloned().unwrap());
-              // A value that's itself a reference (a boxed reference
-              // parameter) can only be passed on by reference.
-              let value_is_reference = value.data.ownership != Ownership::Owned
-                || self.is_reference_param(instance, &value);
-              if !value_is_reference
-                && self.may_be_gpu_storage(instance, &value)
-                && !self.instance_mutates_scope(member_instance)
-              {
-                // Read the stored closure by value, like a dispatcher whose
-                // members don't mutate: no reference into the value's
-                // place, which may be read-only GPU storage.
-                let twin = self.by_value_twin(member_instance);
-                call_args.push(value);
-                b.callee(&twin, &params, &member_ret)
-              } else {
-                call_args.push(value);
-                b.callee(&signature, &params, &member_ret)
-              }
-            } else {
-              b.callee(&signature, &params, &member_ret)
+              call_args.push(value);
             }
+            b.callee(&signature, &params, &member_ret)
           }
         };
         *exp = b.apply(callee, call_args, &ret);
@@ -5017,31 +4992,6 @@ impl<'p> Lowering<'p> {
   }
   /// Whether `exp` names one of the instance's by-reference boxed
   /// parameters.
-  /// Whether `place` may be GPU storage, which can't be referenced: a place
-  /// rooted at a global, or at a closure's captured scope (a dispatched
-  /// closure's captures become storage bindings). Locals and parameters are
-  /// function-space everywhere.
-  fn may_be_gpu_storage(&self, instance: usize, place: &TypedExp) -> bool {
-    let Some(root) = place.name_or_inner_accessed_name() else {
-      return false;
-    };
-    if self
-      .program()
-      .top_level_vars
-      .iter()
-      .any(|v| v.name == *root)
-    {
-      return true;
-    }
-    let (InstanceBody::Function(body), Some(function)) = (
-      &self.analysis.instances[instance].body,
-      &self.analysis.instances[instance].function,
-    ) else {
-      return false;
-    };
-    function.read().unwrap().captured_scope.is_some()
-      && body.arg_names.last().is_some_and(|(n, _)| n == root)
-  }
   fn is_reference_param(&mut self, instance: usize, exp: &TypedExp) -> bool {
     let ExpKind::Name(name) = &exp.kind else {
       return false;
@@ -5362,113 +5312,6 @@ impl<'p> Lowering<'p> {
     self.dispatcher_by_reference.insert(name, by_ref);
     signature
   }
-  /// A twin of a lowered closure instance that doesn't mutate its scope,
-  /// taking the scope by value instead of by reference: calls through it
-  /// read a stored closure without referencing its place.
-  fn by_value_twin(
-    &mut self,
-    instance: usize,
-  ) -> Arc<RwLock<AbstractFunctionSignature>> {
-    let (signature, params, ret) = self.lowered_function(instance);
-    let name = signature.read().unwrap().name.clone();
-    if let Some(twin) = self.by_value_twins.get(&name) {
-      return twin.clone();
-    }
-    let scope_index = params.len() - 1;
-    let twin_name = self.gensym(&format!("{name}_by_value"));
-    let twin = {
-      let mut twin = signature.read().unwrap().clone();
-      twin.name = twin_name;
-      twin.arg_types[scope_index].1 = Ownership::Owned;
-      Arc::new(RwLock::new(twin))
-    };
-    let mut body = self.lower_instance(instance).derived_from();
-    body.entry_point = None;
-    let reference_params = self.boxed_reference_params(instance);
-    mark_reference_param_uses(&mut body, &reference_params);
-    let scope_name = body.arg_names[scope_index].0.clone();
-    let _ = body.expression.walk_mut::<()>(&mut |e| {
-      if let ExpKind::Name(n) = &e.kind
-        && *n == scope_name
-      {
-        e.data.ownership = Ownership::Owned;
-      }
-      Ok(true)
-    });
-    body.expression.data.kind =
-      TypeState::Known(function_type(&twin, &params, &ret));
-    self.by_value_twin_outputs.push((twin.clone(), body));
-    self.by_value_twins.insert(name, twin.clone());
-    twin
-  }
-}
-
-/// Makes owned parameters that a lowered body passes by reference (a
-/// stateful function value read out of an array parameter, or a by-value
-/// twin's scope lent to a `@ref` helper) addressable, by shadowing each with
-/// a `@var` local copy — function parameters aren't addressable in WGSL.
-/// The lowering-time counterpart of deexpressionification's parameter
-/// rebinding, for parameters lowering creates.
-fn make_referenced_params_addressable(
-  implementation: &mut TopLevelFunction,
-  names: &RwLock<NameContext>,
-) {
-  let Some(Type::Function(sig)) = known_type(&implementation.expression.data)
-  else {
-    return;
-  };
-  let ExpKind::Function(arg_names, body) = &mut implementation.expression.kind
-  else {
-    return;
-  };
-  let owned_params: HashMap<Arc<str>, usize> = arg_names
-    .iter()
-    .enumerate()
-    .filter(|(i, _)| {
-      sig.args.get(*i).is_some_and(|(a, _)| {
-        a.var_type.ownership == Ownership::Owned && a.kind != VariableKind::Var
-      })
-    })
-    .map(|(i, (n, _))| (n.clone(), i))
-    .collect();
-  let mut referenced: BTreeSet<usize> = BTreeSet::new();
-  let _ = body.walk(&mut |e| {
-    if let ExpKind::Application(f, args) = &e.kind
-      && let Some(Type::Function(callee)) = known_type(&f.data)
-    {
-      for (a, (param, _)) in args.iter().zip(callee.args.iter()) {
-        if param.var_type.ownership != Ownership::Owned
-          && let Some(root) = a.name_or_inner_accessed_name()
-          && let Some(i) = owned_params.get(root)
-        {
-          referenced.insert(*i);
-        }
-      }
-    }
-    Ok::<bool, Never>(true)
-  });
-  if referenced.is_empty() {
-    return;
-  }
-  let mut bindings = vec![];
-  for i in referenced {
-    let (name, source) = arg_names[i].clone();
-    let incoming = names.write().unwrap().gensym(&format!("{name}_in"));
-    arg_names[i].0 = incoming.clone();
-    let t = sig.args[i].0.var_type.unwrap_known();
-    bindings.push((
-      name,
-      source.clone(),
-      VariableKind::Var,
-      ExpBuilder::at(&source).name(&incoming, &t),
-    ));
-  }
-  take(body.as_mut(), |body| let_around(bindings, body));
-  let ExpKind::Function(expression_names, _) = &implementation.expression.kind
-  else {
-    unreachable!()
-  };
-  implementation.arg_names = expression_names.clone();
 }
 
 /// Marks every use of the given (now by-reference) parameters as a
@@ -5635,8 +5478,6 @@ impl Program {
       used_function_names: HashSet::new(),
       dispatchers: HashMap::new(),
       dispatcher_by_reference: HashMap::new(),
-      by_value_twins: HashMap::new(),
-      by_value_twin_outputs: vec![],
       instance_by_name: HashMap::new(),
       payload_getters: HashMap::new(),
       lowered_bodies: HashMap::new(),
@@ -5734,7 +5575,6 @@ impl Program {
       new_enums,
       new_functions,
       union_enums,
-      by_value_twin_outputs,
       ..
     } = lowering;
     for e in lowering_errors {
@@ -5743,7 +5583,7 @@ impl Program {
     // --- apply ---
     // A root's signature involves no boxed values, so only its body changes.
     for (function, mut body) in root_updates {
-      make_referenced_params_addressable(&mut body, &self.names);
+      body.make_referenced_params_addressable(&self.names);
       if let FunctionImplementationKind::Composite(implementation) =
         &function.read().unwrap().implementation
       {
@@ -5773,10 +5613,8 @@ impl Program {
       });
     }
     self.abstract_functions.retain(|_, sigs| !sigs.is_empty());
-    for (signature, mut body) in
-      clone_outputs.into_iter().chain(by_value_twin_outputs)
-    {
-      make_referenced_params_addressable(&mut body, &self.names);
+    for (signature, mut body) in clone_outputs {
+      body.make_referenced_params_addressable(&self.names);
       signature.write().unwrap().implementation =
         FunctionImplementationKind::Composite(Arc::new(RwLock::new(body)));
       self.add_abstract_function(signature);

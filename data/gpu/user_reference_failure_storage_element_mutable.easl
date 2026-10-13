@@ -1,0 +1,16 @@
+; An element of a storage-space var passed as a mutable reference from
+; GPU-reachable code becomes a real pointer parameter, which base WGSL only
+; allows in the function/private address spaces. (A read-only element ref
+; passes the element's value instead — pinned by the
+; `storage_element_ref_gpu` buffer test.) The same call in cpu/audio-only
+; code is legal.
+@storage-write
+(var floats: [4: f32])
+
+(defn bump [@var @ref x: f32]
+  (+= x 1.))
+
+@compute
+(defn entry []
+  (for [i 0u (< i 4u) (+= i 1u)]
+    (bump (floats i))))

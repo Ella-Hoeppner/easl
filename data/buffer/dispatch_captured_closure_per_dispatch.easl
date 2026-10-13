@@ -1,0 +1,35 @@
+; Captured closures with different values per dispatch, two dispatches per
+; frame over two frames: each dispatch sees exactly the values it captured.
+; `h` captures `g`, and the first dispatch reaches `g` both directly and
+; through `h`.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn make-offset-of [f: (Fn [f32] f32)
+                      k: f32]: (Fn [f32] f32)
+  (fn [x] (+ (f x) k)))
+
+@storage-write
+(var out: [8: f32])
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (for [j 2u]
+        (let [g (make-scale (+ (f32 j) (* 10. (f32 frame))))
+              h (make-offset-of g 100.)
+              base (* 4u frame)]
+          (dispatch-compute-shader
+            (fn [] (= (out (+ base j)) (+ (g 1.) (h 1.))))
+            (vec3u 1u))
+          (dispatch-compute-shader
+            (fn [] (= (out (+ base (+ 2u j))) (h 2.)))
+            (vec3u 1u))))
+      (+= frame 1u)
+      (when (>= frame 2u)
+        (close-window))))
+  (print out))

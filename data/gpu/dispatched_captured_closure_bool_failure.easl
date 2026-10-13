@@ -1,0 +1,13 @@
+; A dispatched closure calling a captured closure that captures a bool: a
+; bool can't be part of GPU-shared data.
+(defn make-pick [flag: bool]: (Fn [] f32)
+  (fn [] (if flag 1. 0.)))
+
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [pick (make-pick true)]
+    (dispatch-compute-shader (fn [] (= (out 0u) (pick)))
+                             (vec3u 1u))))

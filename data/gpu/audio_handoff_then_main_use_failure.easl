@@ -1,0 +1,13 @@
+; Main keeps calling a stateful closure after handing a closure capturing
+; it to the audio thread: copy and shared semantics would differ.
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (% (+ phase increment) 1.))
+      phase)))
+
+@cpu
+(defn main []
+  (let [osc (create-counter 0.125)]
+    (start-audio (fn [] (osc)))
+    (print (osc))))

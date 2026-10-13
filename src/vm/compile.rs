@@ -7,16 +7,16 @@ use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
 use crate::compiler::builtins::short_circuit_deciding_value;
+use crate::compiler::closure_lift::{LiftedCapture, LiftedCaptures};
 use crate::compiler::enums::Enum;
 use crate::compiler::expression::{Accessor, ExpKind, Number, TypedExp};
 use crate::compiler::functions::{
   EffectsMemo, FunctionImplementationKind, Ownership, RefMutability,
   TopLevelFunction, extract_mat_size as parse_mat_size,
 };
-use crate::compiler::program::{LiftedCapture, LiftedCaptures};
 use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
-  AbstractType, ConcreteArraySize, Type, TypeDescription, TypeState,
+  ConcreteArraySize, Type, TypeDescription, TypeState,
 };
 use crate::thread_sync::AtomicOp;
 use crate::vm::bytecode::{
@@ -2992,44 +2992,22 @@ impl BytecodeCompilationState {
         captures.fields.len(),
         "lifted-capture record misaligned with scope struct"
       );
-      for ((field, capture), captured_value) in scope_struct
-        .fields
-        .iter()
-        .zip(captures.fields.iter())
-        .zip(captured.iter())
+      for (capture, captured_value) in
+        captures.fields.iter().zip(captured.iter())
       {
         let value_pos = captured_value
           .compile_to_bytecode(CompilePosition::Value, self)
           .unwrap();
-        let AbstractType::Type(field_type) = &field.field_type else {
-          panic!("captured scope field with non-concrete type")
-        };
-        match capture {
-          LiftedCapture::Closure {
-            scope: nested_struct,
-            captures: nested_captures,
-          } => {
-            self.emit_scope_capture_writes(
-              nested_struct,
-              value_pos,
-              nested_captures,
-            );
-          }
-          LiftedCapture::Global(global_name) => {
-            self.emit_capture_field_write(global_name, field_type, value_pos);
-          }
-        }
+        self.emit_lifted_capture_write(capture, value_pos);
       }
     }
     (entry_name, read_indices, write_indices)
   }
   /// Writes every capture of a `start-audio`d closure's scope into its
-  /// lifted `<scope>_audio_data_<capture>` global (see
-  /// `extract_audio_closure_scopes`), reading from the scope value's
-  /// flat slot layout starting at `base_pos` and recursing into captured
-  /// closures' scopes at their field offsets. The audio-scope sibling of
-  /// `emit_scope_capture_writes`. Every seeded global's name is pushed
-  /// into `seeded`, so the caller can mark exactly those vars
+  /// lifted global (see `extract_audio_closure_scopes`), reading from the
+  /// scope value's flat slot layout starting at `base_pos`. The audio-scope
+  /// sibling of `emit_lifted_capture_write`. Every seeded global's name is
+  /// pushed into `seeded`, so the caller can mark exactly those vars
   /// shared-dirty inside the same one-shot guard the writes run under.
   fn emit_audio_scope_seed_writes(
     &mut self,
@@ -3044,107 +3022,93 @@ impl BytecodeCompilationState {
       "lifted-capture record misaligned with scope struct"
     );
     let mut offset = 0u16;
-    for (field, capture) in
-      scope_struct.fields.iter().zip(captures.fields.iter())
-    {
-      let AbstractType::Type(field_type) = &field.field_type else {
-        panic!("captured scope field with non-concrete type")
-      };
-      match capture {
-        LiftedCapture::Closure {
-          scope: nested_struct,
-          captures: nested_captures,
-        } => {
-          self.emit_audio_scope_seed_writes(
-            nested_struct,
+    for capture in captures.fields.iter() {
+      let global_name = &capture.global;
+      let value_type = &capture.value_type;
+      if let Some((memory, _)) =
+        self.dynamic_array_memory.get(global_name).copied()
+      {
+        // A runtime-sized capture: the value slot holds a heap id; copy
+        // its payload into the global's region.
+        self.push_instruction(Instruction {
+          op: Op::RegionFromHeap,
+          arg_positions: [memory, base_pos + offset, 0],
+          return_position: 0,
+        });
+      } else if let Some(position) = self.globals.get(global_name).copied() {
+        let value_size = vm_stack_size(value_type);
+        if value_size > 0 {
+          // `emit_value_copy` keeps the single-`Move` fast path for flat
+          // captures; a capture that embeds heap ids gets the
+          // release-Move-promote sequence so the global owns its own
+          // shares of the ids rather than borrowing the closure value's.
+          self.emit_value_copy(
             base_pos + offset,
-            nested_captures,
-            seeded,
+            value_size,
+            position,
+            value_type,
           );
         }
-        LiftedCapture::Global(global_name) => {
-          if let Some((memory, _)) =
-            self.dynamic_array_memory.get(global_name).copied()
-          {
-            // A runtime-sized capture: the value slot holds a heap id;
-            // copy its payload into the global's region.
-            self.push_instruction(Instruction {
-              op: Op::RegionFromHeap,
-              arg_positions: [memory, base_pos + offset, 0],
-              return_position: 0,
-            });
-          } else if let Some(position) = self.globals.get(global_name).copied()
-          {
-            let value_size = vm_stack_size(field_type);
-            if value_size > 0 {
-              // `emit_value_copy` keeps the single-`Move` fast path for
-              // flat captures; a capture that embeds heap ids (a
-              // struct/enum with a runtime-sized field) gets the
-              // release-Move-promote sequence so the global owns its own
-              // shares of the ids rather than borrowing the closure
-              // value's.
-              self.emit_value_copy(
-                base_pos + offset,
-                value_size,
-                position,
-                field_type,
-              );
-            }
-          } else {
-            panic!(
-              "lifted audio scope global `{global_name}` not found during \
-               bytecode compilation"
-            )
-          }
-          seeded.push(global_name.clone());
-        }
+      } else {
+        panic!(
+          "lifted audio scope global `{global_name}` not found during \
+           bytecode compilation"
+        )
       }
-      offset += vm_stack_size(field_type);
+      seeded.push(global_name.clone());
+      offset += vm_stack_size(value_type);
     }
   }
-  /// Writes every capture of `scope_struct` into its implicit binding,
-  /// reading from the scope value's flat slot layout starting at
-  /// `base_pos`. Captured closures recurse into their own scope's
-  /// bindings at the field's offset.
-  fn emit_scope_capture_writes(
+  /// Writes one capture of a dispatched closure into its bindings (see
+  /// `LiftedCapture`), reading the value from `value_pos`: the whole value,
+  /// or for a split one, each runtime-sized array into its part's binding
+  /// and the remaining words into the capture's own.
+  fn emit_lifted_capture_write(
     &mut self,
-    scope_struct: &AbstractStruct,
-    base_pos: u16,
-    captures: &LiftedCaptures,
+    capture: &LiftedCapture,
+    value_pos: u16,
   ) {
-    assert_eq!(
-      scope_struct.fields.len(),
-      captures.fields.len(),
-      "lifted-capture record misaligned with scope struct"
-    );
-    let mut offset = 0u16;
-    for (field, capture) in
-      scope_struct.fields.iter().zip(captures.fields.iter())
-    {
-      let AbstractType::Type(field_type) = &field.field_type else {
-        panic!("captured scope field with non-concrete type")
-      };
-      match capture {
-        LiftedCapture::Closure {
-          scope: nested_struct,
-          captures: nested_captures,
-        } => {
-          self.emit_scope_capture_writes(
-            nested_struct,
-            base_pos + offset,
-            nested_captures,
-          );
-        }
-        LiftedCapture::Global(global_name) => {
-          self.emit_capture_field_write(
-            global_name,
-            field_type,
-            base_pos + offset,
-          );
-        }
-      }
-      offset += vm_stack_size(field_type);
+    let Some(split) = &capture.split else {
+      self.emit_capture_field_write(
+        &capture.global,
+        &capture.value_type,
+        value_pos,
+      );
+      return;
+    };
+    for part in split.parts.iter() {
+      let offset = vm_path_offset(&capture.value_type, &part.path);
+      self.emit_capture_field_write(
+        &part.global,
+        &part.part_type,
+        value_pos + offset,
+      );
     }
+    if split.rest_type.is_none() {
+      return;
+    }
+    let Some(&binding) = self.binding_indices.get(&capture.global) else {
+      return;
+    };
+    let HostBindingStorage::Slots { position, .. } =
+      self.host_bindings[binding as usize].storage
+    else {
+      panic!("a split capture's remaining fields weren't slot-backed")
+    };
+    let paths: Vec<&[Arc<str>]> =
+      split.parts.iter().map(|part| &part.path[..]).collect();
+    let mut runs = vec![];
+    kept_word_runs(&capture.value_type, &paths, 0, &mut runs);
+    let mut destination = position;
+    for (source_offset, length) in runs {
+      self.push_instruction(Instruction {
+        op: Op::Move,
+        arg_positions: [value_pos + source_offset, length, 0],
+        return_position: destination,
+      });
+      destination += length;
+    }
+    self.emit_host_op(HostOp::MarkCpuWritten { binding });
   }
   /// Writes one data capture into its implicit binding: a `Move` for
   /// slot-backed bindings, or a `RegionFromHeap` for runtime-sized
@@ -5939,5 +5903,69 @@ impl TypedExp {
       Discard => panic!("bytecode vm can't handle discard statements"),
       Uninitialized | Wildcard | Unit => None,
     }
+  }
+}
+
+/// The VM word offset of the field at `path` within a value of type `t`
+/// (closures laid out as their scopes).
+fn vm_path_offset(t: &Type, path: &[Arc<str>]) -> u16 {
+  let Some((field, rest)) = path.split_first() else {
+    return 0;
+  };
+  let Type::Struct(s) = t.closure_data_type().unwrap_or_else(|| t.clone())
+  else {
+    panic!("a split path runs through a non-struct type")
+  };
+  let mut offset = 0;
+  for struct_field in s.fields.iter() {
+    let field_type = struct_field.field_type.unwrap_known();
+    if &struct_field.name == field {
+      return offset + vm_path_offset(&field_type, rest);
+    }
+    offset += vm_stack_size(&field_type);
+  }
+  panic!("split path field `{field}` not found")
+}
+
+/// The runs of VM words, as (offset, length), that a value of type `t`
+/// keeps once the fields at `paths` are split out, in order: the layout
+/// of the split's remaining type.
+fn kept_word_runs(
+  t: &Type,
+  paths: &[&[Arc<str>]],
+  base: u16,
+  runs: &mut Vec<(u16, u16)>,
+) {
+  if paths.iter().any(|path| path.is_empty()) {
+    return;
+  }
+  if paths.is_empty() {
+    let length = vm_stack_size(t);
+    if length > 0 {
+      match runs.last_mut() {
+        Some((start, run_length)) if *start + *run_length == base => {
+          *run_length += length;
+        }
+        _ => runs.push((base, length)),
+      }
+    }
+    return;
+  }
+  let Type::Struct(s) = t.closure_data_type().unwrap_or_else(|| t.clone())
+  else {
+    panic!("a split path runs through a non-struct type")
+  };
+  let mut offset = base;
+  for field in s.fields.iter() {
+    let field_type = field.field_type.unwrap_known();
+    let nested: Vec<&[Arc<str>]> = paths
+      .iter()
+      .filter_map(|path| match path.split_first() {
+        Some((first, rest)) if first == &field.name => Some(rest),
+        _ => None,
+      })
+      .collect();
+    kept_word_runs(&field_type, &nested, offset, runs);
+    offset += vm_stack_size(&field_type);
   }
 }

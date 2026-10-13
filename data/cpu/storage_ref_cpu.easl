@@ -5,8 +5,9 @@
 ; ref parameter (per-(function, global) variants), so the helpers' bodies
 ; access `history`/`cursor` directly on both runtimes. The same calls
 ; work in GPU-reachable code too — pinned by the `storage_ref_gpu` shader
-; test; only accessor-chain refs into these spaces stay CPU/audio-only
-; (`user_reference_failure_uniform` pins that side).
+; test; only mutable element refs (a runtime index) into these spaces
+; stay CPU/audio-only (`user_reference_failure_storage_element_mutable`
+; pins that side).
 (defn (get-ring T)
       [@ref buffer: [T]
        start: u32

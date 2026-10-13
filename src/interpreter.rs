@@ -25,6 +25,7 @@ use crate::compiler::{
     ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS, address_mode_enum, filter_mode_enum,
     short_circuit_deciding_value,
   },
+  closure_lift::LiftedCaptures,
   enums::AbstractEnum,
   error::{CompileError, SourceTrace},
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
@@ -32,7 +33,7 @@ use crate::compiler::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
     Ownership, RefMutability,
   },
-  program::{CompilerTarget, LiftedCapture, LiftedCaptures, Program},
+  program::{CompilerTarget, Program},
   structs::AbstractStruct,
   types::{
     AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
@@ -5791,9 +5792,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     self.mark_cpu_written(&written);
   }
   /// Writes a `start-audio`d closure's captured scope values into the
-  /// lifted `<scope>_audio_data_<capture>` globals (see
-  /// `extract_audio_closure_scopes`), recursing into captured closures'
-  /// scopes. The audio-scope sibling of `write_scope_capture_bindings`.
+  /// lifted globals (see `extract_audio_closure_scopes`). The audio-scope
+  /// sibling of `write_scope_capture_bindings`.
   #[cfg(feature = "window")]
   fn seed_audio_scope_globals(
     &mut self,
@@ -5801,44 +5801,14 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     scope_value: &Value,
     captures: &LiftedCaptures,
   ) {
-    let Value::Struct(scope_fields) = scope_value else {
-      return;
-    };
-    assert_eq!(
-      scope_struct.fields.len(),
-      captures.fields.len(),
-      "lifted-capture record misaligned with scope struct"
-    );
     let mut written: Vec<Arc<str>> = vec![];
-    for (field, capture) in
-      scope_struct.fields.iter().zip(captures.fields.iter())
-    {
-      let Some(field_value) = scope_fields.get(&field.name) else {
-        continue;
-      };
-      match capture {
-        LiftedCapture::Closure {
-          scope: nested_struct,
-          captures: nested_captures,
-        } => {
-          // A captured closure's value is its own scope data.
-          let inner = match field_value {
-            Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
-            other => other.clone(),
-          };
-          self.seed_audio_scope_globals(nested_struct, &inner, nested_captures);
-        }
-        LiftedCapture::Global(global_name) => {
-          let field_value = field_value.clone();
-          if let Some(bindings) = self.bindings.get_mut(global_name)
-            && let Some((value, _)) = bindings.last_mut()
-          {
-            *value = field_value;
-            written.push(global_name.clone());
-          }
-        }
-      }
-    }
+    self.write_lifted_captures(
+      scope_struct,
+      scope_value,
+      captures,
+      false,
+      &mut written,
+    );
     self.mark_cpu_written(&written);
   }
   fn write_scope_capture_bindings(
@@ -5846,6 +5816,26 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     scope_struct: &AbstractStruct,
     scope_value: &Value,
     captures: &LiftedCaptures,
+    written: &mut Vec<Arc<str>>,
+  ) {
+    self.write_lifted_captures(
+      scope_struct,
+      scope_value,
+      captures,
+      true,
+      written,
+    );
+  }
+  /// Writes each captured value of a lifted closure's scope into its
+  /// globals (see `LiftedCapture`), pushing each global written into
+  /// `written`. With `only_bindings`, globals that aren't GPU bindings (a
+  /// capture no shader reads) are skipped.
+  fn write_lifted_captures(
+    &mut self,
+    scope_struct: &AbstractStruct,
+    scope_value: &Value,
+    captures: &LiftedCaptures,
+    only_bindings: bool,
     written: &mut Vec<Arc<str>>,
   ) {
     let Value::Struct(scope_fields) = scope_value else {
@@ -5862,34 +5852,31 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       let Some(field_value) = scope_fields.get(&field.name) else {
         continue;
       };
-      match capture {
-        LiftedCapture::Closure {
-          scope: nested_struct,
-          captures: nested_captures,
-        } => {
-          // A captured closure's value is its own scope data.
-          let inner = match field_value {
-            Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
-            other => other.clone(),
-          };
-          self.write_scope_capture_bindings(
-            nested_struct,
-            &inner,
-            nested_captures,
-            written,
-          );
+      let value = closure_data_value(field_value);
+      let mut write = |global: &Arc<str>, value: Value| {
+        if only_bindings && !self.is_binding_var(global) {
+          return;
         }
-        LiftedCapture::Global(global_name) => {
-          if !self.is_binding_var(global_name) {
-            continue;
+        if let Some(bindings) = self.bindings.get_mut(global)
+          && let Some((slot, _)) = bindings.last_mut()
+        {
+          *slot = value;
+          written.push(global.clone());
+        }
+      };
+      match &capture.split {
+        None => write(&capture.global, value),
+        Some(split) => {
+          for part in split.parts.iter() {
+            if let Some(part_value) = value_at_path(&value, &part.path) {
+              write(&part.global, part_value);
+            }
           }
-          let field_value = field_value.clone();
-          if let Some(bindings) = self.bindings.get_mut(global_name)
-            && let Some((value, _)) = bindings.last_mut()
-          {
-            *value = field_value;
+          if split.rest_type.is_some() {
+            let paths: Vec<&[Arc<str>]> =
+              split.parts.iter().map(|part| &part.path[..]).collect();
+            write(&capture.global, value_without_paths(&value, &paths));
           }
-          written.push(global_name.clone());
         }
       }
     }
@@ -10450,3 +10437,55 @@ pub fn run_program_with_capture(
 /// reaching into the `pub(crate)` `window` module.
 #[cfg(feature = "window")]
 pub use crate::window::close_persistent_window;
+
+/// A captured value as a lifted capture global holds it: a closure as its
+/// scope.
+fn closure_data_value(value: &Value) -> Value {
+  match value {
+    Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
+    other => other.clone(),
+  }
+}
+
+/// The value at a field path within `value` (closures read as their
+/// scopes).
+fn value_at_path(value: &Value, path: &[Arc<str>]) -> Option<Value> {
+  let Some((field, rest)) = path.split_first() else {
+    return Some(value.clone());
+  };
+  let Value::Struct(fields) = closure_data_value(value) else {
+    return None;
+  };
+  value_at_path(fields.get(field)?, rest)
+}
+
+/// `value` without the fields at `paths` (closures read as their scopes).
+fn value_without_paths(value: &Value, paths: &[&[Arc<str>]]) -> Value {
+  let value = closure_data_value(value);
+  let Value::Struct(fields) = &value else {
+    return value;
+  };
+  Value::Struct(
+    fields
+      .iter()
+      .filter(|(name, _)| !paths.iter().any(|path| path == &[(*name).clone()]))
+      .map(|(name, field_value)| {
+        let nested: Vec<&[Arc<str>]> = paths
+          .iter()
+          .filter_map(|path| match path.split_first() {
+            Some((first, rest)) if first == name && !rest.is_empty() => {
+              Some(rest)
+            }
+            _ => None,
+          })
+          .collect();
+        let field_value = if nested.is_empty() {
+          field_value.clone()
+        } else {
+          value_without_paths(field_value, &nested)
+        };
+        (name.clone(), field_value)
+      })
+      .collect(),
+  )
+}

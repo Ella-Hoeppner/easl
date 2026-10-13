@@ -803,6 +803,14 @@ thread_sync_test!(
   [Frame, AudioBatch(4), AudioBatch(4)]
 );
 thread_sync_test!(
+  audio_nested_closure_mixed_capture,
+  [Frame, AudioBatch(4), AudioBatch(4)]
+);
+thread_sync_test!(
+  audio_captured_closure_layouts,
+  [Frame, AudioBatch(4), AudioBatch(4)]
+);
+thread_sync_test!(
   audio_match_voice,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
 );

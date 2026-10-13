@@ -1,0 +1,25 @@
+; An audio closure building closures that capture its captured closure
+; along with other values: `h` keeps a per-sample local (`offset`), and
+; `h2` keeps `h` and the voice's own lifted `phase`. With
+; `h(x) = 0.5x + 2 phase`, each sample is
+; `0.1 ((h (h phase)) + (h2 0.)) = 0.1 (3.25 phase + 3 phase) = 0.625 phase`.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+(defn make-voice [g: (Fn [f32] f32)]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (+ phase 0.125))
+      (let [offset (* phase 2.)
+            h (fn [x] (+ (g x) offset))
+            h2 (fn [x] (+ (h x) phase))]
+        (* 0.1 (+ (apply-twice h phase) (h2 0.)))))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice (make-scale 0.5)))
+  (spawn-window (fn [] ())))

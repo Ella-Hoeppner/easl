@@ -1,0 +1,51 @@
+; Closures built inside a dispatched closure that capture the dispatched
+; closure's captured closures *and* other values: a per-invocation local
+; (`t`), a lifted data capture (`k`), or another such closure. Each keeps
+; a scope of just those values and calls the captured closures through
+; their lifted clones. Four invocations, so every kept `t` differs.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn make-offset [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ x k)))
+
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+(defn apply-twice-via [f: (Fn [f32] f32)
+                       x: f32]: f32
+  (apply-twice f x))
+
+@storage-write
+(var out: [17: f32])
+
+(defn run-on-gpu [f: (Fn [f32] f32)
+                  slot: u32]
+  (dispatch-compute-shader (fn [] (= (out slot) (f 1.)))
+                           (vec3u 1u)))
+
+@cpu
+(defn main []
+  (let [g (make-scale 2.)
+        o (make-offset 10.)
+        k 100.]
+    (dispatch-compute-shader
+      (fn []
+        (let [i (.x (global-invocation-id))
+              t (f32 i)
+              h (fn [x] (+ (g x) t))
+              hk (fn [x] (+ (o x) k))
+              hh (fn [x] (+ (h x) t))
+              both (fn [x] (h (o x)))]
+          (= (out i) (apply-twice h 1.))
+          (= (out (+ 4u i)) (hk 1.))
+          (= (out (+ 8u i)) (apply-twice-via hh 0.))
+          (= (out (+ 12u i)) (apply-twice (fn [x] (+ (both x) t)) 0.))))
+      (vec3u 4u 1u 1u))
+    (run-on-gpu (fn [x]
+                  (let [s 3.
+                        field (fn [p] (+ (g p) s))]
+                    (+ (field x) (apply-twice field x))))
+                16u)
+    (print out)))

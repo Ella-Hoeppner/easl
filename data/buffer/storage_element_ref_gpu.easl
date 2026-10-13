@@ -1,0 +1,39 @@
+; Read-only `@ref` element args into storage/uniform globals in GPU code:
+; an element at a runtime index can't be inlined like a whole global or a
+; static field path, so the reference monomorphizer passes the element's
+; value — the snapshot an element ref reads on every runtime. Covers a
+; read-only storage array, a storage struct array (field reads through the
+; ref), and a ref's field forwarded on to another `@ref` helper.
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn get-it [@ref x: f32]: f32
+  x)
+
+(defn sum-pair [@ref p: Pair]: f32
+  (+ (get-it p.a) p.b))
+
+@storage
+(var weights: [4: f32])
+
+@storage-write
+(var pairs: [2: Pair])
+
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn work []
+  (for [i 0u (< i 4u) (+= i 1u)]
+    (= (out i)
+       (* (get-it (weights i))
+          (sum-pair (pairs (% i 2u)))))))
+
+@cpu
+(defn main []
+  (= weights [1. 2. 3. 4.])
+  (= pairs [(Pair 1. 2.) (Pair 10. 20.)])
+  (dispatch-compute-shader work (vec3u 1u))
+  (print out)
+  (print (sum-pair (pairs 1u))))

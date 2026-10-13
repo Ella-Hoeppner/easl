@@ -1,5 +1,6 @@
 pub mod annotation;
 pub mod builtins;
+pub mod closure_lift;
 pub mod core;
 pub mod effects;
 pub mod entry;

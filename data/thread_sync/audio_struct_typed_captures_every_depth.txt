@@ -1,14 +1,10 @@
-main-publish: <audio-scope>_g_g_g_scale
-main-publish: <audio-scope>_g_g_k
-main-publish: <audio-scope>_g_k
+main-publish: <audio-scope>_g
 main-publish: <audio-scope>_k
 start-audio: <audio-closure>
 spawn-window
 frame 0
 print: 1u
 audio-batch 0 x2
-audio-adopt: <audio-scope>_g_g_g_scale
-audio-adopt: <audio-scope>_g_g_k
-audio-adopt: <audio-scope>_g_k
+audio-adopt: <audio-scope>_g
 audio-adopt: <audio-scope>_k
 samples: -0.125 -0.0625

@@ -1,0 +1,19 @@
+; One runtime-sized array reached by a dispatched closure directly, through
+; a captured closure, and through a closure capturing that closure.
+@storage-write
+(var out: [5: f32])
+
+@cpu
+(defn main []
+  (let [w (into-dynamic-array [1. 2. 3.])
+        g (fn [i: u32] (w i))
+        h (fn [i: u32] (+ (g i) (w 0u)))]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) (g 2u))
+        (= (out 1u) (h 1u))
+        (= (out 2u) (f32 (array-length w)))
+        (= (out 3u) (w 1u))
+        (= (out 4u) (+ (h 2u) (g 0u))))
+      (vec3u 1u))
+    (print out)))
