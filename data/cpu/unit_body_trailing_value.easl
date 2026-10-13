@@ -1,0 +1,52 @@
+; Loop bodies (`for`, `while`) and `when` bodies are always unit-typed, so a
+; last statement with a value is discarded, like a statement anywhere else:
+; no trailing `()` is needed. Covers both `for` forms, `while`, nesting,
+; struct- and array-valued last statements, `break`/`continue` last, and a
+; GPU-valid helper (so the WGSL of a value-producing call as a loop's last
+; statement is validated too).
+(struct Pair
+  a: f32
+  b: f32)
+
+(var count: u32)
+
+(defn bump []: u32
+  (+= count 1u)
+  count)
+
+(defn bump-pair []: Pair
+  (bump)
+  (Pair 1. 2.))
+
+(defn bump-array []: [2: u32]
+  (bump)
+  [count count])
+
+(defn bump-n [n: u32]: u32
+  (for [i n]
+    (bump))
+  count)
+
+@cpu
+(defn main []
+  (for [i 2u]
+    (bump))
+  (for [i 0u (< i 2u) (+= i 1u)]
+    (bump-pair))
+  (let [@var k 0u]
+    (while (< k 2u)
+      (+= k 1u)
+      (bump-array))
+    (while (< k 10u)
+      (+= k 1u)
+      (when (== k 5u)
+        (break))
+      (bump)))
+  (for [i 3u]
+    (for [j 2u]
+      (when (== j 1u)
+        (continue))
+      (bump)))
+  (when true
+    (bump))
+  (print (bump-n 2u)))

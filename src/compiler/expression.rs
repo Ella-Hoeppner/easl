@@ -54,6 +54,25 @@ pub enum Number {
   Float(f64),
 }
 
+/// The body of a form that's always unit-typed (a loop body): its
+/// statements, then `()`, so a last statement with a value (a call made for
+/// its effects) is discarded like any other, as `when` does.
+fn unit_body(
+  mut statements: Vec<TypedExp>,
+  source_trace: &SourceTrace,
+) -> TypedExp {
+  statements.push(TypedExp {
+    data: Type::Unit.known().into(),
+    kind: ExpKind::Unit,
+    source_trace: source_trace.clone(),
+  });
+  TypedExp {
+    data: Type::Unit.known().into(),
+    kind: ExpKind::Block(statements),
+    source_trace: source_trace.clone(),
+  }
+}
+
 fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
   let mut known_type = None;
   let mut already_seen_decimal = false;
@@ -1524,11 +1543,10 @@ impl TypedExp {
                             update_expression: Some(Box::new(
                               update_expression,
                             )),
-                            body_expression: Box::new(TypedExp {
-                              data: Type::Unit.known().into(),
-                              kind: ExpKind::Block(body_expressions),
-                              source_trace: source_trace.clone(),
-                            }),
+                            body_expression: Box::new(unit_body(
+                              body_expressions,
+                              &source_trace,
+                            )),
                           },
                           data: Known(Type::Unit).into(),
                           source_trace,
@@ -1555,11 +1573,10 @@ impl TypedExp {
                             condition_expression: Box::new(
                               condition_expression,
                             ),
-                            body_expression: Box::new(TypedExp {
-                              data: Type::Unit.known().into(),
-                              kind: ExpKind::Block(sub_expressions),
-                              source_trace: source_trace.clone(),
-                            }),
+                            body_expression: Box::new(unit_body(
+                              sub_expressions,
+                              &source_trace,
+                            )),
                           },
                           data: Known(Type::Unit).into(),
                           source_trace,

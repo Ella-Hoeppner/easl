@@ -175,6 +175,7 @@ cpu_test!(immutable_ref_element_args);
 cpu_test!(user_ref_fn_deep_element_args);
 cpu_test!(storage_ref_cpu);
 cpu_test!(generic_struct_arrays);
+cpu_test!(unit_body_trailing_value);
 cpu_test!(storage_ref_two_globals);
 cpu_test!(storage_ref_mixed_binding);
 cpu_test!(storage_ref_local_and_global_sites);
