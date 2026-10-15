@@ -879,6 +879,21 @@ error_test!(
   )
 );
 error_test!(
+  dispatched_read_only_write_failure,
+  CompileErrorKind::IllegalAddressSpaceGpuWrite(
+    "paths".to_string(),
+    VariableAddressSpace::StorageRead
+  ),
+  CompileErrorKind::IllegalAddressSpaceGpuWrite(
+    "u".to_string(),
+    VariableAddressSpace::Uniform
+  ),
+  CompileErrorKind::IllegalAddressSpaceGpuWrite(
+    "s".to_string(),
+    VariableAddressSpace::StorageRead
+  )
+);
+error_test!(
   atomic_type_failure,
   CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
     name: "Integer".into(),

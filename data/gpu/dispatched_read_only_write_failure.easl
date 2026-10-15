@@ -1,0 +1,34 @@
+(struct Path
+  points: [4: vec4f])
+
+@storage
+(var paths: [Path])
+
+@uniform
+(var u: u32)
+
+@storage
+(var s: f32)
+
+(defn write-u []
+  (= u 1u))
+
+(defn vert []: vec4f
+  (vec4f 0.))
+
+(defn frag []: vec4f
+  (= s 1.)
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (= paths (zeroed-array 4))
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader
+        (fn []
+          (let [i (.x (global-invocation-id))]
+            (= ((.points (paths i)) 0u) (vec4f 1.))))
+        (vec3u 4u 1u 1u))
+      (dispatch-compute-shader write-u (vec3u 1u 1u 1u))
+      (dispatch-render-shaders vert frag 3u))))

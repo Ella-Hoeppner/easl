@@ -6078,7 +6078,7 @@ impl Program {
               {
                 errors.log(CompileError {
                   kind: IllegalAddressSpaceGpuWrite(
-                    name.to_string(),
+                    display_name(name).to_string(),
                     address_space,
                   ),
                   source_trace: f.expression.source_trace.clone(),
@@ -7092,7 +7092,6 @@ impl Program {
     // String key literals they take).
     self.extract_gpu_window_info();
     self.validate_gpu_runtime_sized_use(&mut errors);
-    self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -7126,6 +7125,12 @@ impl Program {
     self.validate_dispatch_function_types_and_mark_implicit_entry_points(
       &mut errors,
     );
+    if !errors.is_empty() {
+      return errors;
+    }
+    // Needs the implicit entry markings (above): a dispatched closure or
+    // unannotated dispatched function is checked like an annotated entry.
+    self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
