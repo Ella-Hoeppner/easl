@@ -9,6 +9,7 @@ use half::f16;
 use serde::{Deserialize, Serialize};
 
 use crate::compiler::{types::Type, vars::VariableAddressSpace};
+use crate::render_settings::RenderSetting;
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, ThreadSharedTable,
 };
@@ -876,7 +877,6 @@ pub enum HostOp {
     frag: u16,
     sets: u16,
     vert_count_slot: u16,
-    additive_slot: Option<u16>,
   },
   WindowQuery {
     kind: WindowQueryKind,
@@ -1018,7 +1018,23 @@ pub enum HostOp {
     binding: u16,
     path_slot: u16,
   },
-  ClearRenderTarget,
+  ResetRenderTarget,
+  /// A render-setting setter (`set-blend`, …), with each argument's first
+  /// slot: an enum's discriminant, a bool as 0 or 1, or a `vec4f`'s four
+  /// words (`RenderSetting::words_per_argument`).
+  SetRenderSetting {
+    setting: RenderSetting,
+    slots: Vec<u16>,
+  },
+  ResetRenderSettings,
+  /// `(clear-target color)`: a vec4f, 4 slots.
+  ClearTarget {
+    color_slot: u16,
+  },
+  /// `(clear-depth)`, or `(clear-depth value)` with the value's slot.
+  ClearDepth {
+    value_slot: Option<u16>,
+  },
   /// `(string x)`: format the value at `slot` (of type `host_types[ty]`)
   /// exactly as `print` would, and store the result as a fresh string
   /// cell whose id is written to `dest`.

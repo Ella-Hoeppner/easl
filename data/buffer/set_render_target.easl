@@ -23,7 +23,7 @@
              1.))
     (fn [] (vec4f 1. 0. 0. 1.))
     3)
-  (clear-render-target)
+  (reset-render-target)
   (dispatch-compute-shader
     (fn []
       (= value

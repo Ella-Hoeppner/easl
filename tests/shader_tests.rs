@@ -267,6 +267,10 @@ success_test!(dispatch_captured_closure_receiver);
 success_test!(dispatch_nested_lambda_outer_capture);
 success_test!(audio_captured_closure_receiver);
 error_test!(
+  fragment_struct_output_invalid_failure,
+  CompileErrorKind::Fragment0OutputInvalidType
+);
+error_test!(
   struct_field_invalid_annotation_failure,
   CompileErrorKind::InvalidStructFieldAnnotation
 );
@@ -338,6 +342,7 @@ success_test!(dpdx_success);
 success_test!(discard_success);
 success_test!(arg_annotation_success);
 success_test!(return_annotation_success);
+success_test!(fragment_struct_outputs);
 success_test!(user_reference_success);
 success_test!(ownership_success);
 success_test!(unit_literal_in_block);
@@ -840,6 +845,12 @@ error_test!(
 );
 error_test!(invalid_name_dot, CompileErrorKind::InvalidName);
 error_test!(invalid_name_leading_number, CompileErrorKind::InvalidName);
+error_test!(
+  render_setting_in_fragment,
+  CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(
+    "set-blend".to_string()
+  )
+);
 error_test!(
   dispatch_in_fragment,
   CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(

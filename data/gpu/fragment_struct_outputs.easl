@@ -1,0 +1,25 @@
+; A fragment shader can return a struct: its color at location 0 (written
+; or inferred) alongside more locations and a `frag-depth` builtin.
+(struct DepthOut
+  @{location 0} color: vec4f
+  @{builtin frag-depth} depth: f32)
+
+(struct TwoTargets
+  color: vec4f
+  @{location 1} glow: vec4f)
+
+(struct InferredDepthOut
+  color: vec4u
+  @{builtin frag-depth} depth: f32)
+
+@fragment
+(defn pulled-near [@{builtin position} p: vec4f]: DepthOut
+  (DepthOut (vec4f 1.) (* p.z 0.5)))
+
+@fragment
+(defn two-targets []: TwoTargets
+  (TwoTargets (vec4f 1.) (vec4f 0.5)))
+
+@fragment
+(defn inferred-depth []: InferredDepthOut
+  (InferredDepthOut (vec4u 1u) 0.25))

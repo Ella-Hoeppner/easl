@@ -92,10 +92,9 @@ Closes the window at the end of the current frame, ending the `spawn-window` loo
 
 ```easl
 (dispatch-render-shaders vert: V frag: F vert-count: u32): ()
-(dispatch-render-shaders vert: V frag: F vert-count: u32 additive-blend: bool): ()
 ```
 
-Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `frag`, which can be named functions or inline `fn`s. `additive-blend` switches from alpha blending to additive. Draws go to the window unless `set-render-target` redirects them.
+Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `frag`, which can be named functions or inline `fn`s. The draw uses the [render settings](#render-settings) current when it's dispatched, and goes to the window unless `set-render-target` redirects it.
 
 ### `dispatch-compute-shader`
 
@@ -252,7 +251,7 @@ Whether the named key was pressed this frame. Same key-naming rules as `key-down
 (load-image path: String): (Texture2D f32)
 ```
 
-Loads a PNG or JPEG into a texture. A relative path is relative to the file the call is written in.
+Loads a PNG or JPEG into a texture, decoding its colors to [linear values](textures.md#color-space). A relative path is relative to the file the call is written in.
 
 ### `blank-texture`
 
@@ -288,15 +287,66 @@ A `Sampler` var that's never assigned is `(Sampler FilterMode/Nearest AddressMod
 (set-render-target t: (Texture2D f32)): ()
 ```
 
-Sends later `dispatch-render-shaders` calls this frame to `t` instead of the window. Later dispatches can sample what was drawn; see [render targets](../cpu.md#render-targets).
+Sends later `dispatch-render-shaders` calls (and clears) to `t` instead of the window, until `reset-render-target`, across frames too. Later dispatches can sample what was drawn; see [render targets](../cpu.md#render-targets).
 
-### `clear-render-target`
+### `reset-render-target`
 
 ```easl
-(clear-render-target): ()
+(reset-render-target): ()
 ```
 
 Sends later render dispatches back to the window.
+
+### Render settings
+
+How a draw is rasterized and how its output combines with its target. Each setter changes one setting for every later draw, until it's changed again, across frames too; a draw uses the settings current when `dispatch-render-shaders` is called. Settings are set from CPU code only.
+
+```easl
+(set-blend src: BlendFactor dst: BlendFactor op: BlendOperation): ()
+(set-blend src: BlendFactor dst: BlendFactor op: BlendOperation
+           alpha-src: BlendFactor alpha-dst: BlendFactor
+           alpha-op: BlendOperation): ()
+(set-blend-constant color: vec4f): ()
+(set-depth-test test: DepthTest): ()
+(set-depth-write enabled: bool): ()
+(set-cull-mode mode: CullMode): ()
+(set-front-face face: FrontFace): ()
+(set-topology topology: Topology): ()
+(reset-render-settings): ()
+```
+
+`reset-render-settings` restores every setting's default (the render target is separate: see `reset-render-target`).
+
+- `set-blend`: how a fragment's color (the source) combines with what the target holds (the destination). Each channel becomes `op(src-color * src, dst-color * dst)`. The three-argument form treats alpha like the color channels; the six-argument form gives alpha its own factors and operation. These are WebGPU's blend settings, all of them:
+  - `BlendFactor/Zero`, `One`, `Src`, `OneMinusSrc`, `SrcAlpha`, `OneMinusSrcAlpha`, `Dst`, `OneMinusDst`, `DstAlpha`, `OneMinusDstAlpha`, `SrcAlphaSaturated`, `Constant`, `OneMinusConstant`. `Src` and `Dst` weigh each channel by the matching channel, `Constant` by the blend constant, and `SrcAlphaSaturated` by `min(src.a, 1 - dst.a)` (by `1` for alpha).
+  - `BlendOperation/Add`, `Subtract` (source minus destination), `ReverseSubtract`, `Min`, `Max`. `Min` and `Max` compare the unweighted colors, ignoring the factors.
+  - The default is no blending: a fragment overwrites the target, alpha included (`BlendFactor/One BlendFactor/Zero BlendOperation/Add`). Blending is opt-in because it costs fill rate, and on tile-based GPUs (Apple's) it also turns off hidden-surface removal.
+  - Straight alpha, where a fragment `(vec4f color alpha)` covers the target by `alpha`: `(set-blend BlendFactor/SrcAlpha BlendFactor/OneMinusSrcAlpha BlendOperation/Add BlendFactor/One BlendFactor/OneMinusSrcAlpha BlendOperation/Add)`. Drawing this way into a transparent texture leaves premultiplied contents, so composite such a texture with premultiplied blending, `BlendFactor/One BlendFactor/OneMinusSrcAlpha`. `BlendFactor/One BlendFactor/One BlendOperation/Add` is additive.
+- `set-blend-constant`: the color the `Constant` factors use (default `(vec4f 0.)`).
+- `DepthTest/Off` (the default), `Less`, `LessEqual`, `Greater`, `GreaterEqual`, `Equal`, `Always`: whether a fragment is tested against the target's depth buffer, and the comparison its depth must pass against the stored one. A fragment's depth is its position's `z`, from `0.` near to `1.` far, unless the fragment shader returns a struct with a `@{builtin frag-depth}` field. `Off` uses no depth buffer at all; `Always` passes every fragment but still writes depth.
+- `set-depth-write`: whether a fragment that passes the depth test stores its depth (default `true`).
+- `CullMode/Off` (the default), `Back`, `Front`: which triangles to discard by the way they face.
+- `FrontFace/CounterClockwise` (the default), `Clockwise`: the winding of a front-facing triangle (also what `front-facing` reports).
+- `Topology/TriangleList` (the default), `TriangleStrip`, `LineList`, `LineStrip`, `PointList`: how the vertices form primitives.
+
+Every render target (the window, and each texture) has its own depth buffer, made the first time a draw into it tests depth. The window's starts each frame cleared to `1.`; a texture's keeps its contents, like its colors.
+
+### `clear-target`
+
+```easl
+(clear-target color: vec4f): ()
+```
+
+Clears the current render target to `color`, and its depth buffer to `1.`, in order with the frame's draws. A texture keeps what's drawn into it until it's cleared; the window starts each frame cleared to opaque black, so to use another background, clear it before the frame's first draw.
+
+### `clear-depth`
+
+```easl
+(clear-depth): ()
+(clear-depth value: f32): ()
+```
+
+Clears the current render target's depth buffer to `1.` (or `value`), leaving its colors.
 
 ### `save-png`
 
@@ -304,12 +354,12 @@ Sends later render dispatches back to the window.
 (save-png t: (Texture2D f32) path: String): ()
 ```
 
-Saves a texture as a PNG. A relative path is relative to the file the call is written in; missing directories are created. It works on textures the GPU just rendered into:
+Saves a texture as a PNG, encoding its [linear colors](textures.md#color-space) as sRGB, so the file looks like the texture drawn to the window. A relative path is relative to the file the call is written in; missing directories are created. It works on textures the GPU just rendered into:
 
 ```easl
 (set-render-target tex)
 (dispatch-render-shaders vertex fragment 3)
-(clear-render-target)
+(reset-render-target)
 (save-png tex "frame.png")
 ```
 
@@ -489,7 +539,7 @@ The current frame index, and the number of frames (`length` is the same as `get-
 (get-video-frame-texture v: Video): (Texture2D f32)
 ```
 
-Decodes the current frame. Only assignable directly to a texture variable: `(= tex (get-video-frame-texture v))`.
+Decodes the current frame, with [linear colors](textures.md#color-space) like `load-image`. Only assignable directly to a texture variable: `(= tex (get-video-frame-texture v))`.
 
 ## See also
 

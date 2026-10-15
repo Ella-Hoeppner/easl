@@ -11,6 +11,7 @@ use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::functions::{extract_mat_size, extract_vec_size};
 use crate::compiler::program::{CompilerTarget, NameContext};
 use crate::compiler::util::compile_word;
+use crate::render_settings::{RenderSetting, SettingArgument};
 use crate::{
   compiler::{
     effects::Effect,
@@ -648,8 +649,19 @@ pub fn address_mode_enum() -> AbstractEnum {
   unit_enum("AddressMode", &["ClampToEdge", "Repeat", "MirrorRepeat"])
 }
 
+/// The enums the render-setting setters take (`BlendFactor`, …), with
+/// variants in `crate::render_settings`' discriminant order.
+fn render_setting_enums() -> Vec<AbstractEnum> {
+  RenderSetting::ENUMS
+    .iter()
+    .map(|(name, variants)| unit_enum(name, variants))
+    .collect()
+}
+
 pub fn built_in_enums() -> Vec<AbstractEnum> {
-  vec![option_enum(), filter_mode_enum(), address_mode_enum()]
+  let mut enums = vec![option_enum(), filter_mode_enum(), address_mode_enum()];
+  enums.extend(render_setting_enums());
+  enums
 }
 
 /// The builtin structs `target` represents natively — struct emission
@@ -2506,6 +2518,81 @@ fn string_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
+/// A CPU-only builtin that queues or configures GPU work: it returns `()`
+/// and carries the `Window` effect, so a call in statement position is
+/// never pruned as side-effect-free.
+fn render_command(
+  name: &str,
+  arg_types: Vec<(AbstractType, Ownership)>,
+) -> AbstractFunctionSignature {
+  AbstractFunctionSignature {
+    name: name.into(),
+    arg_types,
+    return_type: AbstractType::Unit,
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: vec![
+        Effect::Window,
+        Effect::CPUExclusiveFunction(name.into()),
+      ]
+      .into(),
+      target_configuration: FunctionTargetConfiguration::Default,
+      target_specific_emulations: HashSet::new(),
+    },
+    ..Default::default()
+  }
+}
+
+/// The render-setting setters (`set-blend`, …), `reset-render-settings`,
+/// and the target-clearing commands.
+fn render_setting_functions() -> Vec<AbstractFunctionSignature> {
+  let enums = render_setting_enums();
+  let vec4f = || {
+    AbstractType::AbstractStruct(
+      vec4()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    )
+  };
+  let argument_type = |argument: &SettingArgument| match argument {
+    SettingArgument::Enum(enum_name, _) => AbstractType::AbstractEnum(
+      enums
+        .iter()
+        .find(|e| &*e.name.0 == *enum_name)
+        .unwrap()
+        .clone()
+        .into(),
+    ),
+    SettingArgument::Bool => AbstractType::Type(Type::Bool),
+    SettingArgument::Color => vec4f(),
+  };
+  let mut signatures: Vec<AbstractFunctionSignature> = RenderSetting::SETTERS
+    .iter()
+    .flat_map(|(name, setting)| {
+      setting
+        .overloads()
+        .iter()
+        .map(move |arguments| (name, arguments))
+    })
+    .map(|(name, arguments)| {
+      render_command(
+        name,
+        arguments
+          .iter()
+          .map(|argument| argument_type(argument).owned())
+          .collect(),
+      )
+    })
+    .collect();
+  signatures.push(render_command("reset-render-settings", vec![]));
+  signatures.push(render_command("clear-target", vec![vec4f().owned()]));
+  signatures.push(render_command("clear-depth", vec![]));
+  signatures.push(render_command(
+    "clear-depth",
+    vec![AbstractType::Type(Type::F32).owned()],
+  ));
+  signatures
+}
+
 fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
@@ -2526,39 +2613,6 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         AbstractType::Generic("V".into()).owned(),
         AbstractType::Generic("F".into()).owned(),
         AbstractType::Type(Type::U32).owned(),
-      ],
-      return_type: AbstractType::Unit,
-      implementation: FunctionImplementationKind::Builtin {
-        effect_type: vec![
-          Effect::Window,
-          Effect::CPUExclusiveFunction("dispatch-render-shaders".into()),
-        ]
-        .into(),
-        target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashSet::new(),
-      },
-      ..Default::default()
-    },
-    // 4-argument variant: (vert frag vert-count additive-blend?)
-    AbstractFunctionSignature {
-      name: "dispatch-render-shaders".into(),
-      generic_args: vec![
-        (
-          "V".into(),
-          GenericArgument::Type(vec![TypeConstraint::function()]),
-          SourceTrace::empty(),
-        ),
-        (
-          "F".into(),
-          GenericArgument::Type(vec![TypeConstraint::function()]),
-          SourceTrace::empty(),
-        ),
-      ],
-      arg_types: vec![
-        AbstractType::Generic("V".into()).owned(),
-        AbstractType::Generic("F".into()).owned(),
-        AbstractType::Type(Type::U32).owned(),
-        AbstractType::Type(Type::Bool).owned(),
       ],
       return_type: AbstractType::Unit,
       implementation: FunctionImplementationKind::Builtin {
@@ -3382,21 +3436,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
-    AbstractFunctionSignature {
-      name: "clear-render-target".into(),
-      arg_types: vec![],
-      return_type: AbstractType::Unit,
-      implementation: FunctionImplementationKind::Builtin {
-        effect_type: vec![
-          Effect::Window,
-          Effect::CPUExclusiveFunction("clear-render-target".into()),
-        ]
-        .into(),
-        target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashSet::new(),
-      },
-      ..Default::default()
-    },
+    render_command("reset-render-target", vec![]),
     AbstractFunctionSignature {
       name: "blank-texture".into(),
       arg_types: vec![
@@ -3809,6 +3849,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut into_conversion_functions());
   signatures.append(&mut string_functions());
   signatures.append(&mut shader_dispatch_functions());
+  signatures.append(&mut render_setting_functions());
   signatures.append(&mut dynamic_array_functions());
   signatures.append(&mut dynamic_array_utility_functions());
   signatures.append(&mut atomic_functions());

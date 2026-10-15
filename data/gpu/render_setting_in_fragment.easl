@@ -1,0 +1,9 @@
+; Render settings are set from CPU code; a setter reachable from a shader
+; is rejected.
+(defn glow []
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Add))
+
+@fragment
+(defn bad-frag []: @{location 0} vec4f
+  (glow)
+  (vec4f 1. 0. 0. 1.))

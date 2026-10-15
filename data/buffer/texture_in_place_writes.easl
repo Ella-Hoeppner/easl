@@ -40,7 +40,7 @@
   (= a (blank-texture (vec2u 1u)))
   (set-render-target a)
   (dispatch-render-shaders fullscreen blue 3u)
-  (clear-render-target)
+  (reset-render-target)
   (save-png a (blue-path))
   ; two in-place rewrites, each after a queued read of the old pixels
   (= a (load-image "red_pixel.png"))

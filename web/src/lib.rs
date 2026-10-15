@@ -277,7 +277,8 @@ async fn create_surface_and_device(
   canvas.set_width(width);
   canvas.set_height(height);
   // The canvas is filled by copying the screen texture into it
-  // (`ScreenTarget::Texture`).
+  // (`ScreenTarget::Texture`), which is this format's sRGB variant, so the
+  // canvas holds sRGB-encoded colors like a native window.
   let surface_config = wgpu::SurfaceConfiguration {
     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
       | wgpu::TextureUsages::COPY_DST,

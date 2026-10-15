@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 
+use easl::render_settings::RenderSettings;
 use easl::{
   audio::AudioSource,
   interpreter::{
@@ -61,7 +62,7 @@ impl IOManager for WebIO {
     frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
-    additive: bool,
+    settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.inner.record_draw(
@@ -71,9 +72,21 @@ impl IOManager for WebIO {
       frag_name,
       vert_count,
       pre_upload,
-      additive,
+      settings,
       render_target,
     )
+  }
+
+  fn record_clear(
+    &mut self,
+    render_target: Option<(u8, u8)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
+  ) -> Result<(), EvalError> {
+    self
+      .inner
+      .record_clear(render_target, pre_upload, color, depth)
   }
 
   fn record_compute(

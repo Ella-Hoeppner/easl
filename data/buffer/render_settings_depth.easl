@@ -1,0 +1,98 @@
+; Depth testing: each draw tests against what earlier draws wrote, across
+; pass boundaries (a compute between draws), until `clear-depth`; `Off`
+; neither tests nor writes; `set-depth-write false` tests without writing;
+; the screen's depth starts each frame cleared, and the settings persist
+; from frame to frame. A `frag-depth` output overrides a fragment's depth.
+
+@local
+(var frame: u32 0u)
+
+(var ticks: u32)
+
+@compute
+(defn tick []
+  (+= ticks 1u))
+
+(defn fullscreen-at [i: u32 z: f32]: vec4f
+  (match i
+    0u (vec4f -1. -1. z 1.)
+    1u (vec4f 3. -1. z 1.)
+    _ (vec4f -1. 3. z 1.)))
+
+@vertex
+(defn near [@{builtin vertex-index} i: u32]: vec4f
+  (fullscreen-at i 0.25))
+
+@vertex
+(defn middle [@{builtin vertex-index} i: u32]: vec4f
+  (fullscreen-at i 0.5))
+
+@vertex
+(defn far [@{builtin vertex-index} i: u32]: vec4f
+  (fullscreen-at i 0.75))
+
+@fragment
+(defn red []: vec4f
+  (vec4f 1. 0. 0. 1.))
+
+@fragment
+(defn green []: vec4f
+  (vec4f 0. 1. 0. 1.))
+
+@fragment
+(defn blue []: vec4f
+  (vec4f 0. 0. 1. 1.))
+
+@fragment
+(defn white []: vec4f
+  (vec4f 1.))
+
+(struct DepthOut
+  @{location 0} color: vec4f
+  @{builtin frag-depth} depth: f32)
+
+; Writes a depth nearer than its vertices'.
+@fragment
+(defn green-pulled-near []: DepthOut
+  (DepthOut (vec4f 0. 1. 0. 1.) 0.1))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        ; The far blue is behind the near red: hidden.
+        0u (do (set-depth-test DepthTest/Less)
+               (dispatch-render-shaders near red 3u)
+               (dispatch-render-shaders far blue 3u))
+        ; The depth survives a pass boundary (a compute between draws).
+        1u (do (dispatch-render-shaders near red 3u)
+               (dispatch-compute-shader tick (vec3u 1u))
+               (dispatch-render-shaders far green 3u))
+        ; `Off` draws without testing or writing, so the middle blue, tested
+        ; against the red's 0.25 again, stays hidden.
+        2u (do (dispatch-render-shaders near red 3u)
+               (set-depth-test DepthTest/Off)
+               (dispatch-render-shaders far white 3u)
+               (set-depth-test DepthTest/Less)
+               (dispatch-render-shaders middle blue 3u))
+        ; A clear that can't fold into the next pass (a compute comes
+        ; first) still clears in order.
+        3u (do (dispatch-render-shaders near red 3u)
+               (clear-depth)
+               (dispatch-compute-shader tick (vec3u 1u))
+               (dispatch-render-shaders far green 3u))
+        ; With writes off, both draws pass the cleared depth.
+        4u (do (set-depth-write false)
+               (dispatch-render-shaders middle red 3u)
+               (dispatch-render-shaders far blue 3u))
+        ; A folded clear to 0.5 hides the far draw but not the near one.
+        5u (do (clear-depth 0.5)
+               (dispatch-render-shaders far green 3u)
+               (dispatch-render-shaders near white 3u))
+        ; A fragment's `frag-depth` output replaces its interpolated depth.
+        6u (do (set-depth-write true)
+               (dispatch-render-shaders near red 3u)
+               (dispatch-render-shaders far green-pulled-near 3u))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

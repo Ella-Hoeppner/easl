@@ -167,6 +167,8 @@ macro_rules! screen_test {
 }
 
 screen_test!(screen_draw_order);
+screen_test!(render_settings_depth);
+screen_test!(render_settings_raster);
 screen_test!(screen_draw_flushes);
 screen_test!(screen_draw_frames);
 screen_test!(screen_fragment_captured_closures);
@@ -203,6 +205,8 @@ buffer_test!(storage_element_ref_gpu);
 buffer_test!(generic_struct_arrays_gpu);
 buffer_test!(data_packing_gpu);
 buffer_test!(ref_read_to_owned_arg_gpu);
+buffer_test!(render_target_persistence);
+buffer_test!(render_settings_blend);
 buffer_test!(gpu_read_outside_application);
 buffer_test!(gpu_read_outside_application_dynamic);
 buffer_test!(matrix_bindings);

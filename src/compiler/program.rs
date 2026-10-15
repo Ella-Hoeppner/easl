@@ -6227,6 +6227,22 @@ impl Program {
               duplicates.into_iter().collect()
             };
 
+          // The type of an attributable value: an argument or return
+          // type, or the named field of a struct one (unknown when it's
+          // still generic).
+          let io_value_type =
+            |t: &Type, field: Option<(&AbstractStruct, &str)>| match field {
+              None => Some(t.clone()),
+              Some((s, field_name)) => s
+                .fields
+                .iter()
+                .find(|f| &*f.name == field_name)
+                .and_then(|f| {
+                  f.field_type
+                    .concretize(&vec![], &self.typedefs, SourceTrace::empty())
+                    .ok()
+                }),
+            };
           let mut handle_inout_attributables =
             |attributables: Vec<(
               Type,
@@ -6238,7 +6254,7 @@ impl Program {
              input_or_output: InputOrOutput,
              errors: &mut ErrorLog|
              -> (
-              HashMap<usize, (SourceTrace, Result<Type, Arc<AbstractStruct>>)>,
+              HashMap<usize, Option<Type>>,
               HashMap<BuiltinIOAttribute, Result<Type, AbstractType>>,
             ) {
               for (name, source) in check_for_duplicate_builtins(&attributables)
@@ -6248,10 +6264,10 @@ impl Program {
                   source,
                 ))
               }
-              let mut used_locations: HashMap<
-                usize,
-                (SourceTrace, Result<Type, Arc<AbstractStruct>>),
-              > = HashMap::new();
+              // Each used location's value type (unknown for a generic
+              // struct field).
+              let mut used_locations: HashMap<usize, Option<Type>> =
+                HashMap::new();
               let mut used_builtins: HashMap<
                 BuiltinIOAttribute,
                 Result<Type, AbstractType>,
@@ -6261,27 +6277,19 @@ impl Program {
                   Ok(a) => &*a,
                   Err((_, _, a)) => a,
                 };
+                let value_type = io_value_type(
+                  t,
+                  attributable
+                    .as_ref()
+                    .err()
+                    .map(|(s, field_name, _)| (&**s, &**field_name)),
+                );
                 // WGSL requires integer values passed between stages to be
                 // `flat` (emission adds it when nothing is written).
                 if let Some((interpolation, source)) =
                   attributes.interpolation()
                   && !interpolation.is_flat()
-                  && let Some(value_type) = match attributable {
-                    Ok(_) => Some(t.clone()),
-                    Err((s, field_name, _)) => {
-                      s.fields.iter().find(|f| f.name == *field_name).and_then(
-                        |f| {
-                          f.field_type
-                            .concretize(
-                              &vec![],
-                              &self.typedefs,
-                              SourceTrace::empty(),
-                            )
-                            .ok()
-                        },
-                      )
-                    }
-                  }
+                  && let Some(value_type) = &value_type
                   && value_type.is_integer_scalar_or_vector()
                 {
                   errors.log(CompileError::new(
@@ -6342,8 +6350,8 @@ impl Program {
                     ))
                   }
                 } else {
-                  if let Some((location, source)) = attributes.location() {
-                    used_locations.insert(location, (source, Ok(t.clone())));
+                  if let Some((location, _)) = attributes.location() {
+                    used_locations.insert(location, value_type);
                   }
                 }
               }
@@ -6368,8 +6376,7 @@ impl Program {
                           },
                           errors,
                         );
-                        used_locations
-                          .insert(untaken_location, (source_trace, Ok(t)));
+                        used_locations.insert(untaken_location, Some(t));
                       } else {
                         errors.log(CompileError::new(
                           InvalidTypeForEntryPoint(t.into(), input_or_output),
@@ -6377,16 +6384,16 @@ impl Program {
                         ));
                       }
                     }
-                    Err((t, field_name, a)) => {
-                      inferred_struct_field_locations.push((
-                        t.clone(),
-                        field_name.clone(),
-                        untaken_location,
-                      ));
+                    Err((s, field_name, _)) => {
                       used_locations.insert(
                         untaken_location,
-                        (a.attributed_source, Err(t.clone())),
+                        io_value_type(&t, Some((&s, &field_name))),
                       );
+                      inferred_struct_field_locations.push((
+                        s,
+                        field_name,
+                        untaken_location,
+                      ));
                     }
                   }
                 }
@@ -6500,28 +6507,20 @@ impl Program {
               }
             }
             EntryPoint::Fragment => {
-              if let Some((_, t)) = used_output_locations.get(&0) {
-                if let Ok(Type::Struct(s)) = t
-                  && &*s.name == "vec4"
-                  && {
-                    let field_type = s.fields[0].field_type.unwrap_known();
-                    field_type == Type::F32
-                      || field_type == Type::U32
-                      || field_type == Type::I32
+              if let Some(t) = used_output_locations.get(&0) {
+                let valid = t.as_ref().is_some_and(|t| {
+                  if let Type::Struct(s) = t
+                    && &*s.name == "vec4"
+                  {
+                    matches!(
+                      s.fields[0].field_type.unwrap_known(),
+                      Type::F32 | Type::U32 | Type::I32
+                    )
+                  } else {
+                    false
                   }
-                {
-                } else if let Err(s) = t
-                  && &*s.name.0 == "vec4"
-                  && {
-                    match s.fields[0].field_type {
-                      AbstractType::Type(Type::F32 | Type::U32 | Type::I32) => {
-                        true
-                      }
-                      _ => false,
-                    }
-                  }
-                {
-                } else {
+                });
+                if !valid {
                   errors.log(CompileError::new(
                     Fragment0OutputInvalidType,
                     f_source,

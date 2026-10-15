@@ -42,6 +42,7 @@ use crate::compiler::{
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 use crate::external::ExternalVars;
+use crate::render_settings::{RenderSetting, RenderSettings};
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, participant,
 };
@@ -2172,12 +2173,6 @@ fn apply_builtin_fn<IO: IOManager>(
       let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
         panic!()
       };
-      let additive =
-        if let Some((Value::Prim(Primitive::Bool(b)), _)) = args.get(3) {
-          *b
-        } else {
-          false
-        };
       env.setup_gpu_if_needed();
       let mut pre_upload =
         env.collect_dirty_uploads(&read_global_variable_names);
@@ -2190,7 +2185,7 @@ fn apply_builtin_fn<IO: IOManager>(
         &frag_f_name,
         *vert_count,
         pre_upload,
-        additive,
+        env.render_settings,
         render_target,
       )?;
       env.mark_gpu_written(&written_global_variable_names);
@@ -2570,9 +2565,15 @@ fn apply_builtin_fn<IO: IOManager>(
         .collect(),
       ))
     }
-    "clear-render-target" => {
+    "reset-render-target" => {
       env.current_render_target = None;
       Ok(Value::Unit)
+    }
+    "reset-render-settings" | "clear-target" | "clear-depth" => {
+      apply_render_command(env, &f_name, &args)
+    }
+    name if RenderSetting::of_setter(name).is_some() => {
+      apply_render_command(env, &f_name, &args)
     }
     "start-listening" => {
       env.io.start_audio_input(None)?;
@@ -3415,9 +3416,17 @@ pub enum WindowEvent {
     frag: u16,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
-    additive: bool,
+    settings: RenderSettings,
     /// If Some, render to this texture binding instead of the screen.
     render_target: Option<(u8, u8)>,
+  },
+  /// Clears a render target (the screen when `None`): its color to
+  /// `color` and its depth buffer to `depth`, each when given.
+  ClearTarget {
+    render_target: Option<(u8, u8)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
   },
   ComputeShader {
     entry: u16,
@@ -4121,9 +4130,21 @@ pub trait IOManager: Sized {
     frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
-    additive: bool,
+    settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError>;
+  /// Queues clearing `render_target` (the screen when `None`): its color
+  /// to `color` and its depth to `depth`, each when given. IO managers
+  /// without a GPU ignore it.
+  fn record_clear(
+    &mut self,
+    _render_target: Option<(u8, u8)>,
+    _pre_upload: Vec<((u8, u8), BufferUpload)>,
+    _color: Option<[f32; 4]>,
+    _depth: Option<f32>,
+  ) -> Result<(), EvalError> {
+    Ok(())
+  }
   fn record_compute(
     &mut self,
     entry: u16,
@@ -4483,7 +4504,7 @@ impl IOManager for StdoutIO {
     _frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
-    additive: bool,
+    settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
@@ -4491,8 +4512,24 @@ impl IOManager for StdoutIO {
       frag,
       vert_count,
       pre_upload,
-      additive,
+      settings,
       render_target,
+    });
+    Ok(())
+  }
+
+  fn record_clear(
+    &mut self,
+    render_target: Option<(u8, u8)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
+  ) -> Result<(), EvalError> {
+    self.frame_draw_calls.push(WindowEvent::ClearTarget {
+      render_target,
+      pre_upload,
+      color,
+      depth,
     });
     Ok(())
   }
@@ -4904,7 +4941,7 @@ impl IOManager for StringIO {
     frag_name: &str,
     vert_count: u32,
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
-    _additive: bool,
+    _settings: RenderSettings,
     _render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchShaders {
@@ -5071,7 +5108,7 @@ impl IOManager for CaptureIO {
     frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
-    additive: bool,
+    settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.inner.record_draw(
@@ -5081,9 +5118,21 @@ impl IOManager for CaptureIO {
       frag_name,
       vert_count,
       pre_upload,
-      additive,
+      settings,
       render_target,
     )
+  }
+
+  fn record_clear(
+    &mut self,
+    render_target: Option<(u8, u8)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
+  ) -> Result<(), EvalError> {
+    self
+      .inner
+      .record_clear(render_target, pre_upload, color, depth)
   }
 
   fn record_compute(
@@ -5386,9 +5435,12 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
   /// Render target for subsequent `dispatch-render-shaders` calls. None means
-  /// render to the screen. Set by `set-render-target`, cleared by
-  /// `clear-render-target`.
+  /// render to the screen. Set by `set-render-target`, reset by
+  /// `reset-render-target`.
   current_render_target: Option<GroupAndBinding>,
+  /// The render settings subsequent draws record (`set-blend-mode`, …).
+  /// They persist, across frames too, until changed.
+  render_settings: RenderSettings,
   /// Host-side video decoders, keyed by the `_source` index in a `Video`
   /// value (see `video::VideoRegistry`). Main-thread only — a decoder can't
   /// cross to the audio thread, and `Video` is CPU-exclusive.
@@ -5546,6 +5598,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .collect(),
       buffer_states,
       current_render_target: None,
+      render_settings: RenderSettings::default(),
       video: VideoRegistry::new(),
       #[cfg(feature = "window")]
       audio_source,
@@ -6282,6 +6335,19 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// GPU copy first, so the render changes only the target (textures have
   /// value semantics); the copy runs in program order too, after the GPU
   /// work queued before it.
+  /// Queues clearing the current render target's color and/or depth, in
+  /// program order with the frame's other GPU work.
+  fn record_clear(
+    &mut self,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
+  ) -> Result<(), EvalError> {
+    self.setup_gpu_if_needed();
+    let (render_target, pre_upload) = self.prepare_render_target();
+    self
+      .io
+      .record_clear(render_target, pre_upload, color, depth)
+  }
   fn prepare_render_target(
     &mut self,
   ) -> (Option<(u8, u8)>, Vec<((u8, u8), BufferUpload)>) {
@@ -7225,6 +7291,68 @@ fn set_render_target<IO: IOManager>(
 
 /// The value `(Sampler filter address)` makes. Kept out of
 /// `apply_builtin_fn` so its locals don't grow that function's stack frame.
+/// The render-setting setters, `reset-render-settings`, and the
+/// target-clearing commands. Kept out of `apply_builtin_fn`'s match so its
+/// locals don't grow that function's stack frame.
+fn apply_render_command<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  name: &str,
+  args: &[(Value, Type)],
+) -> Result<Value, EvalException> {
+  match name {
+    "reset-render-settings" => env.render_settings = RenderSettings::default(),
+    "clear-target" => {
+      let Value::Struct(fields) = &args[0].0 else {
+        panic!("clear-target: expected a vec4f")
+      };
+      let color = ["x", "y", "z", "w"].map(|f| match fields[f] {
+        Value::Prim(Primitive::F32(x)) => x,
+        _ => panic!("clear-target: expected a vec4f"),
+      });
+      env.record_clear(Some(color), Some(1.))?;
+    }
+    "clear-depth" => {
+      let depth = match args.first() {
+        Some((Value::Prim(Primitive::F32(x)), _)) => *x,
+        _ => 1.,
+      };
+      env.record_clear(None, Some(depth))?;
+    }
+    _ => {
+      let setting = RenderSetting::of_setter(name)
+        .unwrap_or_else(|| panic!("not a render command: {name}"));
+      let words: Vec<u32> = args
+        .iter()
+        .flat_map(|(value, ty)| render_setting_words(name, value, ty))
+        .collect();
+      env.render_settings.set(setting, &words);
+    }
+  }
+  Ok(Value::Unit)
+}
+
+/// A render-setting argument as `RenderSettings::set` takes it.
+fn render_setting_words(name: &str, value: &Value, ty: &Type) -> Vec<u32> {
+  match (value, ty) {
+    (Value::Prim(Primitive::Bool(b)), _) => vec![*b as u32],
+    (Value::Enum(variant, _), Type::Enum(e)) => vec![
+      e.variants
+        .iter()
+        .position(|v| v.name == *variant)
+        .unwrap_or_else(|| panic!("{name}: unknown variant {variant}"))
+        as u32,
+    ],
+    (Value::Struct(fields), _) => ["x", "y", "z", "w"]
+      .iter()
+      .map(|f| match fields[*f] {
+        Value::Prim(Primitive::F32(x)) => x.to_bits(),
+        _ => panic!("{name}: expected a vec4f"),
+      })
+      .collect(),
+    (other, _) => panic!("{name}: unexpected argument {other:?}"),
+  }
+}
+
 fn sampler_value(filter: &Value, address: &Value) -> Value {
   let discriminant = |value: &Value, e: AbstractEnum| -> u32 {
     let Value::Enum(variant, _) = value else {
@@ -9058,7 +9186,6 @@ fn vm_host_call<IO: IOManager>(
       frag,
       sets,
       vert_count_slot,
-      additive_slot,
     } => {
       let dispatch = &code.host_dispatches[*sets as usize];
       refresh_dirty_slots(
@@ -9081,9 +9208,6 @@ fn vm_host_call<IO: IOManager>(
         .map(|&i| code.host_bindings[i as usize].name.clone())
         .collect();
       let vert_count = stack[*vert_count_slot as usize];
-      let additive = additive_slot
-        .map(|slot| stack[slot as usize] != 0)
-        .unwrap_or(false);
       env.setup_gpu_if_needed();
       let mut pre_upload = env.collect_dirty_uploads(&read_names);
       let (render_target, target_uploads) = env.prepare_render_target();
@@ -9097,7 +9221,7 @@ fn vm_host_call<IO: IOManager>(
         frag_name,
         vert_count,
         pre_upload,
-        additive,
+        env.render_settings,
         render_target,
       )?;
       env.mark_gpu_written(&written_names);
@@ -9414,8 +9538,32 @@ fn vm_host_call<IO: IOManager>(
         b.gpu.expect("set-render-target on an unbound texture");
       env.current_render_target = Some(GroupAndBinding { group, binding });
     }
-    HostOp::ClearRenderTarget => {
+    HostOp::ResetRenderTarget => {
       env.current_render_target = None;
+    }
+    HostOp::SetRenderSetting { setting, slots } => {
+      let words: Vec<u32> = slots
+        .iter()
+        .flat_map(|slot| {
+          let slot = *slot as usize;
+          &stack[slot..slot + setting.words_per_argument()]
+        })
+        .copied()
+        .collect();
+      env.render_settings.set(*setting, &words);
+    }
+    HostOp::ResetRenderSettings => {
+      env.render_settings = RenderSettings::default();
+    }
+    HostOp::ClearTarget { color_slot } => {
+      let c = *color_slot as usize;
+      let color = [0, 1, 2, 3].map(|i| f32::from_bits(stack[c + i]));
+      env.record_clear(Some(color), Some(1.))?;
+    }
+    HostOp::ClearDepth { value_slot } => {
+      let depth =
+        value_slot.map_or(1., |slot| f32::from_bits(stack[slot as usize]));
+      env.record_clear(None, Some(depth))?;
     }
     HostOp::SetMouseCapture { captured } => {
       env.io.set_mouse_capture(*captured);

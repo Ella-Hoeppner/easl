@@ -17,6 +17,12 @@ A `Sampler` (wgsl's `sampler`) decides how `texture-sample` and its variants rea
 (= tex-sampler (Sampler FilterMode/Linear AddressMode/Repeat))
 ```
 
+## Color space
+
+Colors are linear everywhere in a program: what shaders compute, what textures hold, and what blending mixes, so `0.5` is half as much light as `1.`. The window is sRGB-encoded for display on every platform (`0.5` shows as 188 of 255). Image files are sRGB too: `load-image` and video frames decode them to linear values, and `save-png` encodes back, so a saved texture looks like the same texture drawn to the window. Textures hold 16-bit floats, so values outside `[0, 1]` survive until they're saved or shown.
+
+## Functions
+
 ### `texture-sample`
 
 ```easl

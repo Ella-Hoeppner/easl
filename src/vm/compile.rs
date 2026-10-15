@@ -18,6 +18,7 @@ use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
   ConcreteArraySize, Type, TypeDescription, TypeState,
 };
+use crate::render_settings::RenderSetting;
 use crate::thread_sync::AtomicOp;
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
@@ -4338,17 +4339,12 @@ impl TypedExp {
         let vert_count_slot = args[2]
           .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
-        let additive_slot = args.get(3).map(|a| {
-          a.compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap()
-        });
         state.emit_dispatch(
           HostOp::DispatchRender {
             vert,
             frag,
             sets,
             vert_count_slot,
-            additive_slot,
           },
           &writes,
         );
@@ -4598,8 +4594,40 @@ impl TypedExp {
         state.emit_host_op(HostOp::SetRenderTarget { binding });
         Some(None)
       }
-      "clear-render-target" => {
-        state.emit_host_op(HostOp::ClearRenderTarget);
+      "reset-render-target" => {
+        state.emit_host_op(HostOp::ResetRenderTarget);
+        Some(None)
+      }
+      "reset-render-settings" => {
+        state.emit_host_op(HostOp::ResetRenderSettings);
+        Some(None)
+      }
+      "clear-target" => {
+        let color_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
+        state.emit_host_op(HostOp::ClearTarget { color_slot });
+        Some(None)
+      }
+      "clear-depth" => {
+        let value_slot = args.first().map(|value| {
+          value
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap()
+        });
+        state.emit_host_op(HostOp::ClearDepth { value_slot });
+        Some(None)
+      }
+      name if let Some(setting) = RenderSetting::of_setter(name) => {
+        let slots = args
+          .iter()
+          .map(|arg| {
+            arg
+              .compile_to_bytecode(CompilePosition::Value, state)
+              .unwrap()
+          })
+          .collect();
+        state.emit_host_op(HostOp::SetRenderSetting { setting, slots });
         Some(None)
       }
       "save-png" => {

@@ -32,6 +32,7 @@ use easl::interpreter::{
   GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState, MidiState, StdoutIO,
   WindowEvent, run_program_entry_with_io_runtime_and_external_from_path,
 };
+use easl::render_settings::RenderSettings;
 use std::fs;
 use std::path::Path;
 
@@ -222,7 +223,7 @@ impl IOManager for ThreadSyncIO {
     frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
-    additive: bool,
+    settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.trace.push(format!(
@@ -235,9 +236,21 @@ impl IOManager for ThreadSyncIO {
       frag_name,
       vert_count,
       pre_upload,
-      additive,
+      settings,
       render_target,
     )
+  }
+
+  fn record_clear(
+    &mut self,
+    render_target: Option<(u8, u8)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
+  ) -> Result<(), EvalError> {
+    self
+      .inner
+      .record_clear(render_target, pre_upload, color, depth)
   }
 
   fn record_compute(

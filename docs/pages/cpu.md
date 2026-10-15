@@ -53,7 +53,7 @@ Easl has several functions to get input about the state of the window, and for g
 
 ## Textures and Render targets
 
-Render dispatches draw to the window unless `set-render-target` points them at a texture. After you'ves set a target, you can also call `clear-render-target` to clear the target, such that subsequent calls will go back to the window itself. Textures come from `blank-texture` or `load-image`, later dispatches in the same frame can sample what was drawn, and [`save-png`](reference/cpu-builtins.md#save-png) saves any texture, including one just rendered.
+Render dispatches draw to the window unless `set-render-target` points them at a texture. After you've set a target, you can call `reset-render-target` to send later draws back to the window. Textures come from `blank-texture` or `load-image`, later dispatches in the same frame can sample what was drawn, and [`save-png`](reference/cpu-builtins.md#save-png) saves any texture, including one just rendered. A texture keeps what's drawn into it until `clear-target` clears it; the window starts each frame black. How draws blend, depth-test, and cull is set with the [render settings](reference/cpu-builtins.md#render-settings).
 
 ```easl
 (var canvas: (Texture2D f32))
@@ -63,8 +63,9 @@ Render dispatches draw to the window unless `set-render-target` points them at a
   (= canvas (blank-texture (vec2u 512u)))
   (spawn-window (fn []
                   (set-render-target canvas)
+                  (clear-target (vec4f 0. 0. 0. 1.))
                   (dispatch-render-shaders vertex draw 3)
-                  (clear-render-target)
+                  (reset-render-target)
                   (dispatch-render-shaders vertex show-canvas 3))))
 ```
 

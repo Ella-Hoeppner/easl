@@ -8,7 +8,9 @@ use std::{
   task::{Context, Poll, Waker},
 };
 
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
+
+use half::f16;
 
 // The winit window loop is native-only: in a browser, the web runtime drives
 // frames from `requestAnimationFrame` and renders to a canvas it provides.
@@ -35,6 +37,10 @@ use crate::interpreter::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::interpreter::{EvalException, IOManager};
+use crate::render_settings::{
+  BlendComponent, BlendFactor, BlendOperation, CullMode, DepthTest, FrontFace,
+  RenderSettings, Topology,
+};
 
 // winit forbids creating more than one EventLoop per process. We keep one alive
 // in a thread-local and reuse it across multiple spawn-window calls via
@@ -94,78 +100,100 @@ const BINDING_TEXTURE_FORMAT: wgpu::TextureFormat =
 /// Bytes per texel for [`BINDING_TEXTURE_FORMAT`] (Rgba16Float = 8).
 const BINDING_TEXTURE_BPP: u32 = 8;
 
-/// Convert an f32 in [0, 1] to an IEEE 754 half-precision (f16) value.
-fn f32_to_f16(value: f32) -> u16 {
-  let bits = value.to_bits();
-  let sign = (bits >> 16) & 0x8000;
-  let exp = ((bits >> 23) & 0xFF) as i32;
-  let man = bits & 0x7F_FFFF;
-  if exp == 0 {
-    sign as u16
-  } else if exp == 0xFF {
-    (sign | 0x7C00 | if man != 0 { 0x200 } else { 0 }) as u16
+/// The linear value of an sRGB-encoded channel in [0, 1].
+fn srgb_to_linear(encoded: f32) -> f32 {
+  if encoded <= 0.04045 {
+    encoded / 12.92
   } else {
-    let new_exp = exp - 127 + 15;
-    if new_exp >= 31 {
-      (sign | 0x7C00) as u16
-    } else if new_exp <= 0 {
-      sign as u16
-    } else {
-      (sign | ((new_exp as u32) << 10) | (man >> 13)) as u16
-    }
+    ((encoded + 0.055) / 1.055).powf(2.4)
   }
 }
 
-/// Convert an IEEE 754 half-precision (f16) value to f32. Inverse of
-/// [`f32_to_f16`]; used when reading textures back for `save-png`.
-fn f16_to_f32(half: u16) -> f32 {
-  let sign = ((half as u32) & 0x8000) << 16;
-  let exp = ((half >> 10) & 0x1F) as u32;
-  let man = (half & 0x3FF) as u32;
-  let bits = if exp == 0 {
-    if man == 0 {
-      sign
-    } else {
-      // subnormal: normalize
-      let mut exp = 127 - 15 + 1;
-      let mut man = man;
-      while man & 0x400 == 0 {
-        man <<= 1;
-        exp -= 1;
-      }
-      sign | ((exp as u32) << 23) | ((man & 0x3FF) << 13)
-    }
-  } else if exp == 0x1F {
-    sign | 0x7F80_0000 | (man << 13)
+/// The sRGB encoding of a linear channel in [0, 1].
+fn linear_to_srgb(linear: f32) -> f32 {
+  if linear <= 0.003_130_8 {
+    linear * 12.92
   } else {
-    sign | ((exp + 127 - 15) << 23) | (man << 13)
+    1.055 * linear.powf(1. / 2.4) - 0.055
+  }
+}
+
+/// Each byte's texel bits as a color channel (sRGB-decoded) and as alpha.
+static RGBA8_TEXEL_BITS: LazyLock<[[u16; 256]; 2]> = LazyLock::new(|| {
+  let bits = |decode: fn(f32) -> f32| {
+    std::array::from_fn(|byte| {
+      f16::from_f32(decode(byte as f32 / 255.)).to_bits()
+    })
   };
-  f32::from_bits(bits)
-}
+  [bits(srgb_to_linear), bits(|alpha| alpha)]
+});
 
-/// Convert RGBA16Float texel bytes (8 bytes/pixel) to RGBA8 (4
-/// bytes/pixel), clamping each channel to [0, 1]. Inverse of
-/// [`rgba8_to_rgba16float`] (exact for all u8 values, since every k/255 is
-/// within f16 rounding distance of its byte).
-fn rgba16float_to_rgba8(data: &[u8]) -> Vec<u8> {
-  let mut out = Vec::with_capacity(data.len() / 2);
-  for pair in data.chunks_exact(2) {
-    let half = u16::from_le_bytes([pair[0], pair[1]]);
-    let f = f16_to_f32(half).clamp(0., 1.);
-    out.push((f * 255.).round() as u8);
-  }
-  out
-}
-
-/// Convert RGBA8 (`&[u8]`, 4 bytes/pixel) to RGBA16Float (`Vec<u8>`, 8
-/// bytes/pixel).  Each u8 channel is normalised to [0, 1] and stored as f16.
+/// Converts RGBA8 pixels (4 bytes/pixel), as images and video frames store
+/// them, to texels in [`BINDING_TEXTURE_FORMAT`] (8 bytes/pixel). Textures
+/// hold linear color (what shaders read and write, and what an sRGB screen
+/// encodes for display), so color channels are sRGB-decoded; alpha is
+/// linear already.
 fn rgba8_to_rgba16float(data: &[u8]) -> Vec<u8> {
+  let [color, alpha] = &*RGBA8_TEXEL_BITS;
   let mut out = Vec::with_capacity(data.len() * 2);
-  for &byte in data {
-    let f = byte as f32 / 255.0;
-    out.extend_from_slice(&f32_to_f16(f).to_le_bytes());
+  for pixel in data.chunks_exact(4) {
+    for byte in &pixel[..3] {
+      out.extend_from_slice(&color[*byte as usize].to_le_bytes());
+    }
+    out.extend_from_slice(&alpha[pixel[3] as usize].to_le_bytes());
   }
   out
+}
+
+/// Converts texels in [`BINDING_TEXTURE_FORMAT`] to RGBA8 pixels, clamping
+/// to [0, 1] and sRGB-encoding the color channels: the inverse of
+/// [`rgba8_to_rgba16float`], exact for every byte.
+fn rgba16float_to_rgba8(data: &[u8]) -> Vec<u8> {
+  data
+    .chunks_exact(2)
+    .enumerate()
+    .map(|(i, bits)| {
+      let value = f16::from_le_bytes([bits[0], bits[1]])
+        .to_f32()
+        .clamp(0., 1.);
+      let encoded = if i % 4 == 3 {
+        value
+      } else {
+        linear_to_srgb(value)
+      };
+      (encoded * 255.).round() as u8
+    })
+    .collect()
+}
+
+/// The wgpu form of a blend component.
+fn blend_component(component: BlendComponent) -> wgpu::BlendComponent {
+  let factor = |factor| match factor {
+    BlendFactor::Zero => wgpu::BlendFactor::Zero,
+    BlendFactor::One => wgpu::BlendFactor::One,
+    BlendFactor::Src => wgpu::BlendFactor::Src,
+    BlendFactor::OneMinusSrc => wgpu::BlendFactor::OneMinusSrc,
+    BlendFactor::SrcAlpha => wgpu::BlendFactor::SrcAlpha,
+    BlendFactor::OneMinusSrcAlpha => wgpu::BlendFactor::OneMinusSrcAlpha,
+    BlendFactor::Dst => wgpu::BlendFactor::Dst,
+    BlendFactor::OneMinusDst => wgpu::BlendFactor::OneMinusDst,
+    BlendFactor::DstAlpha => wgpu::BlendFactor::DstAlpha,
+    BlendFactor::OneMinusDstAlpha => wgpu::BlendFactor::OneMinusDstAlpha,
+    BlendFactor::SrcAlphaSaturated => wgpu::BlendFactor::SrcAlphaSaturated,
+    BlendFactor::Constant => wgpu::BlendFactor::Constant,
+    BlendFactor::OneMinusConstant => wgpu::BlendFactor::OneMinusConstant,
+  };
+  wgpu::BlendComponent {
+    src_factor: factor(component.src_factor),
+    dst_factor: factor(component.dst_factor),
+    operation: match component.operation {
+      BlendOperation::Add => wgpu::BlendOperation::Add,
+      BlendOperation::Subtract => wgpu::BlendOperation::Subtract,
+      BlendOperation::ReverseSubtract => wgpu::BlendOperation::ReverseSubtract,
+      BlendOperation::Min => wgpu::BlendOperation::Min,
+      BlendOperation::Max => wgpu::BlendOperation::Max,
+    },
+  }
 }
 
 /// A sampler with `settings`, filtering and addressing the same way on both
@@ -362,14 +390,73 @@ struct FrameScreen {
   /// The surface image being drawn, under `ScreenTarget::Surface`.
   surface_texture: Option<wgpu::SurfaceTexture>,
   view: wgpu::TextureView,
+  /// The image's size, which its depth buffer matches.
+  size: (u32, u32),
   /// Whether a pass has drawn into `view` yet this frame; the first one
   /// clears it.
   drawn: bool,
+  /// Whether a pass has used the screen's depth buffer yet this frame; the
+  /// first one clears it.
+  depth_used: bool,
 }
 
 /// Identity of a cached render pipeline: (vert entry id, frag entry id,
-/// additive blending, target format).
-type RenderPipelineKey = (u16, u16, bool, wgpu::TextureFormat);
+/// normalized render settings, target format).
+type RenderPipelineKey = (u16, u16, RenderSettings, wgpu::TextureFormat);
+
+/// The format of every depth buffer: core in WebGPU, and exact for any
+/// depth a fragment shader writes.
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// One element of a render run, in program order.
+#[derive(Clone, Copy)]
+enum RenderItem {
+  Draw {
+    vert: u16,
+    frag: u16,
+    vert_count: u32,
+    settings: RenderSettings,
+    target: Option<(u8, u8)>,
+  },
+  Clear {
+    target: Option<(u8, u8)>,
+    color: Option<[f32; 4]>,
+    depth: Option<f32>,
+  },
+}
+
+/// Where a render run's screen draws go: the frame's screen image, or a
+/// view an embedder supplies (with its size, and whether a pass has drawn
+/// into it or used its depth buffer yet).
+enum ScreenOutput {
+  Frame,
+  View {
+    view: wgpu::TextureView,
+    format: wgpu::TextureFormat,
+    size: (u32, u32),
+    drawn: bool,
+    depth_used: bool,
+  },
+}
+
+/// A render pass planned by `encode_render_items`: its attachments, how
+/// each starts, and its draws.
+struct PlannedPass {
+  color: wgpu::TextureView,
+  color_load: wgpu::LoadOp<wgpu::Color>,
+  depth: Option<(wgpu::TextureView, wgpu::LoadOp<f32>)>,
+  draws: Vec<PlannedDraw>,
+}
+
+/// A draw in a `PlannedPass`.
+struct PlannedDraw {
+  pipeline: usize,
+  /// A bind-group set with a placeholder in place of the pass's target,
+  /// when the pipeline also binds it as a texture.
+  placeholder: Option<Vec<wgpu::BindGroup>>,
+  vert_count: u32,
+  blend_constant: [f32; 4],
+}
 
 /// Descriptor objects owned by one cached pipeline. Buffers stay global and
 /// shared across all pipelines; these are only the layout/bind-group
@@ -415,7 +502,7 @@ pub struct GpuCore {
   /// Cached compute pipelines, indexed by dense entry id.
   compute_pipelines: Vec<Option<CachedComputePipeline>>,
   /// Cached render pipelines with their per-pipeline binding objects.
-  /// Linear scan keyed by (vert_id, frag_id, additive, format) — pipeline
+  /// Linear scan keyed by (vert_id, frag_id, settings, format) — pipeline
   /// counts are small and integer-compare scans beat hashing here.
   render_pipelines: Vec<(RenderPipelineKey, CachedRenderPipeline)>,
   pub binding_slots: Vec<BindingSlot>,
@@ -429,6 +516,12 @@ pub struct GpuCore {
   /// The texture each `Texture2D` binding holds. A binding with none yet
   /// binds the placeholder.
   slot_textures: HashMap<(u8, u8), TextureHandle>,
+  /// Each texture's depth buffer, keyed like `texture_store`, created the
+  /// first time a draw into the texture uses depth (or a `clear-depth`)
+  /// and freed with the texture.
+  texture_depth: HashMap<u64, wgpu::Texture>,
+  /// The screen's depth buffer, sized to the screen image.
+  screen_depth: Option<wgpu::Texture>,
   /// See `textures_created()`.
   textures_created: u64,
   /// Samplers for `Sampler` bindings, with the settings each was made from.
@@ -1173,74 +1266,85 @@ impl GpuCore {
     }
   }
 
-  /// Encodes and submits a sequence of render calls: one render pass per
-  /// consecutive same-render-target group, all in one encoder/submit.
-  /// Screen-targeted calls draw into the frame's screen image
-  /// (`begin_screen_pass`), or are skipped under `ScreenTarget::Embedder`.
-  /// Does NOT apply pre_uploads or wait for completion — callers own upload
-  /// ordering and synchronization. Pipelines must already exist in the
-  /// cache.
-  fn encode_render_groups(
+  /// Encodes and submits a render run: draws and clears in program order,
+  /// all in one encoder/submit. Consecutive draws into one target that
+  /// agree on using depth share a pass. A clear directly followed by a
+  /// draw into its target becomes that pass's load op; any other clear is
+  /// an empty pass at its position. A texture target's contents persist
+  /// from pass to pass; the screen starts each frame cleared to opaque
+  /// black (or the color a `clear-target` asked for). Screen items go to
+  /// `screen` (skipped under `ScreenTarget::Embedder` when that's the
+  /// frame). Does NOT apply pre_uploads or wait for completion — callers
+  /// own upload ordering and synchronization. Pipelines must already exist
+  /// in the cache.
+  fn encode_render_items(
     &mut self,
-    calls: &[(u16, u16, u32, bool, Option<(u8, u8)>)],
+    items: &[RenderItem],
+    screen: &mut ScreenOutput,
   ) {
-    if calls.is_empty() {
-      return;
-    }
-    let screen_format = self.screen_format();
-
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("render encoder"),
-        });
-    let mut any_pass = false;
-
-    // Group consecutive calls by render target, one render pass per group.
-    let mut i = 0;
-    while i < calls.len() {
-      let current_rt = calls[i].4;
-      let end = calls[i..]
-        .iter()
-        .position(|c| c.4 != current_rt)
-        .map_or(calls.len(), |j| i + j);
-      let group = &calls[i..end];
-
-      // Texture targets are cleared by each pass; the screen only by the
-      // frame's first. The views are owned, so no borrow of `self` outlives
-      // this point.
-      let (view, load) = match current_rt {
-        Some(rt) => (
-          self.render_target_view(rt),
-          wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        ),
-        None if self.screen_target == ScreenTarget::Embedder => {
-          i = end;
-          continue;
+    let skips_screen = matches!(screen, ScreenOutput::Frame)
+      && self.screen_target == ScreenTarget::Embedder;
+    let mut passes: Vec<PlannedPass> = vec![];
+    // The (target, uses depth) of the last pass while draws can join it.
+    let mut open: Option<(Option<(u8, u8)>, bool)> = None;
+    let mut folded_clear: Option<(Option<[f32; 4]>, Option<f32>)> = None;
+    for (i, item) in items.iter().enumerate() {
+      match *item {
+        RenderItem::Clear {
+          target,
+          color,
+          depth,
+        } => {
+          if target.is_none() && skips_screen {
+            continue;
+          }
+          let folds = matches!(
+            items.get(i + 1),
+            Some(RenderItem::Draw { target: next, settings, .. })
+              if *next == target && (depth.is_none() || settings.uses_depth())
+          );
+          if folds {
+            folded_clear = Some((color, depth));
+          } else {
+            let pass =
+              self.plan_pass(target, depth.is_some(), color, depth, screen);
+            passes.push(pass);
+          }
+          open = None;
         }
-        None => self.begin_screen_pass(),
-      };
-      let format = if current_rt.is_none() {
-        screen_format
-      } else {
-        GpuCore::OFFSCREEN_FORMAT
-      };
-      // Resolve each draw's pipeline before the pass borrow begins. For
-      // pipelines that bind the pass's render target as a texture, build a
-      // variant bind-group set with a placeholder in that slot (avoids
-      // wgpu's COLOR_TARGET + RESOURCE conflict).
-      let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
-        .iter()
-        .map(|(vert, frag, _, additive, _)| {
-          let key = (*vert, *frag, *additive, format);
+        RenderItem::Draw {
+          vert,
+          frag,
+          vert_count,
+          settings,
+          target,
+        } => {
+          if target.is_none() && skips_screen {
+            continue;
+          }
+          let uses_depth = settings.uses_depth();
+          if folded_clear.is_some() || open != Some((target, uses_depth)) {
+            let (color, depth) = folded_clear.take().unwrap_or((None, None));
+            let pass = self.plan_pass(target, uses_depth, color, depth, screen);
+            passes.push(pass);
+            open = Some((target, uses_depth));
+          }
+          let format = match (target, &*screen) {
+            (Some(_), _) => GpuCore::OFFSCREEN_FORMAT,
+            (None, ScreenOutput::View { format, .. }) => *format,
+            (None, ScreenOutput::Frame) => self.screen_format(),
+          };
+          let key = (vert, frag, settings.normalized(), format);
           let index = self
             .render_pipelines
             .iter()
             .position(|(k, _)| *k == key)
             .expect("render pipeline missing from cache");
+          // A pipeline that binds the pass's render target as a texture
+          // gets a bind-group set with a placeholder in that slot (wgpu
+          // forbids a texture as both COLOR_TARGET and RESOURCE).
           let bindings = &self.render_pipelines[index].1.bindings;
-          let placeholder = current_rt
+          let placeholder = target
             .filter(|rt| bindings.used.contains_key(rt))
             .map(|rt| {
               self.create_bind_groups(
@@ -1249,49 +1353,203 @@ impl GpuCore {
                 Some(rt),
               )
             });
-          (index, placeholder)
-        })
-        .collect();
-
-      {
-        let mut render_pass =
-          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-              view: &view,
-              resolve_target: None,
-              depth_slice: None,
-              ops: wgpu::Operations {
-                load,
-                store: wgpu::StoreOp::Store,
-              },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
+          passes.last_mut().unwrap().draws.push(PlannedDraw {
+            pipeline: index,
+            placeholder,
+            vert_count,
+            blend_constant: settings.blend_constant(),
           });
-        for ((_, _, vert_count, _, _), (pipeline_index, placeholder)) in
-          group.iter().zip(prepared.iter())
-        {
-          let cached = &self.render_pipelines[*pipeline_index].1;
-          let bind_groups = placeholder
-            .as_deref()
-            .unwrap_or(&cached.bindings.bind_groups);
-          for (group_idx, bind_group) in bind_groups.iter().enumerate() {
-            render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-          }
-          render_pass.set_pipeline(&cached.pipeline);
-          render_pass.draw(0..*vert_count, 0..1);
         }
       }
-      any_pass = true;
-
-      i = end;
     }
+    if passes.is_empty() {
+      return;
+    }
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("render encoder"),
+        });
+    for pass in passes.iter() {
+      let mut render_pass =
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+          label: Some("render pass"),
+          color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &pass.color,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+              load: pass.color_load,
+              store: wgpu::StoreOp::Store,
+            },
+          })],
+          depth_stencil_attachment: pass.depth.as_ref().map(|(view, load)| {
+            wgpu::RenderPassDepthStencilAttachment {
+              view,
+              depth_ops: Some(wgpu::Operations {
+                load: *load,
+                store: wgpu::StoreOp::Store,
+              }),
+              stencil_ops: None,
+            }
+          }),
+          occlusion_query_set: None,
+          timestamp_writes: None,
+          multiview_mask: None,
+        });
+      // A pass starts with a zero blend constant.
+      let mut blend_constant = [0.; 4];
+      for draw in pass.draws.iter() {
+        let cached = &self.render_pipelines[draw.pipeline].1;
+        let bind_groups = draw
+          .placeholder
+          .as_deref()
+          .unwrap_or(&cached.bindings.bind_groups);
+        for (group_idx, bind_group) in bind_groups.iter().enumerate() {
+          render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+        }
+        render_pass.set_pipeline(&cached.pipeline);
+        if draw.blend_constant != blend_constant {
+          blend_constant = draw.blend_constant;
+          let [r, g, b, a] = blend_constant.map(f64::from);
+          render_pass.set_blend_constant(wgpu::Color { r, g, b, a });
+        }
+        render_pass.draw(0..draw.vert_count, 0..1);
+      }
+    }
+    self.queue.submit(std::iter::once(encoder.finish()));
+  }
 
-    if any_pass {
-      self.queue.submit(std::iter::once(encoder.finish()));
+  /// Plans a pass into `target` (the screen when `None`): its color
+  /// attachment, cleared to `clear_color` when given, and its depth
+  /// attachment when `with_depth`, cleared to `clear_depth` when given. A
+  /// new depth buffer, or the screen's first depth use in a frame, starts
+  /// cleared to 1.0 (far).
+  fn plan_pass(
+    &mut self,
+    target: Option<(u8, u8)>,
+    with_depth: bool,
+    clear_color: Option<[f32; 4]>,
+    clear_depth: Option<f32>,
+    screen: &mut ScreenOutput,
+  ) -> PlannedPass {
+    let (color, default_color_load, size) = match target {
+      Some(rt) => {
+        let texture = self
+          .slot_textures
+          .get(&rt)
+          .expect("a render target binding holds no texture")
+          .clone();
+        (
+          self.texture_store[&texture.id()].view.clone(),
+          wgpu::LoadOp::Load,
+          (texture.width(), texture.height()),
+        )
+      }
+      None => match screen {
+        ScreenOutput::Frame => self.begin_screen_pass(),
+        ScreenOutput::View {
+          view, drawn, size, ..
+        } => {
+          let load = if *drawn {
+            wgpu::LoadOp::Load
+          } else {
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+          };
+          *drawn = true;
+          (view.clone(), load, *size)
+        }
+      },
+    };
+    let color_load = match clear_color {
+      Some([r, g, b, a]) => wgpu::LoadOp::Clear(wgpu::Color {
+        r: r as f64,
+        g: g as f64,
+        b: b as f64,
+        a: a as f64,
+      }),
+      None => default_color_load,
+    };
+    let depth = with_depth.then(|| {
+      let (view, fresh) = self.depth_view(target, size, screen);
+      let load = match clear_depth {
+        Some(value) => wgpu::LoadOp::Clear(value),
+        None if fresh => wgpu::LoadOp::Clear(1.0),
+        None => wgpu::LoadOp::Load,
+      };
+      (view, load)
+    });
+    PlannedPass {
+      color,
+      color_load,
+      depth,
+      draws: vec![],
+    }
+  }
+
+  /// A view of `target`'s depth buffer (the screen's when `None`, sized
+  /// `size`), creating it when needed, and whether its contents are stale:
+  /// newly created, or the screen's first depth use this frame.
+  fn depth_view(
+    &mut self,
+    target: Option<(u8, u8)>,
+    size: (u32, u32),
+    screen: &mut ScreenOutput,
+  ) -> (wgpu::TextureView, bool) {
+    let (width, height) = size;
+    let depth_usage = wgpu::TextureUsages::RENDER_ATTACHMENT
+      | wgpu::TextureUsages::COPY_SRC
+      | wgpu::TextureUsages::COPY_DST;
+    match target {
+      Some(rt) => {
+        let id = self.slot_textures[&rt].id();
+        let fresh = !self.texture_depth.contains_key(&id);
+        if fresh {
+          let (texture, _) = create_texture_and_view(
+            &self.device,
+            &format!("texture {id} depth"),
+            width,
+            height,
+            DEPTH_FORMAT,
+            depth_usage,
+          );
+          self.texture_depth.insert(id, texture);
+        }
+        let view = self.texture_depth[&id]
+          .create_view(&wgpu::TextureViewDescriptor::default());
+        (view, fresh)
+      }
+      None => {
+        let current = self.screen_depth.as_ref().is_some_and(|texture| {
+          texture.width() == width && texture.height() == height
+        });
+        if !current {
+          let (texture, _) = create_texture_and_view(
+            &self.device,
+            "screen depth",
+            width,
+            height,
+            DEPTH_FORMAT,
+            depth_usage,
+          );
+          self.screen_depth = Some(texture);
+        }
+        let used = match screen {
+          ScreenOutput::Frame => {
+            &mut self.frame_screen.as_mut().unwrap().depth_used
+          }
+          ScreenOutput::View { depth_used, .. } => depth_used,
+        };
+        let fresh = !*used;
+        *used = true;
+        let view = self
+          .screen_depth
+          .as_ref()
+          .unwrap()
+          .create_view(&wgpu::TextureViewDescriptor::default());
+        (view, fresh)
+      }
     }
   }
 
@@ -1322,7 +1580,7 @@ impl GpuCore {
         WindowEvent::RenderShaders {
           vert,
           frag,
-          additive,
+          settings,
           render_target,
           ..
         } => {
@@ -1331,12 +1589,12 @@ impl GpuCore {
           } else {
             GpuCore::OFFSCREEN_FORMAT
           };
-          self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
+          self.get_or_create_render_pipeline(*vert, *frag, *settings, format);
         }
         WindowEvent::ComputeShader { entry, .. } => {
           self.get_or_create_compute_pipeline(*entry);
         }
-        WindowEvent::WriteTexture { .. } => {}
+        WindowEvent::ClearTarget { .. } | WindowEvent::WriteTexture { .. } => {}
       }
     }
 
@@ -1351,8 +1609,7 @@ impl GpuCore {
       (u32, u32, u32),
       Vec<((u8, u8), BufferUpload)>,
     )> = vec![];
-    let mut pending_renders: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> =
-      vec![];
+    let mut pending_renders: Vec<RenderItem> = vec![];
     let mut pending_render_uploads: Vec<((u8, u8), BufferUpload)> = vec![];
 
     macro_rules! flush_runs {
@@ -1362,7 +1619,10 @@ impl GpuCore {
         }
         if !pending_renders.is_empty() {
           $self.upload_bindings(&std::mem::take(&mut pending_render_uploads));
-          $self.encode_render_groups(&std::mem::take(&mut pending_renders));
+          $self.encode_render_items(
+            &std::mem::take(&mut pending_renders),
+            &mut ScreenOutput::Frame,
+          );
         }
       };
     }
@@ -1384,7 +1644,7 @@ impl GpuCore {
           frag,
           vert_count,
           pre_upload,
-          additive,
+          settings,
           render_target,
         } => {
           if !pending_compute.is_empty()
@@ -1393,13 +1653,31 @@ impl GpuCore {
             flush_runs!(self);
           }
           pending_render_uploads.extend(pre_upload.iter().cloned());
-          pending_renders.push((
-            *vert,
-            *frag,
-            *vert_count,
-            *additive,
-            *render_target,
-          ));
+          pending_renders.push(RenderItem::Draw {
+            vert: *vert,
+            frag: *frag,
+            vert_count: *vert_count,
+            settings: *settings,
+            target: *render_target,
+          });
+        }
+        WindowEvent::ClearTarget {
+          render_target,
+          pre_upload,
+          color,
+          depth,
+        } => {
+          if !pending_compute.is_empty()
+            || (!pending_renders.is_empty() && !pre_upload.is_empty())
+          {
+            flush_runs!(self);
+          }
+          pending_render_uploads.extend(pre_upload.iter().cloned());
+          pending_renders.push(RenderItem::Clear {
+            target: *render_target,
+            color: *color,
+            depth: *depth,
+          });
         }
         WindowEvent::WriteTexture { texture, pixels } => {
           // After everything recorded before it, so earlier work reads
@@ -1412,14 +1690,20 @@ impl GpuCore {
     flush_runs!(self);
   }
 
-  /// The format screen-targeted pipelines render to: the surface's when
-  /// there is one.
+  /// The format screen-targeted pipelines render to. Shaders output linear
+  /// color and the screen is always sRGB-encoded, like a native surface:
+  /// the surface's own format when drawing into it, its sRGB variant for a
+  /// screen texture copied into it (the web's canvas, which isn't sRGB
+  /// itself; a copy may change only sRGB-ness), and an 8-bit sRGB texture
+  /// headlessly.
   fn screen_format(&self) -> wgpu::TextureFormat {
-    self
-      .surface_config
-      .as_ref()
-      .map(|c| c.format)
-      .unwrap_or(GpuCore::OFFSCREEN_FORMAT)
+    match &self.surface_config {
+      Some(config) if self.screen_target == ScreenTarget::Texture => {
+        config.format.add_srgb_suffix()
+      }
+      Some(config) => config.format,
+      None => GpuCore::HEADLESS_SCREEN_FORMAT,
+    }
   }
 
   /// The view a screen render pass draws into, and how the pass loads it:
@@ -1427,7 +1711,7 @@ impl GpuCore {
   /// clears it, later ones draw over what is there.
   fn begin_screen_pass(
     &mut self,
-  ) -> (wgpu::TextureView, wgpu::LoadOp<wgpu::Color>) {
+  ) -> (wgpu::TextureView, wgpu::LoadOp<wgpu::Color>, (u32, u32)) {
     if self.frame_screen.is_none() {
       self.frame_screen = Some(self.acquire_frame_screen());
     }
@@ -1438,7 +1722,7 @@ impl GpuCore {
       wgpu::LoadOp::Clear(wgpu::Color::BLACK)
     };
     screen.drawn = true;
-    (screen.view.clone(), load)
+    (screen.view.clone(), load, screen.size)
   }
 
   fn acquire_frame_screen(&mut self) -> FrameScreen {
@@ -1455,8 +1739,10 @@ impl GpuCore {
             view: texture
               .texture
               .create_view(&wgpu::TextureViewDescriptor::default()),
+            size: (texture.texture.width(), texture.texture.height()),
             surface_texture: Some(texture),
             drawn: false,
+            depth_used: false,
           },
           wgpu::CurrentSurfaceTexture::Occluded
           | wgpu::CurrentSurfaceTexture::Lost
@@ -1494,7 +1780,9 @@ impl GpuCore {
             .as_ref()
             .unwrap()
             .create_view(&wgpu::TextureViewDescriptor::default()),
+          size: (width, height),
           drawn: false,
+          depth_used: false,
         }
       }
       ScreenTarget::StandIn => self.stand_in_screen(),
@@ -1518,7 +1806,9 @@ impl GpuCore {
     FrameScreen {
       surface_texture: None,
       view,
+      size: (1, 1),
       drawn: false,
+      depth_used: false,
     }
   }
 
@@ -1602,11 +1892,12 @@ impl GpuCore {
     }
   }
 
-  /// Reads the screen texture back as RGBA8 bytes, returning `(width,
-  /// height, pixels)` (`ScreenTarget::Texture` without a surface only).
+  /// Reads the screen texture back as its sRGB-encoded RGBA8 bytes (what
+  /// a display shows), returning `(width, height, pixels)`
+  /// (`ScreenTarget::Texture` without a surface only).
   pub fn read_screen(&self) -> Option<(u32, u32, Vec<u8>)> {
     let texture = self.screen_texture.as_ref()?;
-    (texture.format() == BINDING_TEXTURE_FORMAT)
+    (texture.format() == Self::HEADLESS_SCREEN_FORMAT)
       .then(|| self.read_texture_rgba8(texture))
   }
 
@@ -1618,18 +1909,24 @@ impl GpuCore {
       .unwrap();
   }
 
-  /// Texture format used for the offscreen render target and render-to-texture.
+  /// The format of textures drawn into with `set-render-target`.
   const OFFSCREEN_FORMAT: wgpu::TextureFormat = BINDING_TEXTURE_FORMAT;
+
+  /// The screen's format without a surface (`ScreenTarget::Texture` in
+  /// tests, `StandIn`).
+  const HEADLESS_SCREEN_FORMAT: wgpu::TextureFormat =
+    wgpu::TextureFormat::Rgba8UnormSrgb;
 
   /// Creates and caches a render pipeline for the given format (if not already cached).
   pub fn get_or_create_render_pipeline(
     &mut self,
     vert_entry: u16,
     frag_entry: u16,
-    additive: bool,
+    settings: RenderSettings,
     format: wgpu::TextureFormat,
   ) {
-    let key = (vert_entry, frag_entry, additive, format);
+    let settings = settings.normalized();
+    let key = (vert_entry, frag_entry, settings, format);
     if self.render_pipelines.iter().any(|(k, _)| *k == key) {
       return;
     }
@@ -1653,21 +1950,18 @@ impl GpuCore {
           bind_group_layouts: &layout_refs,
           immediate_size: 0,
         });
-    let blend = if additive {
-      wgpu::BlendState {
-        color: wgpu::BlendComponent {
-          src_factor: wgpu::BlendFactor::One,
-          dst_factor: wgpu::BlendFactor::One,
-          operation: wgpu::BlendOperation::Add,
-        },
-        alpha: wgpu::BlendComponent {
-          src_factor: wgpu::BlendFactor::One,
-          dst_factor: wgpu::BlendFactor::One,
-          operation: wgpu::BlendOperation::Add,
-        },
-      }
-    } else {
-      wgpu::BlendState::REPLACE
+    let blend = (!settings.blend.is_replace()).then(|| wgpu::BlendState {
+      color: blend_component(settings.blend.color),
+      alpha: blend_component(settings.blend.alpha),
+    });
+    let depth_compare = match settings.depth_test {
+      DepthTest::Off => None,
+      DepthTest::Less => Some(wgpu::CompareFunction::Less),
+      DepthTest::LessEqual => Some(wgpu::CompareFunction::LessEqual),
+      DepthTest::Greater => Some(wgpu::CompareFunction::Greater),
+      DepthTest::GreaterEqual => Some(wgpu::CompareFunction::GreaterEqual),
+      DepthTest::Equal => Some(wgpu::CompareFunction::Equal),
+      DepthTest::Always => Some(wgpu::CompareFunction::Always),
     };
     let pipeline =
       self
@@ -1686,21 +1980,42 @@ impl GpuCore {
             entry_point: Some(&frag_name),
             targets: &[Some(wgpu::ColorTargetState {
               format,
-              blend: Some(blend),
+              blend,
               write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
           }),
           primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
+            topology: match settings.topology {
+              Topology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
+              Topology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
+              Topology::LineList => wgpu::PrimitiveTopology::LineList,
+              Topology::LineStrip => wgpu::PrimitiveTopology::LineStrip,
+              Topology::PointList => wgpu::PrimitiveTopology::PointList,
+            },
             strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
+            front_face: match settings.front_face {
+              FrontFace::CounterClockwise => wgpu::FrontFace::Ccw,
+              FrontFace::Clockwise => wgpu::FrontFace::Cw,
+            },
+            cull_mode: match settings.cull {
+              CullMode::Off => None,
+              CullMode::Back => Some(wgpu::Face::Back),
+              CullMode::Front => Some(wgpu::Face::Front),
+            },
             polygon_mode: wgpu::PolygonMode::Fill,
             unclipped_depth: false,
             conservative: false,
           },
-          depth_stencil: None,
+          depth_stencil: depth_compare.map(|depth_compare| {
+            wgpu::DepthStencilState {
+              format: DEPTH_FORMAT,
+              depth_write_enabled: Some(settings.depth_write),
+              depth_compare: Some(depth_compare),
+              stencil: wgpu::StencilState::default(),
+              bias: wgpu::DepthBiasState::default(),
+            }
+          }),
           multisample: wgpu::MultisampleState {
             count: 1,
             mask: !0,
@@ -1830,6 +2145,8 @@ impl GpuCore {
       binding_buffer_sizes,
       texture_store: HashMap::new(),
       slot_textures: HashMap::new(),
+      texture_depth: HashMap::new(),
+      screen_depth: None,
       textures_created: 0,
       samplers,
       window_size: (1, 1),
@@ -1857,135 +2174,76 @@ impl GpuCore {
     }))
   }
 
-  /// Executes a batch of render shader calls, rendering screen-targeted calls
-  /// (`render_target == None`) into the provided `screen_view` with
-  /// `screen_format` instead of acquiring from `self.surface`.  Offscreen
-  /// render targets (`render_target == Some(...)`) work as in
-  /// [`execute_frame_gpu_work`].  Blocks until the GPU finishes.
+  /// Executes a batch of render events — draws and clears — in program
+  /// order, as the frame path would, except that screen-targeted ones go
+  /// to `screen_view` (with `screen_format`, sized `screen_size`) instead
+  /// of a frame's screen image; the first screen pass clears it. Other
+  /// events are ignored. Blocks until the GPU finishes.
   pub fn execute_render_batch_to_view(
     &mut self,
-    calls: Vec<(
-      u16,
-      u16,
-      u32,
-      Vec<((u8, u8), BufferUpload)>,
-      bool,
-      Option<(u8, u8)>,
-    )>,
+    events: &[WindowEvent],
     screen_view: &wgpu::TextureView,
     screen_format: wgpu::TextureFormat,
+    screen_size: (u32, u32),
   ) {
-    if calls.is_empty() {
+    let mut uploads = vec![];
+    let mut items = vec![];
+    for event in events {
+      match event {
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          pre_upload,
+          settings,
+          render_target,
+        } => {
+          uploads.extend(pre_upload.iter().cloned());
+          let format = if render_target.is_none() {
+            screen_format
+          } else {
+            Self::OFFSCREEN_FORMAT
+          };
+          self.get_or_create_render_pipeline(*vert, *frag, *settings, format);
+          items.push(RenderItem::Draw {
+            vert: *vert,
+            frag: *frag,
+            vert_count: *vert_count,
+            settings: *settings,
+            target: *render_target,
+          });
+        }
+        WindowEvent::ClearTarget {
+          render_target,
+          pre_upload,
+          color,
+          depth,
+        } => {
+          uploads.extend(pre_upload.iter().cloned());
+          items.push(RenderItem::Clear {
+            target: *render_target,
+            color: *color,
+            depth: *depth,
+          });
+        }
+        WindowEvent::ComputeShader { .. }
+        | WindowEvent::WriteTexture { .. } => {}
+      }
+    }
+    if items.is_empty() {
       return;
     }
-    let all_uploads: Vec<_> = calls
-      .iter()
-      .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
-      .collect();
-    self.upload_bindings(&all_uploads);
-
-    // Pre-create all pipelines before render-pass borrows begin.
-    for (vert, frag, _, _, additive, rt) in &calls {
-      let format = if rt.is_none() {
-        screen_format
-      } else {
-        Self::OFFSCREEN_FORMAT
-      };
-      self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
-    }
-
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("render-to-view encoder"),
-        });
-
-    // Group consecutive calls by render target; one render pass per group.
-    let mut i = 0;
-    while i < calls.len() {
-      let current_rt = calls[i].5;
-      let end = calls[i..]
-        .iter()
-        .position(|c| c.5 != current_rt)
-        .map_or(calls.len(), |j| i + j);
-      let group = &calls[i..end];
-
-      let texture_target_view: Option<wgpu::TextureView> =
-        current_rt.map(|rt| self.render_target_view(rt));
-
-      let view = match &texture_target_view {
-        Some(v) => v,
-        None => screen_view,
-      };
-      let format = if current_rt.is_none() {
-        screen_format
-      } else {
-        Self::OFFSCREEN_FORMAT
-      };
-      // Resolve each draw's pipeline before the pass borrow begins; build
-      // placeholder bind-group variants for pipelines that bind the pass's
-      // render target as a texture.
-      let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
-        .iter()
-        .map(|(vert, frag, _, _, additive, _)| {
-          let key = (*vert, *frag, *additive, format);
-          let index = self
-            .render_pipelines
-            .iter()
-            .position(|(k, _)| *k == key)
-            .expect("render pipeline missing from cache");
-          let bindings = &self.render_pipelines[index].1.bindings;
-          let placeholder = current_rt
-            .filter(|rt| bindings.used.contains_key(rt))
-            .map(|rt| {
-              self.create_bind_groups(
-                &bindings.used,
-                &bindings.layouts,
-                Some(rt),
-              )
-            });
-          (index, placeholder)
-        })
-        .collect();
-
-      {
-        let mut render_pass =
-          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("render-to-view pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-              view,
-              resolve_target: None,
-              depth_slice: None,
-              ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-              },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-          });
-        for ((_, _, vert_count, _, _, _), (pipeline_index, placeholder)) in
-          group.iter().zip(prepared.iter())
-        {
-          let cached = &self.render_pipelines[*pipeline_index].1;
-          let bind_groups = placeholder
-            .as_deref()
-            .unwrap_or(&cached.bindings.bind_groups);
-          for (group_idx, bind_group) in bind_groups.iter().enumerate() {
-            render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-          }
-          render_pass.set_pipeline(&cached.pipeline);
-          render_pass.draw(0..*vert_count, 0..1);
-        }
-      }
-
-      i = end;
-    }
-
-    self.queue.submit(std::iter::once(encoder.finish()));
+    self.upload_bindings(&uploads);
+    self.encode_render_items(
+      &items,
+      &mut ScreenOutput::View {
+        view: screen_view.clone(),
+        format: screen_format,
+        size: screen_size,
+        drawn: false,
+        depth_used: false,
+      },
+    );
     self
       .device
       .poll(wgpu::PollType::wait_indefinitely())
@@ -2054,6 +2312,26 @@ impl GpuCore {
           texture.as_image_copy(),
           texture.size(),
         );
+        // A copy holds its source's depth too, so drawing into it
+        // depth-tests against what the source had drawn.
+        if let Some(source_depth) = self.texture_depth.get(&source.id()) {
+          let (depth, _) = create_texture_and_view(
+            &self.device,
+            &format!("texture {} depth", handle.id()),
+            width,
+            height,
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+              | wgpu::TextureUsages::COPY_SRC
+              | wgpu::TextureUsages::COPY_DST,
+          );
+          encoder.copy_texture_to_texture(
+            source_depth.as_image_copy(),
+            depth.as_image_copy(),
+            depth.size(),
+          );
+          self.texture_depth.insert(handle.id(), depth);
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
       }
     }
@@ -2095,6 +2373,8 @@ impl GpuCore {
     self
       .texture_store
       .retain(|_, stored| stored.owner.strong_count() > 0);
+    let store = &self.texture_store;
+    self.texture_depth.retain(|id, _| store.contains_key(id));
   }
 
   /// The view a texture binding's bind group entry uses.
@@ -2105,22 +2385,15 @@ impl GpuCore {
     }
   }
 
-  /// A view of the texture a render target binding holds.
-  fn render_target_view(&self, key: (u8, u8)) -> wgpu::TextureView {
-    let texture = self
-      .slot_textures
-      .get(&key)
-      .expect("a render target binding holds no texture");
-    self.texture_store[&texture.id()].view.clone()
-  }
-
-  /// Reads a texture in `BINDING_TEXTURE_FORMAT` back as RGBA8 bytes,
-  /// returning `(width, height, pixels)`. Blocking.
+  /// Reads a texture in `BINDING_TEXTURE_FORMAT` or
+  /// `HEADLESS_SCREEN_FORMAT` back as sRGB-encoded RGBA8 bytes, returning
+  /// `(width, height, pixels)`. Blocking.
   fn read_texture_rgba8(&self, texture: &wgpu::Texture) -> (u32, u32, Vec<u8>) {
     let width = texture.width();
     let height = texture.height();
+    let bytes_per_texel = texture.format().block_copy_size(None).unwrap();
     // wgpu requires bytes_per_row aligned to 256 for texture→buffer copies.
-    let unpadded_bytes_per_row = width * BINDING_TEXTURE_BPP;
+    let unpadded_bytes_per_row = width * bytes_per_texel;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
     let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2181,7 +2454,10 @@ impl GpuCore {
     }
     drop(data);
     staging.unmap();
-    (width, height, rgba16float_to_rgba8(&texel_bytes))
+    if texture.format() == BINDING_TEXTURE_FORMAT {
+      texel_bytes = rgba16float_to_rgba8(&texel_bytes);
+    }
+    (width, height, texel_bytes)
   }
 
   pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
@@ -3127,16 +3403,25 @@ impl RenderState {
 mod tests {
   use super::*;
 
-  /// Every u8 channel value must survive the upload/readback conversion
-  /// pair exactly — this is what makes `save-png` of a loaded-then-uploaded
+  /// Every RGBA8 pixel must survive the upload/readback conversion pair
+  /// exactly — this is what makes `save-png` of a loaded-then-uploaded
   /// image byte-identical to its source.
   #[test]
-  fn rgba8_f16_roundtrip_is_exact() {
-    for byte in 0..=255u8 {
-      let half = f32_to_f16(byte as f32 / 255.);
-      let back = (f16_to_f32(half).clamp(0., 1.) * 255.).round() as u8;
-      assert_eq!(back, byte);
-    }
+  fn rgba8_texel_roundtrip_is_exact() {
+    let pixels: Vec<u8> = (0..=255u8).flat_map(|b| [b, b, b, b]).collect();
+    assert_eq!(rgba16float_to_rgba8(&rgba8_to_rgba16float(&pixels)), pixels);
+  }
+
+  /// Color channels are sRGB-decoded on upload; alpha isn't.
+  #[test]
+  fn rgba8_upload_decodes_color_only() {
+    let texels = rgba8_to_rgba16float(&[188, 0, 255, 188]);
+    let values: Vec<f32> = texels
+      .chunks_exact(2)
+      .map(|bits| f16::from_le_bytes([bits[0], bits[1]]).to_f32())
+      .collect();
+    assert!((values[0] - 0.5029).abs() < 0.001, "{values:?}");
+    assert_eq!(&values[1..], &[0., 1., f16::from_f32(188. / 255.).to_f32()]);
   }
 
   /// The unpresented-frame pacer prefers the monitor's reported refresh
@@ -3164,18 +3449,5 @@ mod tests {
       unpresented_frame_interval(None, None),
       Duration::from_micros(16_667)
     );
-  }
-
-  /// Spot-check the f16 decoder against known bit patterns.
-  #[test]
-  fn f16_to_f32_known_values() {
-    assert_eq!(f16_to_f32(0x0000), 0.);
-    assert_eq!(f16_to_f32(0x3C00), 1.);
-    assert_eq!(f16_to_f32(0x3800), 0.5);
-    assert_eq!(f16_to_f32(0x3400), 0.25);
-    assert_eq!(f16_to_f32(0xBC00), -1.);
-    // subnormal: smallest positive f16
-    assert_eq!(f16_to_f32(0x0001), 5.960464477539063e-8);
-    assert!(f16_to_f32(0x7C00).is_infinite());
   }
 }

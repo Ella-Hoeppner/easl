@@ -46,7 +46,7 @@
   (= tex (blank-texture (vec2u 2u 1u)))
   (set-render-target tex)
   (dispatch-render-shaders fullscreen paint 3u)
-  (clear-render-target)
+  (reset-render-target)
   (= linear (Sampler FilterMode/Linear AddressMode/ClampToEdge))
   (= repeating (Sampler FilterMode/Nearest AddressMode/Repeat))
   (= mirrored (Sampler FilterMode/Nearest AddressMode/MirrorRepeat))

@@ -1,0 +1,108 @@
+; Blending: each draw combines its color with the target's by the blend
+; settings current when it's dispatched (here set from inside helpers,
+; which aren't pruned): a source and destination factor and an operation,
+; for the color channels and for alpha, with `Min` and `Max` ignoring
+; their factors, and a blend constant set per draw. Textures hold floats,
+; so nothing clamps.
+@handle
+(var canvas: (Texture2D f32))
+
+@uniform
+(var source-color: vec4f)
+
+@storage-write
+(var seen: vec4f)
+
+@vertex
+(defn fullscreen [@{builtin vertex-index} i: u32]: vec4f
+  (match i
+    0u (vec4f -1. -1. 0. 1.)
+    1u (vec4f 3. -1. 0. 1.)
+    _ (vec4f -1. 3. 0. 1.)))
+
+@fragment
+(defn source []: vec4f
+  source-color)
+
+@compute
+(defn read-canvas []
+  (= seen (texture-load canvas (vec2u 1u) 0u)))
+
+; Draws `color` over a canvas cleared to `background`, and prints the
+; result.
+(defn blend-onto [background: vec4f color: vec4f]
+  (clear-target background)
+  (= source-color color)
+  (dispatch-render-shaders fullscreen source 3u)
+  (dispatch-compute-shader read-canvas (vec3u 1u))
+  (print seen))
+
+(defn use-straight-alpha []
+  (set-blend BlendFactor/SrcAlpha BlendFactor/OneMinusSrcAlpha
+             BlendOperation/Add BlendFactor/One BlendFactor/OneMinusSrcAlpha
+             BlendOperation/Add))
+
+(defn use-additive []
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Add))
+
+@cpu
+(defn main []
+  (= canvas (blank-texture (vec2u 2u)))
+  (set-render-target canvas)
+  ; The default overwrites, alpha included: (1. 0. 0. 0.25)
+  (blend-onto (vec4f 0. 0. 0.5 1.) (vec4f 1. 0. 0. 0.25))
+  ; Straight alpha: (0.25 0. 0.375 1.)
+  (use-straight-alpha)
+  (blend-onto (vec4f 0. 0. 0.5 1.) (vec4f 1. 0. 0. 0.25))
+  ; Additive: (0.75 0.75 0.125 0.75)
+  (use-additive)
+  (blend-onto (vec4f 0.25 0.5 0. 0.5) (vec4f 0.5 0.25 0.125 0.25))
+  ; Premultiplied alpha: (0.25 0. 0.5 1.)
+  (set-blend BlendFactor/One BlendFactor/OneMinusSrcAlpha BlendOperation/Add)
+  (blend-onto (vec4f 0. 0. 1. 1.) (vec4f 0.25 0. 0. 0.5))
+  ; Alpha-blended color that keeps the target's alpha: (0.5 0. 0.5 0.25)
+  (set-blend BlendFactor/SrcAlpha BlendFactor/OneMinusSrcAlpha
+             BlendOperation/Add BlendFactor/Zero BlendFactor/One
+             BlendOperation/Add)
+  (blend-onto (vec4f 0. 0. 1. 0.25) (vec4f 1. 0. 0. 0.5))
+  ; Source minus target: (0.75 0.25 0. 0.25)
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Subtract)
+  (blend-onto (vec4f 0.25 0.25 0.25 0.25) (vec4f 1. 0.5 0.25 0.5))
+  ; Target minus source: (0.75 0.25 0. 0.5)
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/ReverseSubtract)
+  (blend-onto (vec4f 1. 0.5 0.25 1.) (vec4f 0.25 0.25 0.25 0.5))
+  ; Min, ignoring its factors: (0.25 0.25 0.75 0.5)
+  (set-blend BlendFactor/Zero BlendFactor/Zero BlendOperation/Min)
+  (blend-onto (vec4f 0.5 0.25 1. 1.) (vec4f 0.25 0.5 0.75 0.5))
+  ; Max: (0.5 0.5 1. 1.)
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Max)
+  (blend-onto (vec4f 0.5 0.25 1. 1.) (vec4f 0.25 0.5 0.75 0.5))
+  ; Source times target: (0.25 0.125 0.5 0.5)
+  (set-blend BlendFactor/Dst BlendFactor/Zero BlendOperation/Add)
+  (blend-onto (vec4f 0.5 0.5 0.5 0.5) (vec4f 0.5 0.25 1. 1.))
+  ; Saturated source alpha: color weighs the source by min(0.5, 1 - 0.75),
+  ; alpha by 1: (0.25 0.25 0.25 1.25)
+  (set-blend BlendFactor/SrcAlphaSaturated BlendFactor/One BlendOperation/Add)
+  (blend-onto (vec4f 0. 0. 0. 0.75) (vec4f 1. 1. 1. 0.5))
+  ; The source weighed by the blend constant: (0.5 0.25 0.125 1.)
+  (set-blend-constant (vec4f 0.5 0.25 0.125 1.))
+  (set-blend BlendFactor/Constant BlendFactor/Zero BlendOperation/Add)
+  (blend-onto (vec4f 0.) (vec4f 1.))
+  ; Each draw keeps the constant set before it, also within one pass:
+  ; (0.25 0.5 0. 0.)
+  (set-blend BlendFactor/Constant BlendFactor/One BlendOperation/Add)
+  (clear-target (vec4f 0.))
+  (= source-color (vec4f 1.))
+  (set-blend-constant (vec4f 0.25 0. 0. 0.))
+  (dispatch-render-shaders fullscreen source 3u)
+  (set-blend-constant (vec4f 0. 0.5 0. 0.))
+  (dispatch-render-shaders fullscreen source 3u)
+  (dispatch-compute-shader read-canvas (vec3u 1u))
+  (print seen)
+  ; Replace: (0.25 0.5 0.75 0.125)
+  (set-blend BlendFactor/One BlendFactor/Zero BlendOperation/Add)
+  (blend-onto (vec4f 1.) (vec4f 0.25 0.5 0.75 0.125))
+  ; Back to the default, from additive: (1. 0. 0. 0.25)
+  (use-additive)
+  (reset-render-settings)
+  (blend-onto (vec4f 0. 0. 0.5 1.) (vec4f 1. 0. 0. 0.25)))

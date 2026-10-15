@@ -31,6 +31,7 @@
       (match frame
         0u (dispatch-render-shaders fullscreen red 3u)
         1u (do (dispatch-render-shaders fullscreen green 3u)
-               (dispatch-render-shaders fullscreen blue 3u true))
+               (set-blend BlendFactor/One BlendFactor/One BlendOperation/Add)
+               (dispatch-render-shaders fullscreen blue 3u))
         _ (close-window))
       (= frame (+ frame 1u)))))

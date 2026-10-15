@@ -30,6 +30,6 @@
     (dispatch-render-shaders fullscreen red 3u)
     (set-render-target b)
     (dispatch-render-shaders fullscreen red 3u))
-  (clear-render-target)
+  (reset-render-target)
   (dispatch-compute-shader read-b (vec3u 1u))
   (print value))

@@ -10,6 +10,7 @@ pub mod midi;
 #[path = "midi_web.rs"]
 pub mod midi;
 pub mod parse;
+pub mod render_settings;
 pub mod thread_sync;
 pub mod video;
 pub mod vm;

@@ -37,7 +37,7 @@
   (= c (blank-texture (vec2u 1u)))
   (set-render-target c)
   (dispatch-render-shaders fullscreen blue 3u)
-  (clear-render-target)
+  (reset-render-target)
   (save-png c (blue-path))
   (= a (load-image "red_pixel.png"))
   (reload-keeping a)

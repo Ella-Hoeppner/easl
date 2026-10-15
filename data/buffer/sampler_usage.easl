@@ -49,7 +49,7 @@
   (= smooth (Sampler FilterMode/Linear AddressMode/ClampToEdge))
   (set-render-target blended)
   (dispatch-render-shaders fullscreen blend-middle 3u)
-  (clear-render-target)
+  (reset-render-target)
   (= pixelated (Sampler FilterMode/Nearest AddressMode/ClampToEdge))
   (= copied smooth)
   (dispatch-compute-shader read-back (vec3u 1u))

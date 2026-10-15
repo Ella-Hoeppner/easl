@@ -1,0 +1,7 @@
+(struct Out
+  @{location 0} color: vec3f
+  @{builtin frag-depth} depth: f32)
+
+@fragment
+(defn frag []: Out
+  (Out (vec3f 1.) 0.5))

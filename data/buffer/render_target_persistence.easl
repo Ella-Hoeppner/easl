@@ -1,0 +1,73 @@
+; A texture's contents persist from draw to draw, across passes, until
+; `clear-target`; a texture's depth persists too, and a copy made by
+; drawing into a shared texture keeps the depth along with the colors.
+@handle
+(var canvas: (Texture2D f32))
+
+@handle
+(var layered: (Texture2D f32))
+
+@handle
+(var snapshot: (Texture2D f32))
+
+@storage-write
+(var seen: vec4f)
+
+(defn fullscreen-at [i: u32 z: f32]: vec4f
+  (match i
+    0u (vec4f -1. -1. z 1.)
+    1u (vec4f 3. -1. z 1.)
+    _ (vec4f -1. 3. z 1.)))
+
+@vertex
+(defn near [@{builtin vertex-index} i: u32]: vec4f
+  (fullscreen-at i 0.25))
+
+@vertex
+(defn far [@{builtin vertex-index} i: u32]: vec4f
+  (fullscreen-at i 0.75))
+
+@fragment
+(defn red []: vec4f
+  (vec4f 1. 0. 0. 1.))
+
+@fragment
+(defn green []: vec4f
+  (vec4f 0. 1. 0. 1.))
+
+@compute
+(defn read-canvas []
+  (= seen (texture-load canvas (vec2u 1u) 0u)))
+
+@compute
+(defn read-layered []
+  (= seen (texture-load layered (vec2u 1u) 0u)))
+
+@cpu
+(defn main []
+  (= canvas (blank-texture (vec2u 2u)))
+  (set-render-target canvas)
+  (dispatch-render-shaders near red 3u)
+  (dispatch-compute-shader read-canvas (vec3u 1u))
+  (print seen)
+  ; added to the red, not drawn over a cleared texture (alpha adds too:
+  ; textures hold floats)
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Add)
+  (dispatch-render-shaders near green 3u)
+  (dispatch-compute-shader read-canvas (vec3u 1u))
+  (print seen)
+  (clear-target (vec4f 0. 0. 1. 1.))
+  (dispatch-compute-shader read-canvas (vec3u 1u))
+  (print seen)
+  (reset-render-settings)
+  (= layered (blank-texture (vec2u 2u)))
+  (set-render-target layered)
+  (set-depth-test DepthTest/Less)
+  (dispatch-render-shaders near red 3u)
+  (= snapshot layered)
+  ; `layered` is shared, so this draws into a copy, which keeps the red's
+  ; depth: the far green is hidden
+  (dispatch-render-shaders far green 3u)
+  (reset-render-target)
+  (dispatch-compute-shader read-layered (vec3u 1u))
+  (print seen))
