@@ -3,5 +3,5 @@
 .vscode
 /out
 flamegraph.svg
-/.local
+/local
 /tmp/

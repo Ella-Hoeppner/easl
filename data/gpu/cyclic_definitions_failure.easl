@@ -1,0 +1,20 @@
+(def a: u32
+     (+ b 1u))
+
+(def b: u32
+     (+ (c-plus-one) 1u))
+
+(defn c-plus-one []: u32
+  (+ a 1u))
+
+(def d: u32
+     (* d 2u))
+
+@local
+(var e: f32 (+ f 1.))
+
+@local
+(var f: f32 (* e 2.))
+
+(def fine: u32
+     (+ a 0u))

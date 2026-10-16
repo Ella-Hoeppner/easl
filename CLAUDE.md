@@ -43,6 +43,7 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
   - `entry.rs` — entry point kinds and `should_compile_to_target`
   - `exp_builder.rs` — `ExpBuilder` for building typed expressions in post-inference passes
   - `modules.rs` — module resolution (`resolve_modules`): flattens files and `mod` forms into one namespace of internal names (see "Modules")
+  - `graph.rs` — `topological_order` (dependencies first, otherwise lowest index first) and `cycles` over index-numbered dependency lists; orders types, functions, and top-level initializers, and finds import cycles
   - `error.rs`, `vars.rs`, `wgsl.rs`, `annotation.rs`, `macros.rs`, `info.rs`, `util.rs`, `core.rs`
 - `src/vm/`: `bytecode.rs` (the VM: `Op`, `Code`, `BytecodeProgram`, `execute`), `compile.rs` (bytecode compiler — keep bytecode-compile logic here, not in `expression.rs`), `shared_sync.rs` (VM side of cross-thread sharing)
 
@@ -64,6 +65,8 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
 **`is_globally_bound`**: any pass that rewrites a name into a reference to a global (storage-ref inlining, the GPU and audio capture lifts) must propagate `is_globally_bound` up the accessor/lookup chain above it. Mutable-ref effect derivation reads the *outer* node's flag; a stale flag silently drops writes from GPU sync and shared-dirty marking.
 
 **Program side tables** (`top_level_vars`, `window_info_bindings`, `lifted_audio_captures`, `lifted_gpu_captures`, `split_globals`; `overload_groups` is consumed right after inference) must survive every pass that rebuilds the function registry (the `take()` closures).
+
+**Top-level initializers run in dependency order**: `order_top_level_vars_by_dependency` (after `assign_elided_bindings`, so binding numbers keep source order) sorts `top_level_vars` so each initializer follows the vars it reads, directly or through called functions; a cycle is `CyclicTopLevelDefinitions`. Both runtimes run initializers in `top_level_vars` order.
 
 **Top-level initializers are bodies too**: a pass that lowers or rewrites function bodies must also cover `top_level_vars`' initializers (the VM runs them in `$init_globals`). Associative expansion and pseudo-application normalization once skipped them (n-ary `+` in a `def` silently kept two arguments; indexing in a `def` crashed the VM).
 

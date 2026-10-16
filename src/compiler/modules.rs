@@ -39,6 +39,7 @@ use crate::{
   compiler::{
     builtins::PATH_BUILTIN_ARGUMENTS,
     error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
+    graph::cycles,
   },
   parse::{
     EaslMultiDocument, EaslTree, Encloser, Operator, escape_string_literal,
@@ -738,57 +739,33 @@ impl<'a> Resolver<'a> {
   /// Reports every import that closes a cycle of files importing each
   /// other.
   fn check_import_cycles(&mut self, documents: &EaslMultiDocument) {
-    let file_count = documents.sources.len();
-    let mut edges: Vec<Vec<(usize, SourceTrace)>> = vec![vec![]; file_count];
+    let mut imports: Vec<Vec<(usize, SourceTrace)>> =
+      vec![vec![]; documents.sources.len()];
     for module in self.modules.iter() {
       for form in module.forms.iter() {
         if let Form::Import { target, source, .. } = form {
-          edges[module.file].push((*target, source.clone()));
+          imports[module.file].push((*target, source.clone()));
         }
       }
     }
-    #[derive(Clone, Copy, PartialEq)]
-    enum State {
-      Unvisited,
-      Active,
-      Done,
-    }
-    fn visit(
-      file: usize,
-      edges: &Vec<Vec<(usize, SourceTrace)>>,
-      states: &mut Vec<State>,
-      stack: &mut Vec<usize>,
-      cycles: &mut Vec<(Vec<usize>, SourceTrace)>,
-    ) {
-      states[file] = State::Active;
-      stack.push(file);
-      for (target, source) in edges[file].iter() {
-        match states[*target] {
-          State::Unvisited => visit(*target, edges, states, stack, cycles),
-          State::Active => {
-            let start = stack.iter().position(|f| f == target).unwrap();
-            let mut cycle = stack[start..].to_vec();
-            cycle.push(*target);
-            cycles.push((cycle, source.clone()));
-          }
-          State::Done => {}
-        }
-      }
-      stack.pop();
-      states[file] = State::Done;
-    }
-    let mut states = vec![State::Unvisited; file_count];
-    let mut cycles = vec![];
-    for file in 0..file_count {
-      if states[file] == State::Unvisited {
-        visit(file, &edges, &mut states, &mut vec![], &mut cycles);
-      }
-    }
-    for (cycle, source) in cycles {
+    let dependencies: Vec<Vec<usize>> = imports
+      .iter()
+      .map(|file_imports| {
+        file_imports.iter().map(|(target, _)| *target).collect()
+      })
+      .collect();
+    for cycle in cycles(&dependencies) {
+      let (first, last) = (cycle[0], *cycle.last().unwrap());
+      let (_, source) = imports[last]
+        .iter()
+        .find(|(target, _)| *target == first)
+        .unwrap()
+        .clone();
       let files = cycle
-        .into_iter()
+        .iter()
+        .chain(std::iter::once(&first))
         .map(|file| {
-          Path::new(&documents.sources[file].1)
+          Path::new(&documents.sources[*file].1)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()

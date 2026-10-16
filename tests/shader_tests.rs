@@ -879,6 +879,35 @@ error_test!(
   )
 );
 error_test!(
+  type_dependency_cycle_failure,
+  CompileErrorKind::TypeDependencyCycle(vec![
+    "Node".to_string(),
+    "Edge".to_string(),
+    "Node".to_string()
+  ]),
+  CompileErrorKind::TypeDependencyCycle(vec![
+    "Tree".to_string(),
+    "Tree".to_string()
+  ])
+);
+error_test!(
+  cyclic_definitions_failure,
+  CompileErrorKind::CyclicTopLevelDefinitions(vec![
+    "a".to_string(),
+    "b".to_string(),
+    "a".to_string()
+  ]),
+  CompileErrorKind::CyclicTopLevelDefinitions(vec![
+    "d".to_string(),
+    "d".to_string()
+  ]),
+  CompileErrorKind::CyclicTopLevelDefinitions(vec![
+    "e".to_string(),
+    "f".to_string(),
+    "e".to_string()
+  ])
+);
+error_test!(
   dispatched_read_only_write_failure,
   CompileErrorKind::IllegalAddressSpaceGpuWrite(
     "paths".to_string(),

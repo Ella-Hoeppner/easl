@@ -10,6 +10,7 @@ pub mod exp_builder;
 pub mod expression;
 pub mod function_values;
 pub mod functions;
+pub mod graph;
 pub mod info;
 pub mod macros;
 pub mod modules;

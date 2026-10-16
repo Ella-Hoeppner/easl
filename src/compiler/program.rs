@@ -1,5 +1,4 @@
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
@@ -45,6 +44,7 @@ use crate::{
       FunctionSignature, FunctionTargetConfiguration, Ownership,
       TopLevelFunction,
     },
+    graph::topological_order,
     structs::{AbstractStructField, UntypedStruct},
     types::{
       AbstractArraySize, AbstractType, ConcreteArraySize,
@@ -1058,30 +1058,28 @@ impl Program {
           }
         }
       }
-      Err(e) => {
-        let source_trace = if let Some(first_name) = e.get(0)
-          && let Some(primary_type) =
-            untyped_types.iter().find(|t| t.name() == first_name)
-        {
-          let mut source_trace = primary_type.source_trace().clone();
-          for i in 1..e.len() {
-            if let Some(secondary_type) =
-              untyped_types.iter().find(|t| t.name() == &e[i])
-            {
-              source_trace = source_trace
-                .insert_as_secondary(secondary_type.source_trace().clone());
-            }
-          }
-          source_trace
-        } else {
-          SourceTrace::empty()
-        };
-        errors.log(CompileError::new(
-          TypeDependencyCycle(
-            e.into_iter().map(|name| name.to_string()).collect(),
-          ),
-          source_trace,
-        ));
+      Err(cycles) => {
+        for cycle in cycles {
+          let trace_of = |name: &Arc<str>| {
+            untyped_types
+              .iter()
+              .find(|t| t.name() == name)
+              .unwrap()
+              .source_trace()
+              .clone()
+          };
+          let source_trace = cycle[1..cycle.len() - 1]
+            .iter()
+            .fold(trace_of(&cycle[0]), |trace, name| {
+              trace.insert_as_secondary(trace_of(name))
+            });
+          errors.log(CompileError::new(
+            TypeDependencyCycle(
+              cycle.into_iter().map(|name| name.to_string()).collect(),
+            ),
+            source_trace,
+          ));
+        }
       }
     }
 
@@ -7176,11 +7174,80 @@ impl Program {
       return errors;
     }
     self.assign_elided_bindings();
+    self.order_top_level_vars_by_dependency(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.mark_value_names_owned();
     self.track_emulated_builtins(target);
     self.has_been_validated = true;
     errors
   }
+  /// Orders `top_level_vars` so each initializer comes after every
+  /// top-level variable it reads, directly or through the functions it
+  /// calls, and otherwise keeps source order: the runtimes run initializers
+  /// in this order. Initializers that read each other in a cycle are
+  /// `CyclicTopLevelDefinitions`.
+  fn order_top_level_vars_by_dependency(&mut self, errors: &mut ErrorLog) {
+    let index_of: HashMap<Arc<str>, usize> = self
+      .top_level_vars
+      .iter()
+      .enumerate()
+      .map(|(i, v)| (v.name.clone(), i))
+      .collect();
+    let mut memo = EffectsMemo::default();
+    let dependencies: Vec<Vec<usize>> = self
+      .top_level_vars
+      .iter()
+      .map(|v| {
+        let Some(value) = &v.value else {
+          return vec![];
+        };
+        let mut reads: Vec<usize> = value
+          .effects_with(&mut memo)
+          .0
+          .iter()
+          .filter_map(|effect| match effect {
+            Effect::ReadsVar(name) | Effect::ReadsArrayLength(name) => {
+              index_of.get(name).copied()
+            }
+            _ => None,
+          })
+          .collect();
+        reads.sort();
+        reads.dedup();
+        reads
+      })
+      .collect();
+    match topological_order(&dependencies) {
+      Ok(order) => {
+        let mut vars: Vec<Option<TopLevelVar>> =
+          self.top_level_vars.drain(..).map(Some).collect();
+        self.top_level_vars =
+          order.into_iter().map(|i| vars[i].take().unwrap()).collect();
+      }
+      Err(cycles) => {
+        for cycle in cycles {
+          let vars = &self.top_level_vars;
+          let names = cycle
+            .iter()
+            .chain(std::iter::once(&cycle[0]))
+            .map(|i| display_name(&vars[*i].name).to_string())
+            .collect();
+          let source_trace = cycle[1..]
+            .iter()
+            .fold(vars[cycle[0]].source_trace.clone(), |trace, i| {
+              trace.insert_as_secondary(vars[*i].source_trace.clone())
+            });
+          errors.log(CompileError::new(
+            CyclicTopLevelDefinitions(names),
+            source_trace,
+          ));
+        }
+      }
+    }
+  }
+
   /// Marks every name bound to a value as owned, in every function body and
   /// top-level variable's value (see `TypedExp::mark_value_names_owned`).
   fn mark_value_names_owned(&mut self) {
@@ -7564,41 +7631,27 @@ impl Program {
         })
         .unwrap();
     }
-    // Repeatedly takes the earliest function (in `fns` order) whose
-    // dependencies have all been taken.
-    let mut unmet_dependencies: Vec<usize> = fns
-      .iter()
-      .map(|(name, _)| dependencies[name].len())
-      .collect();
-    let mut dependents: HashMap<&Arc<str>, Vec<usize>> = HashMap::new();
-    for (i, (name, _)) in fns.iter().enumerate() {
-      for dependency in dependencies[name].iter() {
-        dependents.entry(dependency).or_default().push(i);
-      }
-    }
-    let mut ready: BinaryHeap<Reverse<usize>> = unmet_dependencies
+    let index_of: HashMap<&Arc<str>, usize> = fns
       .iter()
       .enumerate()
-      .filter(|(_, unmet)| **unmet == 0)
-      .map(|(i, _)| Reverse(i))
+      .map(|(i, (name, _))| (name, i))
       .collect();
-    let mut order: Vec<usize> = vec![];
-    while let Some(Reverse(i)) = ready.pop() {
-      order.push(i);
-      for dependent in dependents.remove(&fns[i].0).unwrap_or_default() {
-        unmet_dependencies[dependent] -= 1;
-        if unmet_dependencies[dependent] == 0 {
-          ready.push(Reverse(dependent));
-        }
-      }
-    }
-    if order.len() < fns.len() {
+    let dependencies: Vec<Vec<usize>> = fns
+      .iter()
+      .map(|(name, _)| {
+        dependencies[name]
+          .iter()
+          .map(|dependency| index_of[dependency])
+          .collect()
+      })
+      .collect();
+    let Ok(order) = topological_order(&dependencies) else {
       panic!(
         "Couldn't find topological sort of user functions.\n\
          If you're seeing this, there's a compiler bug; an earlier compiler \
          stage should have caught the dependency loop "
       )
-    }
+    };
     order.into_iter().map(|i| fns[i].clone()).collect()
   }
   /// Statically determines which top-level vars are shared across CPU

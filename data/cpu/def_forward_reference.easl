@@ -1,0 +1,23 @@
+; Top-level initializers can read definitions written after them: each
+; runs after the ones it reads, whatever the source order.
+(def segments: u32
+     (- max-length 1u))
+
+(def max-length: u32
+     (* base 4u))
+
+(def base: u32
+     25u)
+
+@local
+(var doubled: u32 (* segments 2u))
+
+(def sizes: [2: u32]
+     [segments max-length])
+
+@cpu
+(defn main []
+  (print segments)
+  (print max-length)
+  (print doubled)
+  (print sizes))

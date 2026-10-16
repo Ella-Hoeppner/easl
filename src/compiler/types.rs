@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 use std::{
-  collections::{HashMap, HashSet},
+  collections::HashMap,
   fmt::Display,
   ops::{Deref, DerefMut},
 };
@@ -23,6 +23,7 @@ use crate::{
       Ownership, extract_mat_size as extract_mat_size_from_name,
       extract_vec_size,
     },
+    graph::topological_order,
     modules::display_name,
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
@@ -98,110 +99,39 @@ impl UntypedType {
     }
   }
 
+  /// The types ordered so each comes after every type it references, or
+  /// the reference cycles among them, each listing the types along it and
+  /// closing back to its first.
   pub fn sort_by_references(
-    unsorted_types: &Vec<Self>,
-  ) -> Result<Vec<Self>, Vec<Arc<str>>> {
-    let mut sorted = Vec::new();
-    let mut sorted_names = HashSet::new();
-
-    while sorted.len() < unsorted_types.len() {
-      let start_len = sorted.len();
-
-      for typ in unsorted_types {
-        if sorted_names.contains(typ.name()) {
-          continue;
-        }
-
-        let mut can_add = true;
-        for other in unsorted_types {
-          if typ.references_type_name(other.name())
-            && !sorted_names.contains(other.name())
-          {
-            can_add = false;
-            break;
-          }
-        }
-
-        if can_add {
-          sorted.push(typ.clone());
-          sorted_names.insert(typ.name().clone());
-        }
-      }
-
-      if sorted.len() == start_len {
-        for typ in unsorted_types {
-          if !sorted_names.contains(typ.name()) {
-            if let Some(cycle_path) =
-              Self::find_cycle_path(typ, &unsorted_types, &sorted_names)
-            {
-              return Err(cycle_path);
-            }
-          }
-        }
-        return Err(vec![]);
-      }
-    }
-
-    Ok(sorted)
-  }
-
-  fn find_cycle_path(
-    start: &Self,
-    all_types: &[Self],
-    already_added: &HashSet<Arc<str>>,
-  ) -> Option<Vec<Arc<str>>> {
-    let mut visited = HashSet::new();
-    let mut path = Vec::new();
-
-    fn trace_dependencies(
-      current_name: &Arc<str>,
-      all_types: &[UntypedType],
-      already_added: &HashSet<Arc<str>>,
-      visited: &mut HashSet<Arc<str>>,
-      path: &mut Vec<Arc<str>>,
-    ) -> Option<Vec<Arc<str>>> {
-      if let Some(cycle_start_idx) = path.iter().position(|n| n == current_name)
-      {
-        let mut cycle = path[cycle_start_idx..].to_vec();
-        cycle.push(current_name.clone());
-        return Some(cycle);
-      }
-
-      if already_added.contains(current_name) || visited.contains(current_name)
-      {
-        return None;
-      }
-
-      path.push(current_name.clone());
-      visited.insert(current_name.clone());
-
-      if let Some(typ) = all_types.iter().find(|t| t.name() == current_name) {
-        for other in all_types {
-          if typ.references_type_name(other.name()) {
-            if let Some(cycle) = trace_dependencies(
-              other.name(),
-              all_types,
-              already_added,
-              visited,
-              path,
-            ) {
-              return Some(cycle);
-            }
-          }
-        }
-      }
-
-      path.pop();
-      None
-    }
-
-    trace_dependencies(
-      start.name(),
-      all_types,
-      already_added,
-      &mut visited,
-      &mut path,
-    )
+    unsorted_types: &[Self],
+  ) -> Result<Vec<Self>, Vec<Vec<Arc<str>>>> {
+    let dependencies: Vec<Vec<usize>> = unsorted_types
+      .iter()
+      .map(|typ| {
+        (0..unsorted_types.len())
+          .filter(|j| typ.references_type_name(unsorted_types[*j].name()))
+          .collect()
+      })
+      .collect();
+    topological_order(&dependencies)
+      .map(|order| {
+        order
+          .into_iter()
+          .map(|i| unsorted_types[i].clone())
+          .collect()
+      })
+      .map_err(|cycles| {
+        cycles
+          .into_iter()
+          .map(|cycle| {
+            cycle
+              .iter()
+              .chain(std::iter::once(&cycle[0]))
+              .map(|i| unsorted_types[*i].name().clone())
+              .collect()
+          })
+          .collect()
+      })
   }
 }
 

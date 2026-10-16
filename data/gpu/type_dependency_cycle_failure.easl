@@ -1,0 +1,13 @@
+(struct Node
+  next: Edge)
+
+(struct Edge
+  target: Node)
+
+@unpack
+(enum Tree
+  Leaf
+  (Branch Tree))
+
+(struct Fine
+  node: Node)

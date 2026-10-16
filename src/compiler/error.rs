@@ -661,6 +661,11 @@ pub enum CompileErrorKind {
   ImportCycle(Vec<String>),
   #[error("`{0}` is already defined or imported in this scope")]
   NameCollision(String),
+  #[error(
+    "Top-level definitions depend on each other in a cycle: {}",
+    .0.join(" -> ")
+  )]
+  CyclicTopLevelDefinitions(Vec<String>),
   #[error("`{0}` is a builtin type and can't be redefined")]
   BuiltinTypeRedefinition(String),
   #[error("`{0}` has no member named `{1}`")]
@@ -759,6 +764,10 @@ impl PartialEq for CompileErrorKind {
       (Self::ImportCycle(l0), Self::ImportCycle(r0)) => l0 == r0,
       (Self::ImportNotFound(l0), Self::ImportNotFound(r0)) => l0 == r0,
       (Self::NameCollision(l0), Self::NameCollision(r0)) => l0 == r0,
+      (
+        Self::CyclicTopLevelDefinitions(l0),
+        Self::CyclicTopLevelDefinitions(r0),
+      ) => l0 == r0,
       (Self::AmbiguousOverload(l0), Self::AmbiguousOverload(r0)) => l0 == r0,
       (
         Self::BuiltinTypeRedefinition(l0),
