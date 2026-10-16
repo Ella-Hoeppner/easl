@@ -1300,8 +1300,9 @@ impl GpuCore {
           }
           let folds = matches!(
             items.get(i + 1),
-            Some(RenderItem::Draw { target: next, settings, .. })
-              if *next == target && (depth.is_none() || settings.uses_depth())
+            Some(RenderItem::Draw { target: next, settings, frag, .. })
+              if *next == target
+                && (depth.is_none() || self.draw_uses_depth(settings, *frag))
           );
           if folds {
             folded_clear = Some((color, depth));
@@ -1322,7 +1323,7 @@ impl GpuCore {
           if target.is_none() && skips_screen {
             continue;
           }
-          let uses_depth = settings.uses_depth();
+          let uses_depth = self.draw_uses_depth(&settings, frag);
           if folded_clear.is_some() || open != Some((target, uses_depth)) {
             let (color, depth) = folded_clear.take().unwrap_or((None, None));
             let pass = self.plan_pass(target, uses_depth, color, depth, screen);
@@ -1690,6 +1691,13 @@ impl GpuCore {
     flush_runs!(self);
   }
 
+  /// Whether a draw of fragment entry `frag` with `settings` has a depth
+  /// attachment: when it tests depth, or when its fragment shader writes
+  /// `frag-depth` (which WebGPU allows only with one).
+  fn draw_uses_depth(&self, settings: &RenderSettings, frag: u16) -> bool {
+    settings.uses_depth() || self.gpu_entries[frag as usize].writes_frag_depth
+  }
+
   /// The format screen-targeted pipelines render to. Shaders output linear
   /// color and the screen is always sRGB-encoded, like a native surface:
   /// the surface's own format when drawing into it, its sRGB variant for a
@@ -1954,7 +1962,15 @@ impl GpuCore {
       color: blend_component(settings.blend.color),
       alpha: blend_component(settings.blend.alpha),
     });
+    // A fragment shader writing `frag-depth` needs a depth attachment even
+    // with depth testing off; the test then always passes and writes
+    // nothing, so the depth it writes is ignored.
     let depth_compare = match settings.depth_test {
+      DepthTest::Off
+        if self.gpu_entries[frag_entry as usize].writes_frag_depth =>
+      {
+        Some(wgpu::CompareFunction::Always)
+      }
       DepthTest::Off => None,
       DepthTest::Less => Some(wgpu::CompareFunction::Less),
       DepthTest::LessEqual => Some(wgpu::CompareFunction::LessEqual),
@@ -2010,7 +2026,9 @@ impl GpuCore {
           depth_stencil: depth_compare.map(|depth_compare| {
             wgpu::DepthStencilState {
               format: DEPTH_FORMAT,
-              depth_write_enabled: Some(settings.depth_write),
+              depth_write_enabled: Some(
+                settings.depth_write && settings.depth_test != DepthTest::Off,
+              ),
               depth_compare: Some(depth_compare),
               stencil: wgpu::StencilState::default(),
               bias: wgpu::DepthBiasState::default(),

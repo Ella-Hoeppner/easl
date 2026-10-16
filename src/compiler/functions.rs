@@ -1416,6 +1416,26 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
+  /// Whether this function's output includes a `@{builtin frag-depth}`:
+  /// its return value, or a field of the struct it returns.
+  pub fn writes_frag_depth(&self) -> bool {
+    let is_frag_depth = |attributes: &IOAttributes| {
+      matches!(
+        attributes.builtin(),
+        Some((BuiltinIOAttribute::FragDepth, _))
+      )
+    };
+    if is_frag_depth(&self.return_attributes) {
+      return true;
+    }
+    let Type::Function(signature) = self.expression.data.unwrap_known() else {
+      return false;
+    };
+    signature.return_type.with_known(|t| {
+      matches!(t, Type::Struct(s)
+        if s.fields.iter().any(|f| is_frag_depth(&f.attributes)))
+    })
+  }
   /// What WGSL can't express about runtime-sized arrays in this function:
   /// returning one, taking one by value, or binding one locally.
   /// GPU-reachable functions report these

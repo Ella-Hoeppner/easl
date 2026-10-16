@@ -3450,6 +3450,9 @@ pub enum WindowEvent {
 pub struct GpuEntryInfo {
   pub name: String,
   pub used_bindings: Vec<(u8, u8)>,
+  /// A fragment entry with a `frag-depth` output: its pipelines need a
+  /// depth attachment even with depth testing off.
+  pub writes_frag_depth: bool,
 }
 
 /// A single observable event emitted by the interpreter, recorded by StringIO
@@ -3999,7 +4002,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     .collect();
   let mut gpu_entries: Vec<GpuEntryInfo> = vec![];
   let mut gpu_entry_ids: HashMap<Arc<str>, u16> = HashMap::new();
-  let mut entry_fns: Vec<(Arc<str>, EntryPoint, EffectType)> = vec![];
+  let mut entry_fns: Vec<(Arc<str>, EntryPoint, EffectType, bool)> = vec![];
   for f in program.abstract_functions_iter() {
     let f = f.read().unwrap();
     let Some(entry) = f.entry_point else {
@@ -4010,9 +4013,15 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     else {
       continue;
     };
-    let effects = implementation.read().unwrap().effects();
+    let implementation = implementation.read().unwrap();
+    let effects = implementation.effects();
     if !matches!(entry, EntryPoint::Cpu | EntryPoint::Audio) {
-      entry_fns.push((f.name.clone(), entry, effects.clone()));
+      entry_fns.push((
+        f.name.clone(),
+        entry,
+        effects.clone(),
+        entry == EntryPoint::Fragment && implementation.writes_frag_depth(),
+      ));
     }
     let (reads, writes) = effects.gpu_read_and_written_globals();
     for name in reads.into_iter().chain(writes.into_iter()) {
@@ -4025,8 +4034,8 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
       }
     }
   }
-  entry_fns.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
-  for (name, _, effects) in entry_fns {
+  entry_fns.sort_by(|(a, ..), (b, ..)| a.cmp(b));
+  for (name, _, effects, writes_frag_depth) in entry_fns {
     let (reads, writes) = effects.gpu_read_and_written_globals();
     let mut used_bindings: Vec<(u8, u8)> = vec![];
     for global in reads.into_iter().chain(writes.into_iter()) {
@@ -4040,6 +4049,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     gpu_entries.push(GpuEntryInfo {
       name: compile_word(name.clone()),
       used_bindings,
+      writes_frag_depth,
     });
   }
   DerivedGpuInterface {

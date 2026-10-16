@@ -2,7 +2,8 @@
 ; pass boundaries (a compute between draws), until `clear-depth`; `Off`
 ; neither tests nor writes; `set-depth-write false` tests without writing;
 ; the screen's depth starts each frame cleared, and the settings persist
-; from frame to frame. A `frag-depth` output overrides a fragment's depth.
+; from frame to frame. A `frag-depth` output overrides a fragment's depth,
+; and is ignored with depth testing off.
 
 @local
 (var frame: u32 0u)
@@ -94,5 +95,11 @@
         6u (do (set-depth-write true)
                (dispatch-render-shaders near red 3u)
                (dispatch-render-shaders far green-pulled-near 3u))
+        ; `Off` ignores a `frag-depth` output: it neither tests nor writes
+        ; it, so the red (at 0.25) still passes the cleared depth.
+        7u (do (set-depth-test DepthTest/Off)
+               (dispatch-render-shaders far green-pulled-near 3u)
+               (set-depth-test DepthTest/Less)
+               (dispatch-render-shaders near red 3u))
         _ (close-window))
       (= frame (+ frame 1u)))))
