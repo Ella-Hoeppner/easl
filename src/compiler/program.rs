@@ -7043,6 +7043,10 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.lower_enum_comparisons(target, &mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.separate_overloaded_fns(target);
     self.canonicalize_function_references();
     self.catch_duplicate_closures_capturing_mutable_variables(&mut errors);

@@ -1,0 +1,26 @@
+; Enum `==` and `!=` in a compute shader.
+(enum Shape
+  Empty
+  (Circle f32)
+  (Point vec2f))
+
+(var out: [6: u32])
+
+(defn bit [b: bool]: u32
+  (if b 1u 0u))
+
+@compute
+(defn compare []
+  (let [a (Shape/Circle 1.)
+        p (Shape/Point (vec2f 1. 2.))]
+    (= (out 0u) (bit (== a (Shape/Circle 1.))))
+    (= (out 1u) (bit (== a (Shape/Circle 2.))))
+    (= (out 2u) (bit (== a Shape/Empty)))
+    (= (out 3u) (bit (!= a Shape/Empty)))
+    (= (out 4u) (bit (== p (Shape/Point (vec2f 1. 2.)))))
+    (= (out 5u) (bit (== p (Shape/Point (vec2f 1. 0.)))))))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader compare (vec3u 1u))
+  (print out))

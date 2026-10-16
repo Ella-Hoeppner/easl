@@ -879,6 +879,14 @@ error_test!(
   )
 );
 error_test!(
+  enum_equality_incomparable_failure,
+  CompileErrorKind::IncomparableEnum(
+    "Shape".to_string(),
+    "At".to_string(),
+    "Point".to_string()
+  )
+);
+error_test!(
   type_dependency_cycle_failure,
   CompileErrorKind::TypeDependencyCycle(vec![
     "Node".to_string(),

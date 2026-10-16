@@ -1891,6 +1891,7 @@ impl Type {
         }
         TypeConstraintKind::Integer => *self == Type::I32 || *self == Type::U32,
         TypeConstraintKind::Function => matches!(self, Type::Function(_)),
+        TypeConstraintKind::Enum => matches!(self, Type::Enum(_)),
       }
     }
   }
@@ -3843,6 +3844,8 @@ pub enum TypeConstraintKind {
   ScalarOrBool,
   Integer,
   Function,
+  /// Any enum (for the builtin enum `==`/`!=`; not writable in source).
+  Enum,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3858,6 +3861,7 @@ impl TypeConstraint {
       TypeConstraintKind::ScalarOrBool => "ScalarOrBool",
       TypeConstraintKind::Integer => "Integer",
       TypeConstraintKind::Function => "Function",
+      TypeConstraintKind::Enum => "Enum",
     }
     .to_string()
   }
@@ -3882,6 +3886,12 @@ impl TypeConstraint {
   pub fn function() -> Self {
     Self {
       kind: TypeConstraintKind::Function,
+      args: vec![],
+    }
+  }
+  pub fn enum_type() -> Self {
+    Self {
+      kind: TypeConstraintKind::Enum,
       args: vec![],
     }
   }

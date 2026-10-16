@@ -1,18 +1,28 @@
 use std::collections::HashMap;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use fsexp::{Ast, EncloserOrOperator};
 
 use crate::{
+  Never,
   compiler::{
     error::{
-      CompileError, CompileErrorKind::*, CompileResult, SourceTrace, err,
+      CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
+      err,
     },
-    program::{CompilerTarget, NameContext, TypeDefs},
+    exp_builder::{
+      ExpBuilder, builtin_signature, enum_constructor, generated_function,
+    },
+    expression::{ExpKind, TypedExp},
+    functions::{
+      AbstractFunctionSignature, FunctionImplementationKind, Ownership,
+    },
+    modules::display_name,
+    program::{CompilerTarget, NameContext, Program, TypeDefs},
     types::{
       AbstractType, ConstGenericValue, ExpTypeInfo, GenericArgument,
-      GenericArgumentValue, Type, TypeConstraint, TypeState,
+      GenericArgumentValue, Type, TypeConstraint, TypeDescription, TypeState,
       contains_name_leaf,
     },
     util::compile_word,
@@ -725,5 +735,291 @@ impl Enum {
         .max()
         .unwrap_or(0),
     )
+  }
+}
+
+/// Generates the functions `==` and `!=` on enums lower to, one per
+/// concrete enum (see `Program::lower_enum_comparisons`).
+#[derive(Default)]
+struct EnumComparisons {
+  /// By enum (its monomorphized name).
+  functions: HashMap<Arc<str>, Arc<RwLock<AbstractFunctionSignature>>>,
+  new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
+}
+
+impl EnumComparisons {
+  /// Lowers the enum comparisons in `exp`, logging an error at each one
+  /// whose enum holds a payload without `==`.
+  fn lower_in(
+    &mut self,
+    exp: &mut TypedExp,
+    program: &Program,
+    target: CompilerTarget,
+    errors: &mut ErrorLog,
+  ) {
+    exp
+      .walk_mut(&mut |exp| {
+        if let ExpKind::Application(f, args) = &mut exp.kind
+          && let ExpKind::Name(op) = &f.kind
+          && (&**op == "==" || &**op == "!=")
+          && args.len() == 2
+          && let Type::Enum(enum_type) = args[0].data.unwrap_known()
+          && let Type::Function(signature) = f.data.unwrap_known()
+          && signature
+            .abstract_ancestor
+            .as_ref()
+            .is_some_and(|ancestor| {
+              matches!(
+                ancestor.read().unwrap().implementation,
+                FunctionImplementationKind::Builtin { .. }
+              )
+            })
+        {
+          let b = ExpBuilder::at(&exp.source_trace);
+          let equal = match self.equality_function(&enum_type, program, target)
+          {
+            Ok(equal) => equal,
+            Err((variant, payload)) => {
+              errors.log(CompileError::new(
+                IncomparableEnum(
+                  display_name(
+                    &enum_type.abstract_ancestor.original_ancestor().name.0,
+                  )
+                  .to_string(),
+                  display_name(&variant).to_string(),
+                  TypeDescription::from(payload).to_string(),
+                ),
+                exp.source_trace.clone(),
+              ));
+              return Ok(false);
+            }
+          };
+          let negate = &**op == "!=";
+          let operands = std::mem::take(args);
+          let comparison = b.call(&equal, operands, &Type::Bool);
+          let kind = if negate {
+            let not = builtin_signature(
+              "!",
+              vec![(Type::Bool, Ownership::Owned)],
+              Type::Bool,
+              None,
+            );
+            b.call(&not, vec![comparison], &Type::Bool).kind
+          } else {
+            comparison.kind
+          };
+          *exp = b.with_data(kind, exp.data.clone());
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+  }
+
+  /// The generated equality function of `enum_type`, or the variant and
+  /// payload type that has no `==`.
+  fn equality_function(
+    &mut self,
+    enum_type: &Enum,
+    program: &Program,
+    target: CompilerTarget,
+  ) -> Result<Arc<RwLock<AbstractFunctionSignature>>, (Arc<str>, Type)> {
+    let key =
+      enum_type.monomorphized_name(&mut program.names.write().unwrap(), target);
+    if let Some(function) = self.functions.get(&key) {
+      return Ok(function.clone());
+    }
+    let source = SourceTrace::empty();
+    let b = ExpBuilder::at(&source);
+    let enum_t = Type::Enum(enum_type.clone());
+    let gensym = |base: &str| program.names.write().unwrap().gensym(base);
+    let (a, other) = (gensym("enum_eq_a"), gensym("enum_eq_b"));
+    let generic_arg_names = enum_type
+      .abstract_ancestor
+      .original_ancestor()
+      .generic_arg_monomorphized_names(
+        &enum_type
+          .variants
+          .iter()
+          .map(|variant| variant.inner_type.unwrap_known())
+          .collect(),
+        &mut program.names.write().unwrap(),
+        target,
+      );
+    let mut arms = vec![];
+    for variant in enum_type.variants.iter() {
+      let payload = variant.inner_type.unwrap_known();
+      let (pattern, other_pattern, payloads_equal) = if payload == Type::Unit {
+        let unit_name = program.names.write().unwrap().get_monomorphized_name(
+          variant.name.clone(),
+          generic_arg_names.clone(),
+        );
+        (
+          b.name(&unit_name, &enum_t),
+          b.name(&unit_name, &enum_t),
+          b.bool(true),
+        )
+      } else {
+        let (x, y) = (gensym("enum_eq_x"), gensym("enum_eq_y"));
+        let constructor = enum_constructor(
+          &variant.name,
+          &payload,
+          AbstractType::Type(enum_t.clone()),
+        );
+        let Some(payloads_equal) = self.values_equal(
+          b.name(&x, &payload),
+          b.name(&y, &payload),
+          &payload,
+          program,
+          target,
+        ) else {
+          return Err((variant.name.clone(), payload));
+        };
+        (
+          b.call(&constructor, vec![b.name(&x, &payload)], &enum_t),
+          b.call(&constructor, vec![b.name(&y, &payload)], &enum_t),
+          payloads_equal,
+        )
+      };
+      let same_variant = b.match_on(
+        b.name(&other, &enum_t),
+        vec![
+          (other_pattern, payloads_equal),
+          (b.wildcard(&enum_t), b.bool(false)),
+        ],
+        &Type::Bool,
+      );
+      arms.push((pattern, same_variant));
+    }
+    let body = b.match_on(b.name(&a, &enum_t), arms, &Type::Bool);
+    let name = gensym(&format!("easl_enum_equal_{key}"));
+    let function = generated_function(
+      &name,
+      &[
+        (a, enum_t.clone(), Ownership::Owned),
+        (other, enum_t, Ownership::Owned),
+      ],
+      &Type::Bool,
+      body,
+      &source,
+    );
+    self.functions.insert(key, function.clone());
+    self.new_functions.push(function.clone());
+    Ok(function)
+  }
+
+  /// Whether `x` and `y`, of type `t`, are equal by `t`'s own `==` (every
+  /// component of a vector; a nested enum's generated function), or `None`
+  /// when `t` has no `==`.
+  fn values_equal(
+    &mut self,
+    x: TypedExp,
+    y: TypedExp,
+    t: &Type,
+    program: &Program,
+    target: CompilerTarget,
+  ) -> Option<TypedExp> {
+    let b = ExpBuilder::at(&x.source_trace);
+    let builtin = |name: &str, operand: &Type| {
+      builtin_signature(
+        name,
+        vec![
+          (operand.clone(), Ownership::Owned),
+          (operand.clone(), Ownership::Owned),
+        ],
+        Type::Bool,
+        None,
+      )
+    };
+    match t {
+      Type::Bool | Type::F32 | Type::I32 | Type::U32 | Type::String => {
+        Some(b.call(&builtin("==", t), vec![x, y], &Type::Bool))
+      }
+      Type::Enum(inner) => {
+        let equal = self.equality_function(inner, program, target).ok()?;
+        Some(b.call(&equal, vec![x, y], &Type::Bool))
+      }
+      Type::Struct(s) if t.is_vector() => {
+        let element = s.fields[0].field_type.unwrap_known();
+        let components = s.fields.iter().map(|field| {
+          b.call(
+            &builtin("==", &element),
+            vec![
+              b.field(x.clone(), &field.name, element.clone()),
+              b.field(y.clone(), &field.name, element.clone()),
+            ],
+            &Type::Bool,
+          )
+        });
+        components.reduce(|all, component| {
+          b.call(
+            &builtin("&&", &Type::Bool),
+            vec![all, component],
+            &Type::Bool,
+          )
+        })
+      }
+      _ => None,
+    }
+  }
+}
+
+impl Program {
+  /// Lowers `==` and `!=` on enum values to calls of a generated function
+  /// per enum (`easl_enum_equal_<enum>`): a `match` on both operands that's
+  /// true for the same variant with equal payloads, comparing payloads with
+  /// their own `==` (every component of a vector, a nested enum's generated
+  /// function). `!=` negates it. Runs right after monomorphization, when
+  /// every enum is concrete; the generated functions are deexpressionified
+  /// here, having missed that pass.
+  pub fn lower_enum_comparisons(
+    &mut self,
+    target: CompilerTarget,
+    errors: &mut ErrorLog,
+  ) {
+    let mut comparisons = EnumComparisons::default();
+    // Generic functions stay registered beside their monomorphized copies,
+    // and only the copies' enums are concrete.
+    let implementations: Vec<_> = self
+      .abstract_functions_iter()
+      .filter_map(|signature| {
+        let signature = signature.read().unwrap();
+        match &signature.implementation {
+          FunctionImplementationKind::Composite(f)
+            if signature.generic_args.is_empty() =>
+          {
+            Some(f.clone())
+          }
+          _ => None,
+        }
+      })
+      .collect();
+    for f in implementations {
+      comparisons.lower_in(
+        &mut f.write().unwrap().expression,
+        self,
+        target,
+        errors,
+      );
+    }
+    let mut vars = std::mem::take(&mut self.top_level_vars);
+    for var in vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        comparisons.lower_in(value, self, target, errors);
+      }
+    }
+    self.top_level_vars = vars;
+    for signature in comparisons.new_functions {
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.read().unwrap().implementation
+      {
+        let mut f = f.write().unwrap();
+        f.expression.throw_away_inner_values_in_blocks(self);
+        f.expression.deexpressionify(self, target);
+        if let ExpKind::Function(arg_names, _) = &f.expression.kind {
+          f.arg_names = arg_names.clone();
+        }
+      }
+      self.add_abstract_function(signature);
+    }
   }
 }

@@ -1,0 +1,11 @@
+(struct Point
+  x: f32
+  y: f32)
+
+(enum Shape
+  Empty
+  (At Point))
+
+@cpu
+(defn main []
+  (print (== (Shape/At (Point 1. 2.)) Shape/Empty)))

@@ -666,6 +666,11 @@ pub enum CompileErrorKind {
     .0.join(" -> ")
   )]
   CyclicTopLevelDefinitions(Vec<String>),
+  #[error(
+    "`{0}` values can't be compared with `==`: variant `{1}` holds a `{2}`, \
+     which has no `==`"
+  )]
+  IncomparableEnum(String, String, String),
   #[error("`{0}` is a builtin type and can't be redefined")]
   BuiltinTypeRedefinition(String),
   #[error("`{0}` has no member named `{1}`")]
@@ -768,6 +773,10 @@ impl PartialEq for CompileErrorKind {
         Self::CyclicTopLevelDefinitions(l0),
         Self::CyclicTopLevelDefinitions(r0),
       ) => l0 == r0,
+      (
+        Self::IncomparableEnum(l0, l1, l2),
+        Self::IncomparableEnum(r0, r1, r2),
+      ) => l0 == r0 && l1 == r1 && l2 == r2,
       (Self::AmbiguousOverload(l0), Self::AmbiguousOverload(r0)) => l0 == r0,
       (
         Self::BuiltinTypeRedefinition(l0),

@@ -1264,6 +1264,29 @@ fn inversion_functions() -> Vec<AbstractFunctionSignature> {
   })
 }
 
+/// `==` and `!=` on enums: the same variant with equal payloads. Calls
+/// are lowered to generated functions after monomorphization
+/// (`Program::lower_enum_comparisons`).
+fn enum_comparison_functions() -> Vec<AbstractFunctionSignature> {
+  ["==", "!="]
+    .into_iter()
+    .map(|name| AbstractFunctionSignature {
+      name: name.into(),
+      generic_args: vec![(
+        "E".into(),
+        GenericArgument::Type(vec![TypeConstraint::enum_type()]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![
+        AbstractType::Generic("E".into()).owned(),
+        AbstractType::Generic("E".into()).owned(),
+      ],
+      return_type: AbstractType::Type(Type::Bool),
+      ..Default::default()
+    })
+    .collect()
+}
+
 fn comparison_functions() -> Vec<AbstractFunctionSignature> {
   foreach_generic_scalar_or_vec_type(|t| {
     let b = t.clone().fill_abstract_generics(
@@ -3815,6 +3838,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
   signatures.append(&mut comparison_functions());
+  signatures.append(&mut enum_comparison_functions());
   signatures.append(&mut arithmetic_functions("+", true));
   signatures.append(&mut arithmetic_functions("*", true));
   signatures.append(&mut arithmetic_functions("-", false));

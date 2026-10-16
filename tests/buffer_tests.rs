@@ -207,6 +207,7 @@ buffer_test!(data_packing_gpu);
 buffer_test!(ref_read_to_owned_arg_gpu);
 buffer_test!(render_target_persistence);
 buffer_test!(render_settings_blend);
+buffer_test!(enum_equality_gpu);
 buffer_test!(gpu_read_outside_application);
 buffer_test!(gpu_read_outside_application_dynamic);
 buffer_test!(matrix_bindings);
