@@ -1650,18 +1650,21 @@ impl Type {
       _ => false,
     }
   }
+  /// Whether this type is, or contains anywhere in its structure, a
+  /// `String`. Inspects nested types in place: every expression's effects
+  /// ask this.
   pub fn involves_string(&self) -> bool {
     match self {
       Type::String => true,
-      Type::Array(_, inner) => inner.kind.unwrap_known().involves_string(),
+      Type::Array(_, inner) => inner.kind.with_known(Type::involves_string),
       Type::Struct(s) => s
         .fields
         .iter()
-        .any(|f| f.field_type.unwrap_known().involves_string()),
+        .any(|f| f.field_type.with_known(Type::involves_string)),
       Type::Enum(e) => e
         .variants
         .iter()
-        .any(|v| v.inner_type.unwrap_known().involves_string()),
+        .any(|v| v.inner_type.with_known(Type::involves_string)),
       _ => false,
     }
   }

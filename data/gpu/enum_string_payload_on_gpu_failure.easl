@@ -1,0 +1,16 @@
+; A shader can't use an enum holding a String, even without touching the
+; String itself.
+(enum Item
+  Empty
+  (Named String))
+
+@local
+(var current: Item Item/Empty)
+
+(var out: u32)
+
+@compute
+(defn check []
+  (= out (match current
+           Item/Empty 1u
+           _ 0u)))

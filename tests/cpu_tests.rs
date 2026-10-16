@@ -115,6 +115,7 @@ macro_rules! cpu_test {
 
 cpu_test!(print);
 cpu_test!(enum_equality);
+cpu_test!(enum_string_payload);
 cpu_test!(def_forward_reference);
 cpu_test!(string_escapes);
 cpu_test!(for_initializer_deshadowing);

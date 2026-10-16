@@ -879,6 +879,10 @@ error_test!(
   )
 );
 error_test!(
+  enum_string_payload_on_gpu_failure,
+  CompileErrorKind::CPUExclusiveTypeInGPUEntryPoint("String".to_string())
+);
+error_test!(
   enum_equality_incomparable_failure,
   CompileErrorKind::IncomparableEnum(
     "Shape".to_string(),

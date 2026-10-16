@@ -5692,7 +5692,9 @@ impl TypedExp {
       Discard => Effect::Discard.into(),
       _ => EffectType::empty(),
     };
-    if self.data.with_known(|t| matches!(t, Type::String)) {
+    // A value holding a String anywhere (a String, or a struct, enum, or
+    // array containing one) is CPU-only.
+    if self.data.with_known(Type::involves_string) {
       e.merge(Effect::CPUExclusiveType("String".into()));
     }
     e

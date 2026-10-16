@@ -1,0 +1,7 @@
+"named lamp"
+"count 3u"
+true
+false
+true
+false
+true

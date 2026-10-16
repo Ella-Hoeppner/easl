@@ -1,0 +1,28 @@
+; An enum with a `String` payload is a CPU-only type: CPU code constructs,
+; matches, passes, and compares it, and none of it reaches WGSL.
+(enum Item
+  Empty
+  (Named String)
+  (Count u32))
+
+(defn describe [item: Item]: String
+  (match item
+    (Item/Named name) (concat "named " name)
+    (Item/Count n) (concat "count " (string n))
+    Item/Empty "empty"))
+
+(defn is-empty [item: Item]: bool
+  (match item
+    Item/Empty true
+    _ false))
+
+@cpu
+(defn main []
+  (let [named (Item/Named "lamp")]
+    (print (describe named))
+    (print (describe (Item/Count 3u)))
+    (print (is-empty Item/Empty))
+    (print (is-empty named))
+    (print (== named (Item/Named "lamp")))
+    (print (== named (Item/Named "desk")))
+    (print (!= named Item/Empty))))

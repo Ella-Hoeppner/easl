@@ -5001,14 +5001,18 @@ impl Program {
       if !e.generic_args.is_empty() {
         continue;
       }
-      // Enums with runtime-sized payloads are CPU-only (their variants
-      // have no fixed GPU layout) — skip their WGSL emission entirely,
-      // like unbound unsized-array globals. GPU code referencing one is
-      // caught by validation, so nothing in the emitted WGSL can miss it.
+      // Enums with CPU-only payloads (runtime-sized, String, or Video
+      // ones; the predicate structs use) have no GPU layout: skip their
+      // emission entirely. GPU code referencing one is caught by
+      // validation, so nothing in the emitted output can miss it.
       if e.variants.iter().any(|v| {
         v.inner_type
           .flat_data_size_in_u32s(&e.source_trace)
           .is_err()
+          || v
+            .inner_type
+            .concretize(&vec![], &self.typedefs, SourceTrace::empty())
+            .is_ok_and(|t| self.type_makes_struct_cpu_only(&t))
       }) {
         continue;
       }
@@ -5021,9 +5025,10 @@ impl Program {
     }
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap().clone();
-      // Functions whose signatures involve runtime-sized values (directly
-      // or inside enums/structs) are CPU-only — they have no valid WGSL/C
-      // representation. This gate covers the synthesized definitions this
+      // Functions whose signatures involve CPU-only types (runtime-sized,
+      // String, or Video values, directly or inside enums/structs:
+      // `type_makes_struct_cpu_only`, so they're skipped exactly when the
+      // types they name are) have no valid WGSL/C representation. This gate covers the synthesized definitions this
       // loop emits (enum constructors), which never pass through
       // `TopLevelFunction::compile` and so can't be caught by its
       // `allowed_on_gpu` check; composite functions get the equivalent
@@ -5038,7 +5043,7 @@ impl Program {
           .chain(std::iter::once(&f.return_type))
           .any(|t| {
             t.concretize(&vec![], &self.typedefs, SourceTrace::empty())
-              .is_ok_and(|t| t.involves_runtime_sized_array())
+              .is_ok_and(|t| self.type_makes_struct_cpu_only(&t))
           });
       if signature_is_cpu_only {
         continue;
