@@ -4281,14 +4281,12 @@ impl Display for ConcreteArraySizeDescription {
         Self::Literal(size) => format!("{size}"),
         Self::Constant(name) => compile_word((**name).into()),
         Self::Unsized => String::new(),
-        Self::Skolem(name) => format!("SKOLEM<{name}>"),
-        Self::UnificationVariable(value) => format!(
-          "UNIFICATION_VAR<{}>",
-          match value {
-            Some(x) => format!("{x}"),
-            None => "???".to_string(),
-          }
-        ),
+        // A generic size reads as its name, and a size inference has
+        // resolved as that size; one it hasn't yet is `?`, as an unknown
+        // type is.
+        Self::Skolem(name) => name.clone(),
+        Self::UnificationVariable(Some(size)) => format!("{size}"),
+        Self::UnificationVariable(None) => "?".to_string(),
       }
     ))
   }
@@ -4623,5 +4621,36 @@ impl Display for TypeConstraintDescription {
         self.name.clone().to_string()
       }
     )
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Array sizes print as they'd be written: a number, a generic's name,
+  /// or `?` while inference hasn't determined one.
+  #[test]
+  fn array_size_descriptions_read_like_source() {
+    let array = |size| {
+      TypeDescription::Array(
+        Some(size),
+        Box::new(TypeStateDescription::Known(TypeDescription::U32)),
+      )
+      .to_string()
+    };
+    assert_eq!(array(ConcreteArraySizeDescription::Literal(3)), "[3: u32]");
+    assert_eq!(
+      array(ConcreteArraySizeDescription::UnificationVariable(Some(3))),
+      "[3: u32]"
+    );
+    assert_eq!(
+      array(ConcreteArraySizeDescription::UnificationVariable(None)),
+      "[?: u32]"
+    );
+    assert_eq!(
+      array(ConcreteArraySizeDescription::Skolem("C".into())),
+      "[C: u32]"
+    );
   }
 }

@@ -132,7 +132,7 @@ pub enum CompileErrorKind {
   ),
   #[error(
     "Function argument types incompatible. Function had type {}\n \
-    Recieved arguments of types:\n{}",
+    Received arguments of types:\n{}",
     .f,
     .args.iter().map(|t| format!("{t}")).collect::<Vec<String>>().join("\n"))
     ]
