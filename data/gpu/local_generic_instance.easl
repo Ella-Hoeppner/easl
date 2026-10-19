@@ -1,0 +1,8 @@
+; A generic instance named only by a local binding's type (never
+; constructed or matched) still gets its definition.
+(var out: u32)
+
+@compute
+(defn f []
+  (let [@var xs: [2: (Option f32)] (zeroed-array)]
+    (= out 1u)))

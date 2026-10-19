@@ -140,8 +140,14 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
     }
   } else {
     Exp {
+      // A literal too big even for an `i64` saturates, and is then out of
+      // range for every type (`validate_integer_literals`).
       kind: ExpKind::NumberLiteral(Number::Int({
-        prefix_str.parse::<i64>().unwrap()
+        prefix_str.parse::<i64>().unwrap_or(if has_minus {
+          i64::MIN
+        } else {
+          i64::MAX
+        })
       })),
       data: known_type
         .map(|t| Known(t))

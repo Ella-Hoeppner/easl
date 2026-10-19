@@ -343,6 +343,7 @@ success_test!(discard_success);
 success_test!(arg_annotation_success);
 success_test!(return_annotation_success);
 success_test!(fragment_struct_outputs);
+success_test!(local_generic_instance);
 success_test!(user_reference_success);
 success_test!(ownership_success);
 success_test!(unit_literal_in_block);
@@ -877,6 +878,12 @@ error_test!(
     "x".to_string(),
     VariableAddressSpace::Uniform
   )
+);
+error_test!(
+  integer_literal_out_of_range_failure,
+  CompileErrorKind::IntegerLiteralOutOfRange(-1, "u32".to_string()),
+  CompileErrorKind::IntegerLiteralOutOfRange(5000000000, "u32".to_string()),
+  CompileErrorKind::IntegerLiteralOutOfRange(-3000000000, "i32".to_string())
 );
 error_test!(
   workgroup_size_dispatch_failure,

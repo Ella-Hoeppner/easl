@@ -1,0 +1,12 @@
+; Integer literals must fit their type.
+(var out: vec3i)
+
+(var big: u32)
+
+(var small: i32)
+
+@compute
+(defn f []
+  (= out (vec3i -1u 0u 0u))
+  (= big 5000000000u)
+  (= small -3000000000i))

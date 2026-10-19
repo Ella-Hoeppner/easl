@@ -1490,6 +1490,44 @@ impl Program {
     for t in signature_types {
       monomorphized_ctx.add_type_instances(&t);
     }
+    // And those only a local binding's type names (a
+    // `[4: (Option f32)]` local filled by `zeroed-array`).
+    let mut local_types: Vec<Type> = vec![];
+    for f in monomorphized_ctx.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      else {
+        continue;
+      };
+      if !f.generic_args.is_empty() {
+        continue;
+      }
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Let(bindings, _) = &exp.kind {
+            for (_, _, _, value) in bindings {
+              if let Some(t) = value.data.kind.try_unwrap_known()
+                && matches!(
+                  t,
+                  Type::Struct(_) | Type::Enum(_) | Type::Array(_, _)
+                )
+                && !local_types.contains(&t)
+              {
+                local_types.push(t);
+              }
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+    for t in local_types {
+      monomorphized_ctx.add_type_instances(&t);
+    }
     take(self, |old_ctx| {
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
       monomorphized_ctx.window_info_bindings = old_ctx.window_info_bindings;
@@ -5718,6 +5756,44 @@ impl Program {
       }
     }
   }
+  /// Reports every integer literal outside its inferred type's range: a
+  /// negative `u32` (`-1u`), or a value too big for `u32` or `i32`.
+  pub fn validate_integer_literals(&self, errors: &mut ErrorLog) {
+    let mut check = |exp: &TypedExp| {
+      exp
+        .walk(&mut |exp| {
+          if let ExpKind::NumberLiteral(Number::Int(n)) = &exp.kind
+            && let Some(t) = exp.data.kind.try_unwrap_known()
+          {
+            let (fits, type_name) = match t {
+              Type::U32 => (u32::try_from(*n).is_ok(), "u32"),
+              Type::I32 => (i32::try_from(*n).is_ok(), "i32"),
+              _ => (true, ""),
+            };
+            if !fits {
+              errors.log(CompileError::new(
+                IntegerLiteralOutOfRange(*n, type_name.to_string()),
+                exp.source_trace.clone(),
+              ));
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    };
+    for signature in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.read().unwrap().implementation
+      {
+        check(&f.read().unwrap().expression);
+      }
+    }
+    for var in self.top_level_vars.iter() {
+      if let Some(value) = &var.value {
+        check(value);
+      }
+    }
+  }
   pub fn validate_control_flow(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
@@ -7016,6 +7092,10 @@ impl Program {
     self.resolve_overload_groups();
     self.rewrite_aliased_builtin_calls();
     self.box_function_values(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_integer_literals(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
