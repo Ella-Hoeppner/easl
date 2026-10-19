@@ -181,7 +181,8 @@ Passing a storage/uniform global, or a **static field path** into one (`g`, `g.a
 - `print` formatting: `1u`, `1` (i32), `1.` (whole f32), `true`, and Strings quoted (`"foo"`, also inside arrays/structs). `(string x)` produces unquoted text; an unquoted `print-str` is planned. Matters for `.txt` goldens
 
 ### Entry points and annotations
-- `@cpu` (run by the interpreter/VM), `@vertex`, `@fragment`, `@compute` (with optional `@{workgroup-size X [Y Z]}`), audio entries via `start-audio`
+- `@cpu` (run by the interpreter/VM), `@vertex`, `@fragment`, `@compute` (with optional `@{workgroup-size N}`), audio entries via `start-audio`
+- **Workgroup sizes** (`workgroups.rs`): `EntryPoint::Compute([x, y, z])`. `(dispatch-compute-shader f count size)` takes a constant `vec3u` size (literals or a `def`, `constant_vec3u`); `specialize_dispatch_workgroup_sizes` (before the dispatched-closure lift) gives each (function, size) a registered copy that's a compute entry of that size, repoints the dispatch's argument at it, and drops the size argument, so everything later sees a plain two-argument dispatch. `check_workgroup_size` enforces WebGPU's default limits there and for the annotation. `(workgroup-size)` is compute-only (context exclusivity); `extract_workgroup_size` (right after that check) turns it into a read of the `@local` `easl_workgroup_size`, which every compute entry assigns on entry, so shared helpers need no specialization
 - `@{builtin vertex-index}` etc. bind WGSL builtins (some also exist as zero-arg helper functions); `@{location N}` binds vertex inputs / fragment outputs
 
 ### Context exclusivity (`validate_context_exclusivity`)

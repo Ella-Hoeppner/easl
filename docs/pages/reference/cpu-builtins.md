@@ -100,9 +100,23 @@ Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `f
 
 ```easl
 (dispatch-compute-shader entry: F workgroup-count: vec3u): ()
+(dispatch-compute-shader entry: F workgroup-count: vec3u workgroup-size: vec3u): ()
 ```
 
-Runs the compute shader `entry` over `workgroup-count` workgroups (the shader's `@{workgroup-size ...}` sets the threads in each). Each component can be at most the GPU's `maxComputeWorkgroupsPerDimension` (65535 on most devices); a larger count is a runtime error. See [CPU and GPU writes](../cpu.md#cpu-and-gpu-see-each-others-writes).
+Runs the compute shader `entry` over `workgroup-count` workgroups. Each workgroup runs `workgroup-size` threads: the size given here, or else the shader's `@{workgroup-size N}` annotation, or 1. A size given here must be a compile-time constant (a `vec3u` of literals, or a `def` holding one), since WGSL fixes it in the shader; easl compiles a version of `entry` for each size it's dispatched at, so the same function or closure can be dispatched at several sizes, including from inside a higher-order helper. A size can have at most 256 threads in all, with x and y at most 256 and z at most 64.
+
+```easl
+(defn compute-foreach-n [n: u32 f: (Fn [u32] ())]
+  (dispatch-compute-shader
+    (fn []
+      (let [i (.x (global-invocation-id))]
+        (when (< i n)
+          (f i))))
+    (vec3u (/ (+ n 63u) 64u) 1u 1u)
+    (vec3u 64u 1u 1u)))
+```
+
+ Each component can be at most the GPU's `maxComputeWorkgroupsPerDimension` (65535 on most devices); a larger count is a runtime error. See [CPU and GPU writes](../cpu.md#cpu-and-gpu-see-each-others-writes).
 
 ## Window and input queries
 

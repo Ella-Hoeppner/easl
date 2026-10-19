@@ -1,0 +1,13 @@
+(var out: u32)
+
+(defn bump []
+  (+= out 1u))
+
+@cpu
+(defn main []
+  ; not a compile-time constant
+  (let [x (+ (window-frame-index) 1u)]
+    (dispatch-compute-shader bump (vec3u 1u) (vec3u x 1u 1u)))
+  ; over WebGPU's limits
+  (dispatch-compute-shader bump (vec3u 1u) (vec3u 512u 1u 1u))
+  (dispatch-compute-shader bump (vec3u 1u) (vec3u 16u 16u 2u)))

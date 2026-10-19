@@ -94,6 +94,14 @@ Every wgsl [builtin input](https://www.w3.org/TR/WGSL/#builtin-inputs-outputs) c
 
 **Compute.** The dispatch size, in workgroups.
 
+### `workgroup-size`
+
+```easl
+(workgroup-size): vec3u
+```
+
+**Compute.** The running shader's workgroup size: the size it was dispatched at, its `@{workgroup-size N}` annotation, or 1. A helper called from shaders of different sizes reads the running one's.
+
 There is one output-only builtin attribute with no lookup function: `@{builtin frag-depth}` (an `f32` fragment-shader output overriding the fragment's depth).
 
 ## Derivatives

@@ -412,7 +412,7 @@ pub(crate) mod execution_context {
     EntryPoint::Cpu,
     EntryPoint::Vertex,
     EntryPoint::Fragment,
-    EntryPoint::Compute(1),
+    EntryPoint::Compute([1, 1, 1]),
     EntryPoint::Audio,
   ];
   pub fn bit(context: usize) -> u8 {
@@ -1727,7 +1727,7 @@ impl Program {
                     {
                       self.mark_implicit_entry_point(
                         &mut abstract_compute_fn.write().unwrap(),
-                        EntryPoint::Compute(1),
+                        EntryPoint::Compute([1, 1, 1]),
                         |e| matches!(e, EntryPoint::Compute(_)),
                         WrongEntryPointTypeForDispatchComputeShader,
                         &exp.source_trace,
@@ -2362,7 +2362,8 @@ impl Program {
   pub fn validate_context_exclusivity(&self, errors: &mut ErrorLog) {
     use crate::compiler::expression::ExpKind;
     use execution_context::{
-      AUDIO, CONTEXT_COUNT, CONTEXT_ENTRIES, CONTEXT_NAMES, CPU, FRAGMENT, bit,
+      AUDIO, COMPUTE, CONTEXT_COUNT, CONTEXT_ENTRIES, CONTEXT_NAMES, CPU,
+      FRAGMENT, bit,
     };
     let fns = self.compute_function_contexts();
     // rule scan: check each function's direct uses against every context
@@ -2402,6 +2403,16 @@ impl Program {
               ));
             }
             ExpKind::Application(applied_f, args) => {
+              if let ExpKind::Name(applied_name) = &applied_f.kind
+                && &**applied_name == "workgroup-size"
+                && args.is_empty()
+              {
+                violations.push((
+                  exp.source_trace.clone(),
+                  bit(COMPUTE),
+                  std::array::from_fn(|_| Some(WorkgroupSizeOutsideCompute)),
+                ));
+              }
               if let ExpKind::Name(applied_name) = &applied_f.kind
                 && matches!(&**applied_name, "audio-time" | "audio-input")
                 && args.is_empty()
@@ -7114,6 +7125,12 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    // Before the dispatched-closure lift and entry marking, which then
+    // see each workgroup-sized copy as an ordinary dispatched function.
+    self.specialize_dispatch_workgroup_sizes(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.catch_dispatched_closure_scope_mutations(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -7149,6 +7166,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.extract_workgroup_size();
     self.extract_audio_info();
     // Must run after entry marking (it moves `@audio` markings from
     // scoped closures to their audio clones) and before the

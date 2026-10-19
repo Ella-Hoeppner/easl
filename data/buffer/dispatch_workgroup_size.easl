@@ -1,0 +1,57 @@
+; `dispatch-compute-shader` with a workgroup size: a constant `vec3u` (a
+; literal or a `def`) that dispatches a version of the function with that
+; size, so a higher-order helper can dispatch closures in bigger
+; workgroups. `(workgroup-size)` reads the size of the running shader,
+; also through a helper shared by shaders of different sizes.
+(var doubled: [200: u32])
+
+(var locals: [200: u32])
+
+(var volumes: [3: u32])
+
+(def wide: vec3u
+     (vec3u 16u 2u 1u))
+
+(defn compute-foreach-n [n: u32 f: (Fn [u32] ())]
+  (dispatch-compute-shader
+    (fn []
+      (let [i (.x (global-invocation-id))]
+        (when (< i n)
+          (f i))))
+    (vec3u (/ (+ n 63u) 64u) 1u 1u)
+    (vec3u 64u 1u 1u)))
+
+(defn group-volume []: u32
+  (let [s (workgroup-size)]
+    (* s.x s.y s.z)))
+
+(defn fill-a []
+  (= (volumes 0u) (group-volume)))
+
+(defn fill-b []
+  (= (volumes 1u) (group-volume)))
+
+(defn fill-c []
+  (= (volumes 2u) (group-volume)))
+
+@cpu
+(defn main []
+  (compute-foreach-n 200u
+                     (fn [i]
+                       (= (doubled i) (* i 2u))
+                       (= (locals i) (.x (local-invocation-id)))))
+  (print (doubled 199u))
+  ; local invocation ids run 0-63 within each workgroup of 64
+  (print (locals 63u))
+  (print (locals 64u))
+  (print (locals 199u))
+  ; one function dispatched at two sizes
+  (dispatch-compute-shader fill-a (vec3u 1u) (vec3u 8u 8u 1u))
+  (print (volumes 0u))
+  (dispatch-compute-shader fill-a (vec3u 1u) (vec3u 4u 1u 1u))
+  (print (volumes 0u))
+  (dispatch-compute-shader fill-b (vec3u 1u) wide)
+  (print (volumes 1u))
+  ; without a size: 1
+  (dispatch-compute-shader fill-c (vec3u 1u))
+  (print (volumes 2u)))

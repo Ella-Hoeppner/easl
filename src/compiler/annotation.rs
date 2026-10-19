@@ -8,6 +8,7 @@ use crate::compiler::entry::EntryPoint;
 use crate::compiler::error::CompileErrorKind;
 use crate::compiler::util::compile_word;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
+use crate::compiler::workgroups::check_workgroup_size;
 use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
@@ -326,14 +327,17 @@ impl Annotation {
       associative: false,
       entry: None,
     };
-    let mut workgroup_size: Option<usize> = None;
+    let mut workgroup_size: Option<u32> = None;
     for (name, name_source, value) in self.properties().into_iter() {
       match (&*name, value) {
         ("associative", None) => {
           parsed_annotation.associative = true;
         }
         ("workgroup-size", Some((size_str, size_source))) => {
-          if let Ok(size) = size_str.parse::<usize>() {
+          if let Ok(size) = size_str.parse::<u32>() {
+            if let Err(kind) = check_workgroup_size([size, 1, 1]) {
+              return Err(CompileError::new(kind, size_source));
+            }
             workgroup_size = Some(size);
           } else {
             return Err(CompileError::new(
@@ -347,7 +351,7 @@ impl Annotation {
             parsed_annotation.entry = Some(match &*name {
               "fragment" => EntryPoint::Fragment,
               "vertex" => EntryPoint::Vertex,
-              "compute" => EntryPoint::Compute(0),
+              "compute" => EntryPoint::Compute([1, 1, 1]),
               "cpu" => EntryPoint::Cpu,
               "audio" => EntryPoint::Audio,
               _ => unreachable!(),
@@ -371,7 +375,7 @@ impl Annotation {
       match entry {
         EntryPoint::Compute(_) => {
           parsed_annotation.entry =
-            Some(EntryPoint::Compute(workgroup_size.unwrap_or(1)))
+            Some(EntryPoint::Compute([workgroup_size.unwrap_or(1), 1, 1]))
         }
         _ => {
           if workgroup_size.is_some() {

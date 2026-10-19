@@ -2677,6 +2677,43 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // With a constant workgroup size (`vec3u`): dispatches a version of
+    // the function with that size (`Program::specialize_dispatch_workgroup_sizes`
+    // rewrites each call to the two-argument form).
+    AbstractFunctionSignature {
+      name: "dispatch-compute-shader".into(),
+      generic_args: vec![(
+        "F".into(),
+        GenericArgument::Type(vec![TypeConstraint::function()]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![
+        AbstractType::Generic("F".into()).owned(),
+        AbstractType::AbstractStruct(
+          vec3()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+            .into(),
+        )
+        .owned(),
+        AbstractType::AbstractStruct(
+          vec3()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+            .into(),
+        )
+        .owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("dispatch-compute-shader".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "spawn-window".into(),
       arg_types: vec![
@@ -2830,6 +2867,24 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
     // fixed-name implicit `@local` var (`easl_audio_time` /
     // `easl_sample_rate`) that the audio driver writes directly — so no
     // backend ever sees these calls, and no effect machinery is needed.
+    // The running compute shader's workgroup size: `validate_context_
+    // exclusivity` rejects calls reachable from anything but a compute
+    // entry, and `extract_workgroup_size` rewrites each into a read of an
+    // implicit `@local` var every compute entry sets on entry.
+    AbstractFunctionSignature {
+      name: "workgroup-size".into(),
+      return_type: AbstractType::AbstractStruct(
+        vec3()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "audio-time".into(),
       return_type: AbstractType::Type(Type::F32),

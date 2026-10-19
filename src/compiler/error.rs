@@ -199,6 +199,18 @@ pub enum CompileErrorKind {
     `@compute` entry points"
   )]
   WorkgroupSizeAnnotationOnInvalidEntry,
+  #[error(
+    "A dispatch's workgroup size must be a compile-time constant: a `vec3u` \
+     of literals, or a `def` holding one"
+  )]
+  NonConstantWorkgroupSize,
+  #[error(
+    "Workgroup size {0} is out of range: each dimension must be at least 1, \
+     x and y at most 256, z at most 64, and x * y * z at most 256"
+  )]
+  WorkgroupSizeOutOfRange(String),
+  #[error("`workgroup-size` can only be called from compute shaders")]
+  WorkgroupSizeOutsideCompute,
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
@@ -845,6 +857,10 @@ impl PartialEq for CompileErrorKind {
         Self::IncompatibleArraySize(l0, l1),
         Self::IncompatibleArraySize(r0, r1),
       ) => l0 == r0 && l1 == r1,
+      (
+        Self::WorkgroupSizeOutOfRange(l0),
+        Self::WorkgroupSizeOutOfRange(r0),
+      ) => l0 == r0,
       (Self::InvalidWorkgroupSize(l0), Self::InvalidWorkgroupSize(r0)) => {
         l0 == r0
       }

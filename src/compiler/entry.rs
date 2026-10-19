@@ -21,7 +21,8 @@ use crate::{
 pub enum EntryPoint {
   Vertex,
   Fragment,
-  Compute(usize),
+  /// With its workgroup size.
+  Compute([u32; 3]),
   Cpu,
   Audio,
 }
@@ -30,8 +31,8 @@ impl EntryPoint {
     match self {
       EntryPoint::Vertex => "@vertex\n".to_string(),
       EntryPoint::Fragment => "@fragment\n".to_string(),
-      EntryPoint::Compute(size) => {
-        format!("@compute\n@workgroup_size({size})\n")
+      EntryPoint::Compute([x, y, z]) => {
+        format!("@compute\n@workgroup_size({x}, {y}, {z})\n")
       }
       EntryPoint::Cpu => "@cpu\n".to_string(),
       EntryPoint::Audio => "@audio\n".to_string(),

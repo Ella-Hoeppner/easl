@@ -20,3 +20,4 @@ pub mod types;
 pub mod util;
 pub mod vars;
 pub mod wgsl;
+pub mod workgroups;

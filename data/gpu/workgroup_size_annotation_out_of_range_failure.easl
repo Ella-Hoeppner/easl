@@ -1,0 +1,5 @@
+(var out: u32)
+
+@compute @{workgroup-size 512}
+(defn bump []
+  (+= out 1u))

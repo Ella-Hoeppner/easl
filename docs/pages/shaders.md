@@ -19,7 +19,7 @@ An easl file can hold several *entry points*: functions the GPU, or easl's CPU r
 (defn main [] ...)
 ```
 
-`@vertex`, `@fragment`, and `@compute` are [wgsl's entry points](https://www.w3.org/TR/WGSL/#entry-point). A compute shader's `@{workgroup-size N}` (or `X Y Z`) sets its threads per workgroup, defaulting to 1. `@cpu` marks the function [the CPU runtime](cpu.md) runs.
+`@vertex`, `@fragment`, and `@compute` are [wgsl's entry points](https://www.w3.org/TR/WGSL/#entry-point). A compute shader's `@{workgroup-size N}` sets its threads per workgroup, defaulting to 1; [`dispatch-compute-shader`](reference/cpu-builtins.md#dispatch-compute-shader) can also give a size per dispatch, as a `vec3u`. `@cpu` marks the function [the CPU runtime](cpu.md) runs.
 
 Functions passed to `dispatch-render-shaders` or `dispatch-compute-shader` become entry points automatically, so these annotations are optional in programs that dispatch their own shaders, and shaders can be written inline as `fn`s.
 

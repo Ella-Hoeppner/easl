@@ -879,6 +879,20 @@ error_test!(
   )
 );
 error_test!(
+  workgroup_size_dispatch_failure,
+  CompileErrorKind::NonConstantWorkgroupSize,
+  CompileErrorKind::WorkgroupSizeOutOfRange("512x1x1".to_string()),
+  CompileErrorKind::WorkgroupSizeOutOfRange("16x16x2".to_string())
+);
+error_test!(
+  workgroup_size_annotation_out_of_range_failure,
+  CompileErrorKind::WorkgroupSizeOutOfRange("512x1x1".to_string())
+);
+error_test!(
+  workgroup_size_outside_compute_failure,
+  CompileErrorKind::WorkgroupSizeOutsideCompute
+);
+error_test!(
   enum_string_payload_on_gpu_failure,
   CompileErrorKind::CPUExclusiveTypeInGPUEntryPoint("String".to_string())
 );
