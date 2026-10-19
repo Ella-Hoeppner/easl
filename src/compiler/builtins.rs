@@ -601,16 +601,17 @@ pub fn option_enum() -> AbstractEnum {
       GenericArgument::Type(vec![]),
       SourceTrace::empty(),
     )],
+    // `None` first, so a zeroed `Option` (discriminant 0) is `None`.
     variants: vec![
-      AbstractEnumVariant {
-        name: "Some".into(),
-        source: SourceTrace::empty(),
-        inner_type: AbstractType::Generic("T".into()),
-      },
       AbstractEnumVariant {
         name: "None".into(),
         source: SourceTrace::empty(),
         inner_type: AbstractType::Type(Type::Unit),
+      },
+      AbstractEnumVariant {
+        name: "Some".into(),
+        source: SourceTrace::empty(),
+        inner_type: AbstractType::Generic("T".into()),
       },
     ],
     abstract_ancestor: None,

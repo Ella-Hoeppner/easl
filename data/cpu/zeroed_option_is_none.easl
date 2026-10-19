@@ -1,0 +1,10 @@
+; `None` is `Option`'s first variant, so a zeroed `Option` is `None`.
+@cpu
+(defn main []
+  (let [@var xs: [3: (Option f32)] (zeroed-array)]
+    (print (xs 0u))
+    (print (match (xs 1u)
+             (Some v) v
+             None -1.))
+    (= (xs 2u) (Some 2.))
+    (print xs)))

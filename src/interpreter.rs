@@ -3589,7 +3589,7 @@ impl MidiState {
   }
   /// The flat VM/GPU words for the implicit `easl_midi_notes` table that
   /// `get-midi-note` reads: 128 `Option<MidiNote>` entries in note-number
-  /// order, 4 words each — the enum discriminant (0 = `Some`, 1 = `None`,
+  /// order, 4 words each — the enum discriminant (0 = `None`, 1 = `Some`,
   /// matching the builtin `Option`'s variant order) then the `MidiNote`
   /// payload (note, velocity bits, aftertouch bits), zero-padded for
   /// `None`. Matches `Value::to_vm_words` for `[128: (Option MidiNote)]`,
@@ -3600,12 +3600,12 @@ impl MidiState {
     for note_num in 0..128u32 {
       match self.down_notes.iter().find(|n| n.note == note_num) {
         Some(n) => words.extend([
-          0,
+          1,
           n.note,
           n.velocity.to_bits(),
           n.aftertouch.to_bits(),
         ]),
-        None => words.extend([1, 0, 0, 0]),
+        None => words.extend([0, 0, 0, 0]),
       }
     }
     words

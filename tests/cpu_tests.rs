@@ -114,6 +114,7 @@ macro_rules! cpu_test {
 }
 
 cpu_test!(print);
+cpu_test!(zeroed_option_is_none);
 cpu_test!(enum_equality);
 cpu_test!(enum_string_payload);
 cpu_test!(def_forward_reference);
