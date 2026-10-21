@@ -4,6 +4,7 @@ pub mod compiler;
 pub mod external;
 pub mod format;
 pub mod interpreter;
+pub mod literal;
 #[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 pub mod midi;
 #[cfg(all(feature = "window", target_arch = "wasm32"))]

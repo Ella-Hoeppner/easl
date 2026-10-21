@@ -73,7 +73,10 @@ fn unit_body(
   }
 }
 
-fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
+pub(crate) fn parse_number(
+  num_str: &str,
+  source_trace: SourceTrace,
+) -> Option<TypedExp> {
   let mut known_type = None;
   let mut already_seen_decimal = false;
   let mut suffix_index = None;
