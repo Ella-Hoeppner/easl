@@ -1,0 +1,13 @@
+; Textures and samplers can only be whole global variables, not held inside
+; arrays, structs, or enums.
+(var texes: [3: (Texture2D f32)])
+
+(struct Material
+  sampler: Sampler)
+
+(enum Layer
+  Empty
+  (Image (Texture2D f32)))
+
+(defn first-dimensions [@ref ts: [3: (Texture2D f32)]]: vec2u
+  (texture-dimensions (ts 0u)))

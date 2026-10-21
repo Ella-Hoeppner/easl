@@ -670,6 +670,10 @@ macro_rules! thread_sync_test {
 }
 
 thread_sync_test!(audio_nested_wavetable_bank, [Frame, AudioBatch(2)]);
+thread_sync_test!(
+  audio_nested_closure_dyn_capture,
+  [Frame, AudioBatch(4), Frame, AudioBatch(4)]
+);
 thread_sync_test!(audio_packet_bank, [Frame, AudioBatch(2)]);
 thread_sync_test!(
   nested_bank_main_to_audio,

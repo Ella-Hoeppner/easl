@@ -880,6 +880,13 @@ error_test!(
   )
 );
 error_test!(
+  nested_texture_or_sampler_failure,
+  CompileErrorKind::NestedTextureOrSampler("[3: (Texture2D f32)]".to_string()),
+  CompileErrorKind::NestedTextureOrSampler("Material".to_string()),
+  CompileErrorKind::NestedTextureOrSampler("Layer".to_string()),
+  CompileErrorKind::NestedTextureOrSampler("[3: (Texture2D f32)]".to_string())
+);
+error_test!(
   integer_literal_out_of_range_failure,
   CompileErrorKind::IntegerLiteralOutOfRange(-1, "u32".to_string()),
   CompileErrorKind::IntegerLiteralOutOfRange(5000000000, "u32".to_string()),

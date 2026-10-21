@@ -49,8 +49,8 @@ use crate::{
     types::{
       AbstractArraySize, AbstractType, ConcreteArraySize,
       ConstGenericResolution, GenericArgument, ImmutableProgramLocalContext,
-      NameDefinitionSource, Type, TypeState, UntypedType, Variable,
-      VariableKind, parse_generic_argument,
+      NameDefinitionSource, Type, TypeDescription, TypeState, UntypedType,
+      Variable, VariableKind, parse_generic_argument,
     },
     util::{compile_word, is_valid_name, is_valid_qualified_name},
     vars::TopLevelVariableKind,
@@ -5756,6 +5756,96 @@ impl Program {
       }
     }
   }
+  /// Reports every declaration whose type holds a texture or sampler
+  /// inside an array, struct, or enum: top-level vars, struct fields, enum
+  /// payloads, and function parameters and return types. Neither WGSL nor
+  /// the VM can hold one there (WGSL textures are whole bindings; the VM
+  /// keeps textures host-side, per global). Local bindings are rejected
+  /// separately (`LocalTextureOrSampler`).
+  pub fn catch_nested_textures_and_samplers(&self, errors: &mut ErrorLog) {
+    let nested = |t: &Type, source: &SourceTrace| {
+      t.nests_texture_or_sampler().then(|| {
+        CompileError::new(
+          NestedTextureOrSampler(TypeDescription::from(t.clone()).to_string()),
+          source.clone(),
+        )
+      })
+    };
+    for var in self.top_level_vars.iter() {
+      if let Some(error) = nested(&var.var_type, &var.source_trace) {
+        errors.log(error);
+      }
+    }
+    let concrete = |t: &AbstractType, source: &SourceTrace| {
+      t.concretize(&vec![], &self.typedefs, source.clone()).ok()
+    };
+    // Generic definitions are checked through their instances, which only
+    // reach code through the var types and signatures checked as concrete
+    // types here.
+    for s in self
+      .typedefs
+      .structs
+      .iter()
+      .filter(|s| !s.opaque && s.generic_args.is_empty())
+    {
+      for field in s.fields.iter() {
+        if let Some(t) = concrete(&field.field_type, &field.source_trace)
+          && t.involves_texture_or_sampler()
+        {
+          errors.log(CompileError::new(
+            NestedTextureOrSampler(display_name(&s.name.0).to_string()),
+            field.source_trace.clone(),
+          ));
+        }
+      }
+    }
+    for e in self
+      .typedefs
+      .enums
+      .iter()
+      .filter(|e| e.generic_args.is_empty())
+    {
+      for variant in e.variants.iter() {
+        if let Some(t) = concrete(&variant.inner_type, &variant.source)
+          && t.involves_texture_or_sampler()
+        {
+          errors.log(CompileError::new(
+            NestedTextureOrSampler(display_name(&e.name.0).to_string()),
+            variant.source.clone(),
+          ));
+        }
+      }
+    }
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.read().unwrap();
+      if !signature.generic_args.is_empty() {
+        continue;
+      }
+      let FunctionImplementationKind::Composite(f) = &signature.implementation
+      else {
+        continue;
+      };
+      let f = f.read().unwrap();
+      if let Some(Type::Function(function_type)) =
+        f.expression.data.kind.try_unwrap_known()
+      {
+        for ((arg, _), (_, source)) in
+          function_type.args.iter().zip(f.arg_names.iter())
+        {
+          if let Some(t) = arg.var_type.kind.try_unwrap_known()
+            && let Some(error) = nested(&t, source)
+          {
+            errors.log(error);
+          }
+        }
+        if let Some(t) = function_type.return_type.kind.try_unwrap_known()
+          && let Some(error) = nested(&t, &f.name_source_trace)
+        {
+          errors.log(error);
+        }
+      }
+    }
+  }
   /// Reports every integer literal outside its inferred type's range: a
   /// negative `u32` (`-1u`), or a value too big for `u32` or `i32`.
   pub fn validate_integer_literals(&self, errors: &mut ErrorLog) {
@@ -7096,6 +7186,10 @@ impl Program {
       return errors;
     }
     self.validate_integer_literals(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_nested_textures_and_samplers(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

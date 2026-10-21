@@ -52,7 +52,7 @@ use crate::vm::bytecode::{
   heap_string_words, pack_2x16_float, release_heap_id, string_to_words,
   unpack_2x16_float, words_to_string,
 };
-use crate::vm::compile::vm_stack_size;
+use crate::vm::compile::{involves_heap_values, vm_stack_size};
 #[cfg(feature = "window")]
 use crate::window::ScreenTarget;
 
@@ -8552,7 +8552,11 @@ pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
 /// and inlined, aggregates field-by-field, heap-involving enums as
 /// discriminant + exact-variant payload (self-delimiting, unpadded).
 fn encode_value_wire(value: &Value, t: &Type, out: &mut Vec<u32>) {
-  if !(t.involves_runtime_sized_array() || t.involves_string()) {
+  // A closure is encoded as its scope data, like `to_vm_words`.
+  if let Some(data) = t.closure_data_type() {
+    return encode_value_wire(value.closure_data(), &data, out);
+  }
+  if !involves_heap_values(t) {
     if matches!(value, Value::Uninitialized) {
       out.extend(std::iter::repeat(0).take(vm_words_of(t)));
     } else {
@@ -8624,7 +8628,10 @@ fn encode_value_wire(value: &Value, t: &Type, out: &mut Vec<u32>) {
 /// heap-value fields as the empty count; enums as variant 0's zero
 /// payload).
 fn encode_zero_wire(t: &Type, out: &mut Vec<u32>) {
-  if !(t.involves_runtime_sized_array() || t.involves_string()) {
+  if let Some(data) = t.closure_data_type() {
+    return encode_zero_wire(&data, out);
+  }
+  if !involves_heap_values(t) {
     out.extend(std::iter::repeat(0).take(vm_words_of(t)));
     return;
   }
@@ -8659,7 +8666,11 @@ fn encode_zero_wire(t: &Type, out: &mut Vec<u32>) {
 
 /// The reverse of `encode_value_wire`, advancing `pos` through `words`.
 fn decode_value_wire(t: &Type, words: &[u32], pos: &mut usize) -> Value {
-  if !(t.involves_runtime_sized_array() || t.involves_string()) {
+  // A closure decodes as its scope data, like `from_vm_words`.
+  if let Some(data) = t.closure_data_type() {
+    return decode_value_wire(&data, words, pos);
+  }
+  if !involves_heap_values(t) {
     let n = vm_words_of(t);
     let value = Value::from_vm_words(t, &words[*pos..*pos + n]);
     *pos += n;

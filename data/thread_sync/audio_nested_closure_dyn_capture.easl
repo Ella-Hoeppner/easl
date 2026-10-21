@@ -1,0 +1,24 @@
+; An audio closure whose captures are closures, one of them capturing a
+; runtime-sized array (as signal combinators built from `*` do): the
+; captured closure's scope holds a heap id, which must cross to the audio
+; thread re-encoded, not as a raw id.
+(defn * [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (* (a) (b))))
+
+(defn * [s: (Fn [] f32)
+         factor: f32]: (Fn [] f32)
+  (fn [] (* (s) factor)))
+
+(defn create []: (Fn [] f32)
+  (let [@var phases: [f32] (zeroed-array 2)]
+    (* (* (fn [] 2.)
+          (fn []
+            (= (phases 0u) (% (+ (phases 0u) 0.125) 1.))
+            (phases 0u)))
+       0.5)))
+
+@cpu
+(defn main []
+  (start-audio (create))
+  (spawn-window (fn [] ())))

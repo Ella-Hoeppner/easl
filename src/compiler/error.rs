@@ -213,6 +213,12 @@ pub enum CompileErrorKind {
   WorkgroupSizeOutsideCompute,
   #[error("The literal `{0}` is out of range for `{1}`")]
   IntegerLiteralOutOfRange(i64, String),
+  #[error(
+    "`{0}` holds a texture or sampler inside an array, struct, or enum, \
+     which isn't supported: a texture or sampler can only be a whole global \
+     variable (use a separate `var` for each)"
+  )]
+  NestedTextureOrSampler(String),
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
@@ -867,6 +873,9 @@ impl PartialEq for CompileErrorKind {
         Self::IntegerLiteralOutOfRange(l0, l1),
         Self::IntegerLiteralOutOfRange(r0, r1),
       ) => l0 == r0 && l1 == r1,
+      (Self::NestedTextureOrSampler(l0), Self::NestedTextureOrSampler(r0)) => {
+        l0 == r0
+      }
       (Self::InvalidWorkgroupSize(l0), Self::InvalidWorkgroupSize(r0)) => {
         l0 == r0
       }

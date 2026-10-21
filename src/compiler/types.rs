@@ -1445,6 +1445,14 @@ impl Type {
       _ => false,
     }
   }
+  /// Whether this type holds a texture or sampler inside it (as an array
+  /// element, struct field, or enum payload) rather than being one.
+  pub fn nests_texture_or_sampler(&self) -> bool {
+    match self {
+      Type::Struct(s) if matches!(&*s.name, "Texture2D" | "Sampler") => false,
+      _ => self.involves_texture_or_sampler(),
+    }
+  }
   /// Whether this type is, or contains, a texture or sampler.
   pub fn involves_texture_or_sampler(&self) -> bool {
     match self {

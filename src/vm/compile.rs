@@ -3392,7 +3392,7 @@ impl HeapCopyPlan {
 /// embedded in struct fields, captured closure scopes, fixed-array
 /// elements, or enum variant payloads). Total on abstract types — a
 /// skolem contains no heap values and must not be sized.
-fn involves_heap_values(t: &Type) -> bool {
+pub(crate) fn involves_heap_values(t: &Type) -> bool {
   if is_heap_value_type(t) {
     return true;
   }

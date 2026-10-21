@@ -16,7 +16,7 @@ use crate::vm::bytecode::{
   BytecodeProgram, DynMemory, HeapCell, SharedStateParts, SharedVarInfo,
   SharedVarStorage, ValueLayout, alloc_heap_cell, heap_index, release_heap_id,
 };
-use crate::vm::compile::vm_stack_size;
+use crate::vm::compile::{involves_heap_values, vm_stack_size};
 
 /// Publishes this replica's shared variables into the table, acting as the
 /// participant identified by `self_bit`: the dirty ones normally, plus any
@@ -300,12 +300,17 @@ impl BytecodeProgram {
 // (and the allocation-free steady state) unchanged.
 
 impl ValueLayout {
-  /// The layout of a value of type `t`.
+  /// The layout of a value of type `t`. A closure is laid out as its
+  /// scope data, so a captured closure whose scope holds a runtime-sized
+  /// array or String is wire-encoded like any other heap-embedding value.
   pub fn of(t: &Type) -> Self {
-    if !(t.involves_runtime_sized_array() || t.involves_string()) {
+    if !involves_heap_values(t) {
       return Self::Flat {
         words: vm_stack_size(t).into(),
       };
+    }
+    if let Some(data) = t.closure_data_type() {
+      return Self::of(&data);
     }
     match t {
       Type::String => Self::String,
