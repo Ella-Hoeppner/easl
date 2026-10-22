@@ -6,17 +6,20 @@
 //!
 //! Supported types are the scalars (`f32`, `i32`, `u32`, `bool`), structs
 //! of supported fields (vectors included, written with their aliases like
-//! `vec2f`), and fixed-size arrays of a supported type.
+//! `vec2f`), enums whose payloads are supported (`Shape/Circle`,
+//! `(Shape/Square 2.)`), and fixed-size arrays of a supported type.
 
 use fsexp::{Ast, EncloserOrOperator, syntax::ContainsEncloserOrOperator};
 use std::fmt::Debug;
 
 use crate::{
   compiler::{
+    enums::{Enum, EnumVariant},
     error::SourceTrace,
     expression::{ExpKind, Number, parse_number},
+    modules::display_name,
     structs::Struct,
-    types::{Type, TypeState},
+    types::{Type, TypeDescription, TypeState},
   },
   parse::{Encloser, Operator},
 };
@@ -33,6 +36,13 @@ pub fn supports_literals(t: &Type) -> bool {
           .fields
           .iter()
           .all(|field| supports_literals(&field.field_type.kind.unwrap_known()))
+    }
+    Type::Enum(e) => {
+      !e.variants.is_empty()
+        && e.variants.iter().all(|variant| {
+          let inner = variant.inner_type.kind.unwrap_known();
+          inner == Type::Unit || supports_literals(&inner)
+        })
     }
     Type::Array(Some(size), inner) => {
       size.as_literal().is_some()
@@ -100,6 +110,36 @@ fn push_literal_words<
       } else {
         return None;
       }
+    }
+    (Ast::Leaf(_, name), Type::Enum(e)) => {
+      let (index, _) = e.variants.iter().enumerate().find(|(_, variant)| {
+        variant.inner_type.kind.unwrap_known() == Type::Unit
+          && variant_written_name(e, variant) == *name
+      })?;
+      words.push(index as u32);
+      words.resize(words.len() + word_count(t) - 1, 0);
+    }
+    (Ast::Inner((_, label), children), Type::Enum(e))
+      if *label.get_encloser_or_operator()
+        == EncloserOrOperator::Encloser(Encloser::Parens)
+        && children.len() == 2 =>
+    {
+      let Ast::Leaf(_, name) = &children[0] else {
+        return None;
+      };
+      let (index, variant) = e
+        .variants
+        .iter()
+        .enumerate()
+        .find(|(_, variant)| variant_written_name(e, variant) == *name)?;
+      let inner = variant.inner_type.kind.unwrap_known();
+      if inner == Type::Unit || !supports_literals(&inner) {
+        return None;
+      }
+      let start = words.len();
+      words.push(index as u32);
+      push_literal_words(&children[1], &inner, words)?;
+      words.resize(start + word_count(t), 0);
     }
     (Ast::Inner((_, label), items), Type::Array(Some(size), inner))
       if *label.get_encloser_or_operator()
@@ -193,6 +233,21 @@ fn write_literal(t: &Type, words: &[u32], offset: &mut usize) -> String {
         .collect::<Vec<_>>()
         .join(" ")
     ),
+    Type::Enum(e) => {
+      let start = *offset;
+      *offset += word_count(t);
+      let variant = &e.variants[words[start] as usize];
+      let name = variant_written_name(e, variant);
+      let inner = variant.inner_type.kind.unwrap_known();
+      if inner == Type::Unit {
+        name
+      } else {
+        format!(
+          "({name} {})",
+          write_literal(&inner, words, &mut (start + 1))
+        )
+      }
+    }
     Type::Array(Some(size), inner) => {
       let inner = inner.kind.unwrap_known();
       format!(
@@ -241,6 +296,33 @@ fn write_expression(
         .collect::<Vec<_>>()
         .join(" ")
     ),
+    Type::Enum(e) => {
+      let start = *offset;
+      *offset += word_count(t);
+      let arms: Vec<String> = e
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+          let name = variant_written_name(e, variant);
+          let inner = variant.inner_type.kind.unwrap_known();
+          let value = if inner == Type::Unit {
+            name
+          } else {
+            format!(
+              "({name} {})",
+              write_expression(&inner, word, &mut (start + 1))
+            )
+          };
+          if index + 1 == e.variants.len() {
+            format!("_ {value}")
+          } else {
+            format!("{index}u {value}")
+          }
+        })
+        .collect();
+      format!("(match {} {})", word(start), arms.join(" "))
+    }
     Type::Array(Some(size), inner) => {
       let inner = inner.kind.unwrap_known();
       format!(
@@ -255,6 +337,21 @@ fn write_expression(
   }
 }
 
+/// How `variant` is written where its enum is visible: its internal name
+/// without the enum's module prefix (`Shape/Circle`, or just `Circle` for
+/// an `@unpack` enum).
+fn variant_written_name(e: &Enum, variant: &EnumVariant) -> String {
+  let module_prefix = e
+    .name
+    .strip_suffix(display_name(&e.name))
+    .unwrap_or_default();
+  variant
+    .name
+    .strip_prefix(module_prefix)
+    .unwrap_or(&variant.name)
+    .to_string()
+}
+
 fn is_matrix(s: &Struct) -> bool {
   s.name.starts_with("mat")
 }
@@ -264,8 +361,10 @@ fn is_vector(s: &Struct) -> bool {
     && (2..=4).contains(&s.fields.len())
 }
 
-/// The name that constructs `s` in source: the struct's name, or for a
-/// vector its typed alias (`vec2f`, `vec3u`, ...).
+/// The name that constructs `s` in source where it's visible: the
+/// struct's name as written in its definition (without the module prefix
+/// of its internal name), or for a vector its typed alias (`vec2f`,
+/// `vec3u`, ...).
 fn constructor_name(s: &Struct) -> String {
   if is_vector(s) {
     let suffix = match s.fields[0].field_type.kind.unwrap_known() {
@@ -273,11 +372,37 @@ fn constructor_name(s: &Struct) -> String {
       Type::I32 => "i",
       Type::U32 => "u",
       Type::Bool => "b",
-      _ => return s.name.to_string(),
+      _ => return display_name(&s.name).to_string(),
     };
     format!("vec{}{suffix}", s.fields.len())
   } else {
-    s.name.to_string()
+    display_name(&s.name).to_string()
+  }
+}
+
+/// How `t` is written in source where its definitions are visible (say, a
+/// file importing them): user structs and enums by their written names,
+/// vectors by their aliases. Types with no simpler written form (generic
+/// instances, functions) are described as the compiler describes them.
+pub fn type_source(t: &Type) -> String {
+  match t {
+    Type::Struct(s)
+      if is_vector(s) || s.abstract_ancestor.generic_args.is_empty() =>
+    {
+      constructor_name(s)
+    }
+    Type::Enum(e) if e.abstract_ancestor.generic_args.is_empty() => {
+      display_name(&e.name).to_string()
+    }
+    Type::Array(Some(size), inner) if size.as_literal().is_some() => format!(
+      "[{}: {}]",
+      size.as_literal().unwrap(),
+      type_source(&inner.kind.unwrap_known())
+    ),
+    Type::Array(None, inner) => {
+      format!("[{}]", type_source(&inner.kind.unwrap_known()))
+    }
+    _ => TypeDescription::from(t.clone()).to_string(),
   }
 }
 
@@ -361,6 +486,84 @@ mod tests {
     assert_eq!(words_of_source("0.5", &u), None);
     assert_eq!(words_of_source("-1", &u), None);
     assert_eq!(words_of_source("(vec2f 1. 2.)", &v), None);
+  }
+
+  #[test]
+  fn types_are_written_by_their_source_names() {
+    let source = "(struct Pair a: f32 b: (vec2 u32))
+(enum Shape Point (Circle f32))
+@external (var v: vec3f)
+@external (var p: Pair)
+@external (var s: Shape)
+@external (var a: [2: vec2i])";
+    for (name, written) in [
+      ("v", "vec3f"),
+      ("p", "Pair"),
+      ("s", "Shape"),
+      ("a", "[2: vec2i]"),
+    ] {
+      assert_eq!(type_source(&var_type(source, name)), written);
+    }
+  }
+
+  #[test]
+  fn enum_literals_round_trip() {
+    let source = "(enum Shape
+  Point
+  (Circle f32)
+  (Square vec2f))
+@unpack
+(enum Mode
+  Off
+  (Level u32))
+@external (var s: Shape)
+@external (var m: Mode)";
+    let shape = var_type(source, "s");
+    assert!(supports_literals(&shape));
+    assert_eq!(word_count(&shape), 3);
+    for literal in [
+      "Shape/Point",
+      "(Shape/Circle 0.5)",
+      "(Shape/Square (vec2f 1. 2.))",
+    ] {
+      let words = words_of_source(literal, &shape)
+        .unwrap_or_else(|| panic!("{literal} should read as a Shape"));
+      assert_eq!(words.len(), 3);
+      assert_eq!(words_literal(&shape, &words), literal);
+    }
+    assert_eq!(
+      words_of_source("(Shape/Circle 0.5)", &shape),
+      Some(vec![1, 0.5f32.to_bits(), 0])
+    );
+    assert_eq!(words_of_source("Circle", &shape), None);
+    let mode = var_type(source, "m");
+    assert_eq!(words_of_source("Off", &mode), Some(vec![0, 0]));
+    assert_eq!(words_literal(&mode, &[1, 7]), "(Level 7u)");
+    let word = |i: usize| format!("(w {i}u)");
+    assert_eq!(
+      words_expression(&shape, &word),
+      "(match (w 0u) 0u Shape/Point 1u (Shape/Circle (bitcast (w 1u)): f32) \
+       _ (Shape/Square (vec2f (bitcast (w 1u)): f32 (bitcast (w 2u)): f32)))"
+    );
+  }
+
+  /// A rebuilt enum compiles.
+  #[test]
+  fn enum_words_expression_compiles() {
+    let source = "(enum Shape Point (Circle f32) (Square vec2f))
+@external (var s: Shape)";
+    let shape = var_type(source, "s");
+    let expression = words_expression(&shape, &|i| {
+      format!("(.{} (words 0u))", ["x", "y", "z"][i])
+    });
+    let program = format!(
+      "(enum Shape Point (Circle f32) (Square vec2f))
+@uniform (var words: [1: vec4u])
+@cpu (defn main [] (print (match {expression} (Shape/Circle r) r _ 0.)))"
+    );
+    crate::compile_easl_source_to_wgsl(&program)
+      .expect("parses")
+      .unwrap_or_else(|(_, errors)| panic!("{errors:?}"));
   }
 
   #[test]

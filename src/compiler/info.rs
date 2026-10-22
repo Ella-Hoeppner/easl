@@ -114,6 +114,61 @@ impl From<&Program> for ProgramInfo {
   }
 }
 
+/// A non-generic function written in a program's source, with its concrete
+/// signature.
+#[derive(Debug, Clone)]
+pub struct DefinedFunction {
+  /// The program-wide internal name (`lib/sort` for one defined in another
+  /// module).
+  pub internal_name: Arc<str>,
+  /// The name as written in its definition.
+  pub name: String,
+  /// Each argument's name, type, and ownership (`@ref` and `@var @ref` are
+  /// `Reference` and `MutableReference`).
+  pub args: Vec<(Arc<str>, Type, Ownership)>,
+  pub return_type: Type,
+}
+
+/// The non-generic functions written in the program's source (its own
+/// files and the ones they import), with their signatures. Run on a program
+/// before validation, which rewrites its functions.
+pub fn defined_functions(program: &Program) -> Vec<DefinedFunction> {
+  let concrete = |t: &AbstractType| {
+    t.concretize(&vec![], &program.typedefs, SourceTrace::empty())
+      .ok()
+  };
+  program
+    .abstract_functions_iter()
+    .filter_map(|signature| {
+      let signature = signature.read().unwrap();
+      let FunctionImplementationKind::Composite(implementation) =
+        &signature.implementation
+      else {
+        return None;
+      };
+      let implementation = implementation.read().unwrap();
+      if !signature.generic_args.is_empty()
+        || !implementation.directly_user_written
+      {
+        return None;
+      }
+      Some(DefinedFunction {
+        internal_name: signature.name.clone(),
+        name: display_name(&signature.name).to_string(),
+        args: signature
+          .arg_types
+          .iter()
+          .zip(implementation.arg_names.iter())
+          .map(|((arg_type, ownership), (arg_name, _))| {
+            Some((arg_name.clone(), concrete(arg_type)?, *ownership))
+          })
+          .collect::<Option<_>>()?,
+        return_type: concrete(&signature.return_type)?,
+      })
+    })
+    .collect()
+}
+
 /// Each definition written in `documents` (functions, structs, enums and
 /// their variants, top-level variables), as it would be declared in easl,
 /// keyed by the position of its name (for a variant, of the variant). Run on
@@ -430,4 +485,70 @@ fn collect_local_references(
     | ExpKind::Uninitialized => {}
   }
   scope.truncate(outer_scope);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::{
+    compiler::builtins::built_in_macros,
+    parse::{EaslMultiDocument, parse_easl},
+  };
+
+  fn unvalidated_program(source: &str) -> Program {
+    let mut document = parse_easl(source);
+    document.strip_comments();
+    let (program, errors) = Program::from_easl_documents(
+      &EaslMultiDocument::from_singular_document_sourceless(document),
+      built_in_macros(),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    program
+  }
+
+  #[test]
+  fn defined_functions_have_concrete_signatures() {
+    let program = unvalidated_program(
+      "(defn arrow [angle: f32]: vec2f
+  (vec2f (cos angle) (sin angle)))
+
+(defn WIDGET-arrow [@var @ref state: f32
+                    @var @ref grabbable: bool]
+  (= grabbable true))
+
+(defn (id T) [x: T]: T x)",
+    );
+    let functions = defined_functions(&program);
+    let arrow = functions.iter().find(|f| f.name == "arrow").unwrap();
+    assert_eq!(arrow.args.len(), 1);
+    assert_eq!(arrow.args[0].1, Type::F32);
+    assert_eq!(
+      TypeDescription::from(arrow.return_type.clone()).to_string(),
+      "vec2f"
+    );
+    let widget = functions.iter().find(|f| f.name == "WIDGET-arrow").unwrap();
+    assert_eq!(
+      widget
+        .args
+        .iter()
+        .map(|(name, t, ownership)| (name.to_string(), t.clone(), *ownership))
+        .collect::<Vec<_>>(),
+      vec![
+        ("state".to_string(), Type::F32, Ownership::MutableReference),
+        (
+          "grabbable".to_string(),
+          Type::Bool,
+          Ownership::MutableReference
+        ),
+      ]
+    );
+    assert!(
+      !functions.iter().any(|f| f.name == "id"),
+      "generic functions have no concrete signature"
+    );
+    assert!(
+      !functions.iter().any(|f| f.name == "cos"),
+      "builtins aren't defined in the source"
+    );
+  }
 }
