@@ -68,6 +68,10 @@ pub struct TopLevelFunction {
   pub arg_annotations: Vec<FunctionArgumentAnnotation>,
   pub return_attributes: IOAttributes,
   pub entry_point: Option<EntryPoint>,
+  /// A fragment entry the program draws with (`dispatch-render-shaders`),
+  /// whose pipelines easl's runtime builds — as opposed to one only
+  /// compiled to WGSL for another host's pipelines.
+  pub dispatched: bool,
   pub directly_user_written: bool,
   pub expression: TypedExp,
 }
@@ -714,6 +718,7 @@ impl AbstractFunctionSignature {
                       arg_annotations,
                       return_attributes,
                       entry_point: parsed_annotation.entry,
+                      dispatched: false,
                       directly_user_written: true,
                       expression,
                     })),

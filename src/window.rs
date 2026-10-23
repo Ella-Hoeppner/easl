@@ -434,9 +434,23 @@ enum ScreenOutput {
     view: wgpu::TextureView,
     format: wgpu::TextureFormat,
     size: (u32, u32),
+    /// The part of the window the view holds.
+    region: WindowRegion,
     drawn: bool,
     depth_used: bool,
   },
+}
+
+/// The part of a window a render target holds, for drawing only that part
+/// (`GpuCore::execute_render_batch_to_window_region`): the target's pixel
+/// `(0, 0)` is the window's pixel `origin`. Programs still see the whole
+/// window — draws are laid out over `window_size`, and fragment entries'
+/// `position` is in window pixels (see
+/// `Program::offset_fragment_positions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowRegion {
+  pub window_size: (u32, u32),
+  pub origin: (u32, u32),
 }
 
 /// A render pass planned by `encode_render_items`: its attachments, how
@@ -445,6 +459,8 @@ struct PlannedPass {
   color: wgpu::TextureView,
   color_load: wgpu::LoadOp<wgpu::Color>,
   depth: Option<(wgpu::TextureView, wgpu::LoadOp<f32>)>,
+  /// The window region a screen pass into a view draws.
+  region: Option<WindowRegion>,
   draws: Vec<PlannedDraw>,
 }
 
@@ -526,6 +542,9 @@ pub struct GpuCore {
   textures_created: u64,
   /// Samplers for `Sampler` bindings, with the settings each was made from.
   samplers: HashMap<(u8, u8), (SamplerSettings, wgpu::Sampler)>,
+  /// The values render passes copy into the implicit fragment position
+  /// offset binding: zero, then the current window region's origin.
+  fragment_offset_source: Option<wgpu::Buffer>,
   /// Current window dimensions in pixels.
   pub window_size: (u32, u32),
   /// Time in seconds since the window was opened, updated at the start of each frame.
@@ -1372,7 +1391,12 @@ impl GpuCore {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
           label: Some("render encoder"),
         });
+    let fragment_offset = self.prepare_fragment_offsets(&passes);
     for pass in passes.iter() {
+      if let Some((source, binding)) = &fragment_offset {
+        let source_offset = if pass.region.is_some() { 16 } else { 0 };
+        encoder.copy_buffer_to_buffer(source, source_offset, binding, 0, 16);
+      }
       let mut render_pass =
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
           label: Some("render pass"),
@@ -1399,6 +1423,16 @@ impl GpuCore {
           timestamp_writes: None,
           multiview_mask: None,
         });
+      if let Some(region) = pass.region {
+        render_pass.set_viewport(
+          -(region.origin.0 as f32),
+          -(region.origin.1 as f32),
+          region.window_size.0 as f32,
+          region.window_size.1 as f32,
+          0.,
+          1.,
+        );
+      }
       // A pass starts with a zero blend constant.
       let mut blend_constant = [0.; 4];
       for draw in pass.draws.iter() {
@@ -1420,6 +1454,46 @@ impl GpuCore {
       }
     }
     self.queue.submit(std::iter::once(encoder.finish()));
+  }
+
+  /// The buffer render passes copy fragment position offsets from, and
+  /// the implicit offset binding they copy into, when the program has one
+  /// (see `Program::offset_fragment_positions`): the source's first 16
+  /// bytes are zero, for passes drawing a whole target, and the next 16
+  /// hold `passes`' window region origin.
+  fn prepare_fragment_offsets(
+    &mut self,
+    passes: &[PlannedPass],
+  ) -> Option<(wgpu::Buffer, wgpu::Buffer)> {
+    let slot = self.binding_slots.iter().find(|slot| {
+      &*slot.name == crate::compiler::wgsl::FRAGMENT_POSITION_OFFSET_VAR
+    })?;
+    let binding = self
+      .binding_buffers
+      .get(&(slot.group, slot.binding))?
+      .clone();
+    let source = self
+      .fragment_offset_source
+      .get_or_insert_with(|| {
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+          label: Some("fragment position offsets"),
+          size: 32,
+          usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+          mapped_at_creation: false,
+        })
+      })
+      .clone();
+    let origin = passes
+      .iter()
+      .find_map(|pass| pass.region)
+      .map_or((0, 0), |region| region.origin);
+    let values = [0., 0., 0., 0., origin.0 as f32, origin.1 as f32, 0., 0.];
+    let bytes: Vec<u8> = values
+      .iter()
+      .flat_map(|value: &f32| value.to_ne_bytes())
+      .collect();
+    self.queue.write_buffer(&source, 0, &bytes);
+    Some((source, binding))
   }
 
   /// Plans a pass into `target` (the screen when `None`): its color
@@ -1463,6 +1537,10 @@ impl GpuCore {
         }
       },
     };
+    let region = match (target, &*screen) {
+      (None, ScreenOutput::View { region, .. }) => Some(*region),
+      _ => None,
+    };
     let color_load = match clear_color {
       Some([r, g, b, a]) => wgpu::LoadOp::Clear(wgpu::Color {
         r: r as f64,
@@ -1485,6 +1563,7 @@ impl GpuCore {
       color,
       color_load,
       depth,
+      region,
       draws: vec![],
     }
   }
@@ -2167,6 +2246,7 @@ impl GpuCore {
       screen_depth: None,
       textures_created: 0,
       samplers,
+      fragment_offset_source: None,
       window_size: (1, 1),
       window_time: 0.0,
       window_delta_time: 0.0,
@@ -2203,6 +2283,31 @@ impl GpuCore {
     screen_view: &wgpu::TextureView,
     screen_format: wgpu::TextureFormat,
     screen_size: (u32, u32),
+  ) {
+    self.execute_render_batch_to_window_region(
+      events,
+      screen_view,
+      screen_format,
+      screen_size,
+      WindowRegion {
+        window_size: screen_size,
+        origin: (0, 0),
+      },
+    );
+  }
+
+  /// [`Self::execute_render_batch_to_view`] for a view holding only
+  /// `region` of the window: screen draws are laid out over the whole
+  /// window, and only the part inside the view is drawn. The window can be
+  /// at most the device's `max_texture_dimension_2d` across, and the
+  /// region's origin at most twice that.
+  pub fn execute_render_batch_to_window_region(
+    &mut self,
+    events: &[WindowEvent],
+    screen_view: &wgpu::TextureView,
+    screen_format: wgpu::TextureFormat,
+    screen_size: (u32, u32),
+    region: WindowRegion,
   ) {
     let mut uploads = vec![];
     let mut items = vec![];
@@ -2258,6 +2363,7 @@ impl GpuCore {
         view: screen_view.clone(),
         format: screen_format,
         size: screen_size,
+        region,
         drawn: false,
         depth_used: false,
       },

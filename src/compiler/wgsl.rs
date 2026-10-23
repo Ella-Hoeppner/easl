@@ -187,8 +187,12 @@ pub fn is_wgsl_reserved_word(word: &str) -> bool {
   WGSL_RESERVED_WORDS_SET.contains(word)
 }
 
+/// The implicit uniform fragment entries offset their `position` by (see
+/// `Program::offset_fragment_positions`).
+pub const FRAGMENT_POSITION_OFFSET_VAR: &str = "easl_fragment_position_offset";
+
 /// Names reserved for the compiler's own implicit globals (see
-/// `Program::extract_audio_info`). User declarations of these are rejected
+/// `Program::extract_audio_info` and `Program::offset_fragment_positions`). User declarations of these are rejected
 /// in `validate_names` — they'd collide with the fixed-name vars in every
 /// name-keyed runtime path (VM global slots, env bindings, the C audio
 /// wrapper's references). Both spellings are listed because the kebab form
@@ -200,12 +204,14 @@ pub const EASL_RESERVED_WORDS: &[&'static str] = &[
   "easl_midi_aftertouch",
   "easl_midi_pitch_bend",
   "easl_midi_down_notes",
+  "easl_fragment_position_offset",
   "easl-audio-time",
   "easl-sample-rate",
   "easl-midi-cc",
   "easl-midi-aftertouch",
   "easl-midi-pitch-bend",
   "easl-midi-down-notes",
+  "easl-fragment-position-offset",
 ];
 
 lazy_static! {

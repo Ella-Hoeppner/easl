@@ -1,6 +1,9 @@
-use easl::compiler::core::compile_easl_file_to_wgsl;
+use easl::compiler::core::{
+  compile_easl_file_to_wgsl, load_easl_program_from_file,
+};
 use easl::compiler::entry::InputOrOutput;
 use easl::compiler::error::CompileErrorKind;
+use easl::compiler::program::{CompilerTarget, ValidationOptions};
 use easl::compiler::types::{
   TypeConstraintDescription, TypeDescription, TypeStateDescription,
 };
@@ -131,6 +134,45 @@ macro_rules! error_test {
 }
 
 // --- Success tests ---
+
+/// Fragment positions are the raw builtin by default. Compiled for window
+/// regions, every fragment entry the program draws with offsets its
+/// position by the implicit uniform, whether it takes the position as an
+/// argument, a struct field, or a lookup; a fragment entry it doesn't draw
+/// with doesn't.
+#[test]
+fn fragment_positions_are_offset_for_window_regions() {
+  let name = "fragment_position_offset";
+  assert_compiles(name);
+  let plain = compile_shader(name).unwrap();
+  assert!(!plain.contains("easl_fragment_position_offset"));
+
+  let path = format!("./data/gpu/{name}.easl");
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(Path::new(&path))
+  else {
+    panic!("{name} should load");
+  };
+  let errors = program.validate_raw_program_with(
+    CompilerTarget::WGSL,
+    ValidationOptions {
+      window_regions: true,
+    },
+  );
+  assert!(errors.is_empty(), "{errors:?}");
+  let wgsl = program.compile_to_target(CompilerTarget::WGSL).unwrap();
+  fs::write(format!("./out/gpu/{name}_window_regions.wgsl"), &wgsl)
+    .expect("Unable to write output file");
+  validate_wgsl(name, &wgsl);
+  assert_eq!(
+    wgsl
+      .matches(".x + easl_fragment_position_offset.x)")
+      .count(),
+    3
+  );
+  let library = &wgsl[wgsl.find("fn library_frag").unwrap()..];
+  assert!(!library[..library.find("\n}").unwrap()].contains("offset"));
+}
 
 success_test!(render_located_varyings);
 success_test!(interpolate);

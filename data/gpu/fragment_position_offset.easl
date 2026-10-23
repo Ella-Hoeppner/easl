@@ -1,0 +1,40 @@
+; Fragment positions are offset by the implicit
+; `easl_fragment_position_offset` uniform, however the entry gets its
+; position: an argument, a struct field, or a lookup. Only entries the
+; program draws with are: `library-frag` is left as written, for another
+; host's pipelines.
+(struct VOut
+  @{builtin position} pos: vec4f
+  @{location 0} col: vec3f)
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: VOut
+  (VOut (vec4f 0. 0. 0. 1.) (vec3f 1. 0. 0.)))
+
+@vertex
+(defn bare-vert [@{builtin vertex-index} i: u32]: @{builtin position} vec4f
+  (vec4f 0. 0. 0. 1.))
+
+@fragment
+(defn arg-frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f (/ pos.xy 64.) 0. 1.))
+
+@fragment
+(defn struct-frag [in: VOut]: @{location 0} vec4f
+  (vec4f in.col (/ in.pos.x 64.)))
+
+@fragment
+(defn lookup-frag []: @{location 0} vec4f
+  (vec4f (/ (.xy (position)) 64.) 0. 1.))
+
+@fragment
+(defn library-frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f (/ pos.xy 32.) 0. 1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (dispatch-render-shaders bare-vert arg-frag 3)
+                  (dispatch-render-shaders vert struct-frag 3)
+                  (dispatch-render-shaders bare-vert lookup-frag 3)
+                  (close-window))))

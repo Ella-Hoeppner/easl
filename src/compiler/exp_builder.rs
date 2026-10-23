@@ -352,6 +352,7 @@ pub(crate) fn generated_function(
       .collect(),
     return_attributes: IOAttributes::empty(source.clone()),
     entry_point: None,
+    dispatched: false,
     directly_user_written: false,
     expression: ExpBuilder::at(source).unit(),
   }));

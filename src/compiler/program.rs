@@ -54,7 +54,7 @@ use crate::{
     },
     util::{compile_word, is_valid_name, is_valid_qualified_name},
     vars::TopLevelVariableKind,
-    wgsl::is_easl_reserved_word,
+    wgsl::{FRAGMENT_POSITION_OFFSET_VAR, is_easl_reserved_word},
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -78,6 +78,19 @@ use super::{
 };
 
 pub type EaslDocument = Document<EaslSyntax>;
+
+/// Optional behavior for `Program::validate_raw_program_with`; every
+/// option is off by default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidationOptions {
+  /// Compiles for a runtime that may draw a window a region at a time
+  /// (`GpuCore::execute_render_batch_to_window_region`): fragment entries'
+  /// `position` stays in window pixels there, at the cost of a uniform
+  /// read and two adds per fragment (`Program::offset_fragment_positions`).
+  /// Off, `position` is the raw WGSL builtin, and a region render reports
+  /// positions relative to the target.
+  pub window_regions: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompilerTarget {
@@ -1814,6 +1827,7 @@ impl Program {
                         ));
                         break 'breakable;
                       };
+                      frag_implementation.write().unwrap().dispatched = true;
                       let mut output_locations: HashMap<usize, Type> =
                         HashMap::new();
                       vertex_fn
@@ -3553,6 +3567,148 @@ impl Program {
       })
     }
   }
+  /// For `ValidationOptions::window_regions`: keeps the `position` builtin
+  /// of every fragment entry the program draws with
+  /// (`TopLevelFunction::dispatched`) in window coordinates when the
+  /// runtime draws only a region of the window into a smaller target (`GpuCore::execute_render_batch_to_window_region`), where the
+  /// hardware reports positions relative to the target: each entry adds the
+  /// implicit `easl_fragment_position_offset` uniform (the region's origin
+  /// in window pixels during such a pass, zero otherwise) to its position's
+  /// x and y before running. Must run after
+  /// `extract_builtin_attribute_lookup_functions`, which turns position
+  /// lookups into arguments.
+  pub fn offset_fragment_positions(&mut self) {
+    let position_type = BuiltinIOAttribute::Position.value_type();
+    let scalar_plus = self
+      .abstract_functions
+      .get("+")
+      .and_then(|signatures| {
+        signatures
+          .iter()
+          .find(|signature| {
+            matches!(
+              signature.read().unwrap().arg_types.first(),
+              Some((AbstractType::Generic(_), _))
+            )
+          })
+          .cloned()
+      })
+      .expect("builtin scalar + missing from registry");
+    let offset_name: Arc<str> = FRAGMENT_POSITION_OFFSET_VAR.into();
+    let mut offset_used = false;
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      if f.entry_point != Some(EntryPoint::Fragment) {
+        continue;
+      }
+      let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      else {
+        continue;
+      };
+      let mut implementation = implementation.write().unwrap();
+      if !implementation.dispatched {
+        continue;
+      }
+      let Type::Function(signature) =
+        implementation.expression.data.unwrap_known()
+      else {
+        panic!()
+      };
+      // the argument holding the position, and its field holding it when
+      // the argument is a struct
+      let Some((index, field)) = implementation
+        .arg_annotations
+        .iter()
+        .zip(signature.args.iter())
+        .enumerate()
+        .find_map(|(index, (annotation, (arg, _)))| {
+          if annotation
+            .attributes
+            .has_builtin_io_attribute(BuiltinIOAttribute::Position)
+          {
+            return Some((index, None));
+          }
+          let Type::Struct(s) = arg.var_type.unwrap_known() else {
+            return None;
+          };
+          s.fields
+            .iter()
+            .find(|field| {
+              field
+                .attributes
+                .has_builtin_io_attribute(BuiltinIOAttribute::Position)
+            })
+            .map(|field| (index, Some(field.name.clone())))
+        })
+      else {
+        continue;
+      };
+      offset_used = true;
+      let arg_type = signature.args[index].0.var_type.unwrap_known();
+      let implementation = &mut *implementation;
+      let ExpKind::Function(args, body) = &mut implementation.expression.kind
+      else {
+        panic!()
+      };
+      let name = args[index].0.clone();
+      let raw_name = self.names.write().unwrap().gensym(&format!("{name}_raw"));
+      args[index].0 = raw_name.clone();
+      // (arguments added by the lookup extraction aren't in `arg_names`)
+      if let Some(arg_name) = implementation.arg_names.get_mut(index) {
+        arg_name.0 = raw_name.clone();
+      }
+      let b = ExpBuilder::at(&body.source_trace);
+      let position = || {
+        let arg = b.name(&name, &arg_type);
+        match &field {
+          Some(field) => b.field(arg, field, position_type.clone()),
+          None => arg,
+        }
+      };
+      let mut offset = b.name(&offset_name, &position_type);
+      offset.data.is_globally_bound = true;
+      let mut exps: Vec<TypedExp> = ["x", "y"]
+        .into_iter()
+        .map(|component| {
+          b.apply(
+            TypedExp::assignment_function(Type::F32.known().into()),
+            vec![
+              b.field(position(), component, Type::F32),
+              b.call(
+                &scalar_plus,
+                vec![
+                  b.field(position(), component, Type::F32),
+                  b.field(offset.clone(), component, Type::F32),
+                ],
+                &Type::F32,
+              ),
+            ],
+            &Type::Unit,
+          )
+        })
+        .collect();
+      exps.push(std::mem::replace(&mut **body, b.unit()));
+      **body = b.let_in(
+        vec![(name, VariableKind::Var, b.name(&raw_name, &arg_type))],
+        b.block(exps),
+      );
+    }
+    if offset_used {
+      self.top_level_vars.push(TopLevelVar {
+        name: offset_name,
+        kind: TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Uniform,
+          group_and_binding: Some(BindingSpec::Elided),
+        },
+        var_type: position_type,
+        value: None,
+        source_trace: SourceTrace::empty(),
+        external: false,
+        directly_user_written: false,
+      });
+    }
+  }
   /// Set each closure-returning function's declared return type from the
   /// scope struct its body's tail actually constructs. The scope-struct
   /// constructor is the one ancestor no later pass rewrites, so it is the
@@ -4511,6 +4667,7 @@ impl Program {
                             exp.source_trace.clone(),
                           ),
                           entry_point: None,
+                          dispatched: false,
                           directly_user_written: false,
                           expression: {
                             let mut new_exp = exp.clone();
@@ -7133,6 +7290,14 @@ impl Program {
     }
   }
   pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
+    self.validate_raw_program_with(target, ValidationOptions::default())
+  }
+  /// [`Self::validate_raw_program`] with non-default `options`.
+  pub fn validate_raw_program_with(
+    &mut self,
+    target: CompilerTarget,
+    options: ValidationOptions,
+  ) -> ErrorLog {
     if self.has_been_validated {
       return ErrorLog::new();
     }
@@ -7357,6 +7522,9 @@ impl Program {
       return errors;
     }
     self.extract_builtin_attribute_lookup_functions();
+    if options.window_regions {
+      self.offset_fragment_positions();
+    }
     self.validate_entry_points(&mut errors);
     if !errors.is_empty() {
       return errors;
