@@ -8219,9 +8219,15 @@ impl Program {
         ..
       }
     );
+    // A runtime-sized array is a valid binding when its elements are.
+    let cpu_only = match &v.var_type {
+      Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
+        self.type_makes_struct_cpu_only(&element_type.kind.unwrap_known())
+      }
+      t => self.type_makes_struct_cpu_only(t),
+    };
     (target == CompilerTarget::WGSL && is_runtime_sized_array && !has_binding)
-      || (!is_runtime_sized_array
-        && self.type_makes_struct_cpu_only(&v.var_type))
+      || cpu_only
       || (target == CompilerTarget::WGSL
         && gpu_space
         && v.var_type.involves_bool())

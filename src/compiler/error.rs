@@ -379,12 +379,6 @@ pub enum CompileErrorKind {
   )]
   ExternalTextureVar,
   #[error(
-    "Variables whose type contains a String may not be marked `@external`: \
-     a string value is a reference into its own runtime's heap, which is \
-     meaningless to an external system"
-  )]
-  ExternalStringVar,
-  #[error(
     "The function passed to `start-audio` couldn't be statically resolved \
      to a single audio function; pass a lambda, a named function, or a \
      call that returns one specific closure"

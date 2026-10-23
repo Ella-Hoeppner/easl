@@ -126,6 +126,6 @@ A program hosted inside another application, such as a live-coding editor, can m
 @external (var gain: f32)
 ```
 
-The host creates an `easl::external::ExternalVars` handle from the compiled program, passes it to the runner, and calls `read_external_var` and `write_external_var` (or the `_index` and `_raw` variants) from any thread. The host is one more participant in the sharing above: its writes arrive at the program's next frame or audio buffer, including on the GPU. An `@external` variable has no initial value; the host sets it before the program starts.
+The host creates an `easl::external::ExternalVars` handle from the compiled program, passes it to the runner, and calls `read_external_var` and `write_external_var` (or the `_index` and `_raw` variants) from any thread. The host is one more participant in the sharing above: its writes arrive at the program's next frame or audio buffer, including on the GPU. An `@external` variable has no initial value; the host sets it before the program starts. A variable holding a `String`, or a runtime-sized array nested inside a struct or another array, has no flat word layout, so the host reaches it only through the `Value` methods, not the `_raw` ones.
 
 [Easl Studio](https://github.com/Ella-Hoeppner/easl-studio)'s sliders work this way: each slider is an element of an `@external` array.

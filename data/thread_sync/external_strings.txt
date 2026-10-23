@@ -1,0 +1,23 @@
+external-write: name = "hi"
+external-write: words = ["a" "b"]
+main-adopt: name
+main-adopt: words
+spawn-window
+frame 0
+print: "hi"
+print: ["a" "b"]
+main-publish: labeled
+main-publish: name
+external-read: name = "hi!"
+external-read: labeled = {gain: 0.5 label: "label hi!"}
+external-write: words[1] = "c"
+external-write: name = "yo"
+frame 1
+main-adopt: name
+main-adopt: words
+print: "yo"
+print: ["a" "c"]
+main-publish: labeled
+main-publish: name
+external-read: name = "yo!"
+external-read: labeled = {gain: 0.5 label: "label yo!"}

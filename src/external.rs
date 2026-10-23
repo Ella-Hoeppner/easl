@@ -32,12 +32,15 @@
 //!   array, not the var's initializer — the initializer value arrives with
 //!   the entry-start bootstrap publish.
 //!
-//! The `_raw` methods speak the VM word layout directly and are the real
-//! implementation; the `Value` methods are thin conversion wrappers. The
-//! word layout is a public contract: scalars are one word (`f32`/`i32` as
-//! raw bits, `bool` as 0/1), vectors and matrices are their scalars in
-//! order (matrices column-major), structs are their fields in declaration
-//! order, and arrays are their elements consecutively with no padding.
+//! The `_raw` methods speak the VM word layout directly; the `Value`
+//! methods convert. The word layout is a public contract: scalars are one
+//! word (`f32`/`i32` as raw bits, `bool` as 0/1), vectors and matrices are
+//! their scalars in order (matrices column-major), structs are their
+//! fields in declaration order, and arrays are their elements consecutively
+//! with no padding. A var holding a `String`, or a runtime-sized array
+//! anywhere but at its top level (a struct field, an array of arrays), has
+//! no flat layout: only the `Value` methods reach it (the `_raw` methods
+//! return [`ExternalVarError::NotFlat`]).
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -48,10 +51,12 @@ use crate::compiler::program::Program;
 use crate::compiler::types::{ConcreteArraySize, Type};
 use crate::interpreter::{
   Value, shared_words_to_value, value_to_shared_words, vm_words_of,
+  zero_shared_words,
 };
 use crate::thread_sync::{
   AtomicWords, NativeAtomicWords, ThreadSharedTable, participant,
 };
+use crate::vm::shared_sync::needs_wire_encoding;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalVarError {
@@ -72,6 +77,9 @@ pub enum ExternalVarError {
   WrongWordCount { expected: usize, got: usize },
   /// A `Value` write's type doesn't produce the right number of words.
   WrongValueShape { expected: usize, got: usize },
+  /// A `_raw` method was called on a var with no flat word layout (one
+  /// holding a `String` or a nested runtime-sized array).
+  NotFlat(String),
 }
 
 impl Display for ExternalVarError {
@@ -98,6 +106,11 @@ impl Display for ExternalVarError {
         f,
         "value has the wrong shape: expected {expected} words, got {got}"
       ),
+      ExternalVarError::NotFlat(name) => write!(
+        f,
+        "`{name}` holds a String or a nested runtime-sized array, so it has \
+         no flat word layout; use the `Value` methods"
+      ),
     }
   }
 }
@@ -112,6 +125,10 @@ struct ExternalVarLayout {
   element_stride: Option<usize>,
   /// Total word length for fixed-size vars (`None` for unsized arrays).
   word_len: Option<usize>,
+  /// Whether the var's snapshots are the wire encoding (it holds heap
+  /// values below its top level): such a var has no flat layout, and its
+  /// stride and length are `None`.
+  wire_encoded: bool,
   /// The var's shared words, when it holds atomics: those are read and
   /// written directly rather than through snapshots.
   atomic_words: Option<Arc<dyn AtomicWords>>,
@@ -160,8 +177,12 @@ impl ExternalVars {
         // their slot, for index alignment with the program's shared vars,
         // and may have no flat layout at all (a wire-encoded `[[f32]]`
         // audio capture).
+        let wire_encoded =
+          audience & participant::EXTERNAL != 0 && needs_wire_encoding(&ty);
         let (element_stride, word_len) = match &ty {
-          _ if audience & participant::EXTERNAL == 0 => (None, None),
+          _ if audience & participant::EXTERNAL == 0 || wire_encoded => {
+            (None, None)
+          }
           Type::Array(size, element_type) => {
             let stride = vm_words_of(&element_type.kind.unwrap_known()).max(1);
             let len = match size {
@@ -178,6 +199,7 @@ impl ExternalVars {
           audience,
           element_stride,
           word_len,
+          wire_encoded,
           atomic_words: None,
         }
       })
@@ -202,7 +224,11 @@ impl ExternalVars {
       vars
         .iter()
         .map(|var| ReplicaVar {
-          words: vec![0; var.word_len.unwrap_or(0)],
+          words: if var.wire_encoded {
+            zero_shared_words(&var.ty)
+          } else {
+            vec![0; var.word_len.unwrap_or(0)]
+          },
           adopted: 0,
         })
         .collect(),
@@ -246,6 +272,15 @@ impl ExternalVars {
       .ok_or_else(|| ExternalVarError::UnknownVar(name.to_string()))?;
     if self.vars[index].audience & participant::EXTERNAL == 0 {
       return Err(ExternalVarError::NotExternal(name.to_string()));
+    }
+    Ok(index)
+  }
+
+  /// [`Self::lookup`] for the `_raw` methods, which need a flat layout.
+  fn lookup_flat(&self, name: &str) -> Result<usize, ExternalVarError> {
+    let index = self.lookup(name)?;
+    if self.vars[index].wire_encoded {
+      return Err(ExternalVarError::NotFlat(name.to_string()));
     }
     Ok(index)
   }
@@ -295,7 +330,7 @@ impl ExternalVars {
     &self,
     name: &str,
   ) -> Result<Vec<u32>, ExternalVarError> {
-    let index = self.lookup(name)?;
+    let index = self.lookup_flat(name)?;
     let mut replica = self.replica.lock().unwrap();
     self.refresh(index, &mut replica);
     Ok(replica[index].words.clone())
@@ -310,7 +345,7 @@ impl ExternalVars {
     name: &str,
     words: &[u32],
   ) -> Result<(), ExternalVarError> {
-    let index = self.lookup(name)?;
+    let index = self.lookup_flat(name)?;
     let var = &self.vars[index];
     if let Some(expected) = var.word_len {
       if words.len() != expected {
@@ -341,7 +376,7 @@ impl ExternalVars {
     name: &str,
     element_index: u32,
   ) -> Result<Vec<u32>, ExternalVarError> {
-    let index = self.lookup(name)?;
+    let index = self.lookup_flat(name)?;
     let stride = self.vars[index]
       .element_stride
       .ok_or_else(|| ExternalVarError::NotAnArray(name.to_string()))?;
@@ -368,7 +403,7 @@ impl ExternalVars {
     element_index: u32,
     element_words: &[u32],
   ) -> Result<(), ExternalVarError> {
-    let index = self.lookup(name)?;
+    let index = self.lookup_flat(name)?;
     let stride = self.vars[index]
       .element_stride
       .ok_or_else(|| ExternalVarError::NotAnArray(name.to_string()))?;
@@ -394,17 +429,22 @@ impl ExternalVars {
     Ok(())
   }
 
-  /// [`Self::read_external_var_raw`], decoded to a [`Value`].
+  /// The current value of `name`: adopts the newest published snapshot,
+  /// then decodes the replica.
   pub fn read_external_var(
     &self,
     name: &str,
   ) -> Result<Value, ExternalVarError> {
-    let words = self.read_external_var_raw(name)?;
     let index = self.lookup(name)?;
-    Ok(shared_words_to_value(&words, &self.vars[index].ty))
+    let mut replica = self.replica.lock().unwrap();
+    self.refresh(index, &mut replica);
+    Ok(shared_words_to_value(
+      &replica[index].words,
+      &self.vars[index].ty,
+    ))
   }
 
-  /// [`Self::write_external_var_raw`], encoding a [`Value`].
+  /// Overwrites `name` with `value` and publishes the new snapshot.
   pub fn write_external_var(
     &self,
     name: &str,
@@ -412,29 +452,51 @@ impl ExternalVars {
   ) -> Result<(), ExternalVarError> {
     let index = self.lookup(name)?;
     let words = value_to_shared_words(value, &self.vars[index].ty);
-    self.write_external_var_raw(name, &words)
+    if !self.vars[index].wire_encoded {
+      return self.write_external_var_raw(name, &words);
+    }
+    let mut replica = self.replica.lock().unwrap();
+    let written = 0..words.len();
+    replica[index].words = words;
+    self.publish(index, &mut replica, written);
+    Ok(())
   }
 
-  /// [`Self::read_external_var_index_raw`], decoded to a [`Value`] of the
-  /// array's element type.
+  /// Element `element_index` of the array var `name` (adopting the newest
+  /// snapshot first).
   pub fn read_external_var_index(
     &self,
     name: &str,
     element_index: u32,
   ) -> Result<Value, ExternalVarError> {
-    let words = self.read_external_var_index_raw(name, element_index)?;
     let index = self.lookup(name)?;
     let Type::Array(_, element_type) = &self.vars[index].ty else {
       return Err(ExternalVarError::NotAnArray(name.to_string()));
     };
-    Ok(Value::from_vm_words(
-      &element_type.kind.unwrap_known(),
-      &words,
-    ))
+    if !self.vars[index].wire_encoded {
+      let words = self.read_external_var_index_raw(name, element_index)?;
+      return Ok(Value::from_vm_words(
+        &element_type.kind.unwrap_known(),
+        &words,
+      ));
+    }
+    let Value::Array(mut items) = self.read_external_var(name)? else {
+      unreachable!("an array var decodes to an array")
+    };
+    let length = items.len();
+    if element_index as usize >= length {
+      return Err(ExternalVarError::IndexOutOfBounds {
+        var: name.to_string(),
+        index: element_index,
+        length,
+      });
+    }
+    Ok(items.swap_remove(element_index as usize))
   }
 
-  /// [`Self::write_external_var_index_raw`], encoding a [`Value`] of the
-  /// array's element type.
+  /// Overwrites element `element_index` of the array var `name` with
+  /// `value`. Like [`Self::write_external_var_index_raw`], this is
+  /// read-modify-write on the whole variable.
   pub fn write_external_var_index(
     &self,
     name: &str,
@@ -442,18 +504,40 @@ impl ExternalVars {
     value: &Value,
   ) -> Result<(), ExternalVarError> {
     let index = self.lookup(name)?;
-    let Type::Array(_, element_type) = &self.vars[index].ty else {
+    let ty = &self.vars[index].ty;
+    let Type::Array(_, element_type) = ty else {
       return Err(ExternalVarError::NotAnArray(name.to_string()));
     };
-    let element_type = element_type.kind.unwrap_known();
-    let words = value.to_vm_words(&element_type);
-    let stride = self.vars[index].element_stride.unwrap_or(1);
-    if words.len() != stride {
-      return Err(ExternalVarError::WrongValueShape {
-        expected: stride,
-        got: words.len(),
-      });
+    if !self.vars[index].wire_encoded {
+      let words = value.to_vm_words(&element_type.kind.unwrap_known());
+      let stride = self.vars[index].element_stride.unwrap_or(1);
+      if words.len() != stride {
+        return Err(ExternalVarError::WrongValueShape {
+          expected: stride,
+          got: words.len(),
+        });
+      }
+      return self.write_external_var_index_raw(name, element_index, &words);
     }
-    self.write_external_var_index_raw(name, element_index, &words)
+    let mut replica = self.replica.lock().unwrap();
+    self.refresh(index, &mut replica);
+    let Value::Array(mut items) =
+      shared_words_to_value(&replica[index].words, ty)
+    else {
+      unreachable!("an array var decodes to an array")
+    };
+    let length = items.len();
+    let Some(element) = items.get_mut(element_index as usize) else {
+      return Err(ExternalVarError::IndexOutOfBounds {
+        var: name.to_string(),
+        index: element_index,
+        length,
+      });
+    };
+    *element = value.clone();
+    replica[index].words = value_to_shared_words(&Value::Array(items), ty);
+    let written = 0..replica[index].words.len();
+    self.publish(index, &mut replica, written);
+    Ok(())
   }
 }

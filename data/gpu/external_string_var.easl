@@ -1,6 +1,0 @@
-@external
-(var s: String)
-
-@cpu
-(defn main []
-  (print s))

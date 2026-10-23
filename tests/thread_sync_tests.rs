@@ -26,11 +26,12 @@ use std::sync::Arc;
 use easl::audio::{AudioSource, VmAudioDriver};
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::external::ExternalVars;
+use easl::external::{ExternalVarError, ExternalVars};
 use easl::interpreter::{
   BufferUpload, CaptureIO, CpuRuntime, EvalError, EvalException, FrameDriver,
-  GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState, MidiState, StdoutIO,
-  WindowEvent, run_program_entry_with_io_runtime_and_external_from_path,
+  GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState, MidiState, Primitive,
+  StdoutIO, Value, WindowEvent,
+  run_program_entry_with_io_runtime_and_external_from_path,
 };
 use easl::render_settings::RenderSettings;
 use std::fs;
@@ -55,16 +56,29 @@ enum Step {
   /// Read an `@external` var through the handle, tracing its value —
   /// adopts the newest published snapshot first.
   ExternalRead(&'static str),
+  /// Overwrite a whole `@external` var with a `Value`, through the handle's
+  /// `Value` methods (the only way to reach a var with no flat layout).
+  ExternalWriteValue(&'static str, fn() -> Value),
+  /// Overwrite one element of an `@external` array var with a `Value`.
+  ExternalWriteIndexValue(&'static str, u32, fn() -> Value),
+  /// Read an `@external` var as a `Value`, tracing it.
+  ExternalReadValue(&'static str),
 }
 use Step::{
-  AudioBatch, ExternalRead, ExternalWrite, ExternalWriteIndex, Frame,
+  AudioBatch, ExternalRead, ExternalReadValue, ExternalWrite,
+  ExternalWriteIndex, ExternalWriteIndexValue, ExternalWriteValue, Frame,
 };
 
 impl Step {
   fn is_external(&self) -> bool {
     matches!(
       self,
-      ExternalWrite(..) | ExternalWriteIndex(..) | ExternalRead(..)
+      ExternalWrite(..)
+        | ExternalWriteIndex(..)
+        | ExternalRead(..)
+        | ExternalWriteValue(..)
+        | ExternalWriteIndexValue(..)
+        | ExternalReadValue(..)
     )
   }
 }
@@ -75,6 +89,35 @@ fn format_f32_words(words: &[u32]) -> String {
     .map(|w| f32::from_bits(*w).to_string())
     .collect::<Vec<_>>()
     .join(" ")
+}
+
+/// A `Value` as trace text: deterministic (struct fields sorted by name),
+/// with Strings quoted.
+fn format_value(value: &Value) -> String {
+  match value {
+    Value::Prim(Primitive::F32(x)) => x.to_string(),
+    Value::Prim(Primitive::U32(x)) => format!("{x}u"),
+    Value::Prim(Primitive::I32(x)) => format!("{x}i"),
+    Value::Prim(Primitive::Bool(x)) => x.to_string(),
+    Value::String(s) => format!("{s:?}"),
+    Value::Array(items) => format!(
+      "[{}]",
+      items.iter().map(format_value).collect::<Vec<_>>().join(" ")
+    ),
+    Value::Struct(fields) => {
+      let mut fields: Vec<_> = fields.iter().collect();
+      fields.sort_by(|a, b| a.0.cmp(b.0));
+      format!(
+        "{{{}}}",
+        fields
+          .into_iter()
+          .map(|(name, value)| format!("{name}: {}", format_value(value)))
+          .collect::<Vec<_>>()
+          .join(" ")
+      )
+    }
+    other => format!("{other:?}"),
+  }
 }
 
 /// Executes one external step against the handle, returning its trace line.
@@ -98,6 +141,26 @@ fn run_external_step(handle: &ExternalVars, step: &Step) -> String {
         .read_external_var_raw(name)
         .unwrap_or_else(|e| panic!("external read of `{name}` failed: {e}"));
       format!("external-read: {name} = {}", format_f32_words(&words))
+    }
+    ExternalWriteValue(name, value) => {
+      let value = value();
+      handle
+        .write_external_var(name, &value)
+        .unwrap_or_else(|e| panic!("external write of `{name}` failed: {e}"));
+      format!("external-write: {name} = {}", format_value(&value))
+    }
+    ExternalWriteIndexValue(name, index, value) => {
+      let value = value();
+      handle
+        .write_external_var_index(name, *index, &value)
+        .unwrap_or_else(|e| panic!("external write of `{name}` failed: {e}"));
+      format!("external-write: {name}[{index}] = {}", format_value(&value))
+    }
+    ExternalReadValue(name) => {
+      let value = handle
+        .read_external_var(name)
+        .unwrap_or_else(|e| panic!("external read of `{name}` failed: {e}"));
+      format!("external-read: {name} = {}", format_value(&value))
     }
     _ => unreachable!(),
   }
@@ -784,6 +847,24 @@ thread_sync_test!(
     Frame
   ]
 );
+thread_sync_test!(
+  external_strings,
+  [
+    ExternalWriteValue("name", || Value::String("hi".into())),
+    ExternalWriteValue("words", || Value::Array(vec![
+      Value::String("a".into()),
+      Value::String("b".into())
+    ])),
+    Frame,
+    ExternalReadValue("name"),
+    ExternalReadValue("labeled"),
+    ExternalWriteIndexValue("words", 1, || Value::String("c".into())),
+    ExternalWriteValue("name", || Value::String("yo".into())),
+    Frame,
+    ExternalReadValue("name"),
+    ExternalReadValue("labeled")
+  ]
+);
 thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
 thread_sync_test!(
   external_seed_survives_start_audio,
@@ -989,4 +1070,33 @@ fn external_with_nested_audio_capture() {
     handle.read_external_var_raw("gain").unwrap(),
     vec![0.5f32.to_bits()]
   );
+}
+
+/// A var holding a String has no flat word layout: the `_raw` methods
+/// refuse it, and before anything publishes it reads as the empty string.
+#[test]
+fn external_string_not_flat() {
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(
+    std::path::Path::new("./data/thread_sync/external_strings.easl"),
+  ) else {
+    panic!("failed to load program");
+  };
+  assert!(
+    program
+      .validate_raw_program(CompilerTarget::WGSL)
+      .is_empty()
+  );
+  let handle = ExternalVars::new(&program);
+  assert_eq!(
+    handle.read_external_var_raw("name"),
+    Err(ExternalVarError::NotFlat("name".to_string()))
+  );
+  assert_eq!(
+    handle.write_external_var_raw("labeled", &[0]),
+    Err(ExternalVarError::NotFlat("labeled".to_string()))
+  );
+  assert!(matches!(
+    handle.read_external_var("name").unwrap(),
+    Value::String(s) if s.is_empty()
+  ));
 }

@@ -1,0 +1,24 @@
+; @external vars holding Strings, which cross to and from the embedder
+; through the handle's `Value` methods: a String the embedder seeds and the
+; program extends each frame, a struct with a String field the program
+; writes, and an array of Strings the embedder writes one element of.
+(struct Labeled
+  label: String
+  gain: f32)
+
+@external
+(var name: String)
+
+@external
+(var labeled: Labeled)
+
+@external
+(var words: [String])
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (print name)
+                  (print words)
+                  (= name (concat name "!"))
+                  (= labeled (Labeled (concat "label " name) 0.5)))))

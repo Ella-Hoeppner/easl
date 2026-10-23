@@ -742,11 +742,6 @@ error_test!(
   into_ambiguous_failure,
   CompileErrorKind::AmbiguousOverload("into".into())
 );
-error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
-error_test!(
-  external_string_field_var,
-  CompileErrorKind::ExternalStringVar
-);
 error_test!(
   var_initialization_failure_storage,
   CompileErrorKind::DisallowedInitializationValue(

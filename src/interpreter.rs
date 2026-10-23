@@ -8547,6 +8547,14 @@ pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
   }
 }
 
+/// The shared words of a zero-initialized value of `ty`, a wire-encoded
+/// var's value before anything publishes it.
+pub(crate) fn zero_shared_words(ty: &Type) -> Vec<u32> {
+  let mut out = Vec::new();
+  encode_zero_wire(ty, &mut out);
+  out
+}
+
 /// One value of the shared wire encoding (see vm/shared_sync.rs for the
 /// format): flat subvalues as raw VM words, heap values count-prefixed
 /// and inlined, aggregates field-by-field, heap-involving enums as
