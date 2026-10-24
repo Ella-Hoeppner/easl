@@ -1,0 +1,4 @@
+; `(audio-time period)` is audio-only, like `(audio-time)`.
+@fragment
+(defn frag []: @{location 0} vec4f
+  (vec4f (audio-time 1.)))

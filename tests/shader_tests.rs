@@ -649,6 +649,10 @@ error_test!(
   CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
 );
 error_test!(
+  looped_audio_time_in_shader_failure,
+  CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
+);
+error_test!(
   easl_reserved_name_failure,
   CompileErrorKind::EaslReservedName("easl_audio_time".to_string())
 );

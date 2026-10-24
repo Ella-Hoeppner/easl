@@ -1,0 +1,11 @@
+; `(audio-time period)` loops the audio time to [0, period), computed from
+; the exact sample count (here, 8 samples per second, so it steps by 0.125
+; and wraps every 4 samples); a period that isn't positive gives 0. It has
+; no WGSL form, so a helper calling it is never emitted to WGSL.
+(defn wobble []: f32
+  (+ (audio-time 0.5) (audio-time -1.)))
+
+@cpu
+(defn main []
+  (start-audio wobble)
+  (spawn-window (fn [] ())))

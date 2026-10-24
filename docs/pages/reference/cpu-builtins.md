@@ -402,9 +402,12 @@ The audio stream's sample rate in Hz. Works in any code, including closure facto
 
 ```easl
 (audio-time): f32
+(audio-time period: f32): f32
 ```
 
 The stream's clock in seconds. **Audio code only.**
+
+With a `period`, the clock loops: it counts up from `0.` to `period` and starts over, giving `0.` for a period that isn't positive. Prefer it to `(% (audio-time) period)`: it's computed from the exact number of samples played, so it stays precise however long the stream runs, while an `f32` time loses precision as it grows (after a day, it's only precise to about 8ms).
 
 ### `audio-input`
 

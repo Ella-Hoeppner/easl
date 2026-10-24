@@ -2975,6 +2975,21 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // `(audio-time period)`: the audio time looped to `[0, period)`,
+    // computed by the VM from the audio driver's exact sample count
+    // (`Op::LoopedAudioTime`). It has no WGSL or C form, so it's
+    // CPU-exclusive (allowed in audio, its only context).
+    AbstractFunctionSignature {
+      name: "audio-time".into(),
+      arg_types: vec![(AbstractType::Type(Type::F32), Ownership::Owned)],
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("audio-time".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "sample-rate".into(),
       return_type: AbstractType::Type(Type::F32),

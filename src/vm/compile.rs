@@ -1445,6 +1445,17 @@ impl BytecodeCompilationState {
     arg_types: &[Type],
     return_type: &Type,
   ) -> Option<u16> {
+    // `(audio-time period)` (the zero-argument form is rewritten into a
+    // var read by `extract_audio_info`).
+    if f_name == "audio-time" {
+      let dest = self.take_stack_slot(1);
+      self.push_instruction(Instruction {
+        op: Op::LoopedAudioTime,
+        arg_positions: [arg_positions[0], 0, 0],
+        return_position: dest,
+      });
+      return Some(dest);
+    }
     // MIDI output: the arguments in order, a missing one (a trailing
     // channel, a raw message's absent data bytes) reading as 0.
     if let Some(kind) = MidiOutKind::of_builtin(f_name, args.len()) {

@@ -887,6 +887,7 @@ thread_sync_test!(
   ]
 );
 thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
+thread_sync_test!(looped_audio_time, [Frame, AudioBatch(6)]);
 thread_sync_test!(audio_midi_out, [Frame, AudioBatch(4), Frame, AudioBatch(4)]);
 thread_sync_test!(
   external_seed_survives_start_audio,

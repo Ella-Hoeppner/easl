@@ -2467,7 +2467,6 @@ impl Program {
               }
               if let ExpKind::Name(applied_name) = &applied_f.kind
                 && matches!(&**applied_name, "audio-time" | "audio-input")
-                && args.is_empty()
               {
                 violations.push((
                   exp.source_trace.clone(),
@@ -2574,9 +2573,10 @@ impl Program {
                     Effect::CPUExclusiveFunction(fn_name) => {
                       // dynamic-array constructor misuse on the GPU is
                       // already reported precisely by the runtime-sized
-                      // validation; the generic complaint would be
+                      // validation, and `(audio-time period)` by the
+                      // audio-info rule; the generic complaint would be
                       // redundant noise there
-                      let suppress_gpu = runtime_sized_error_present
+                      let suppress_gpu = (runtime_sized_error_present
                         && matches!(
                           &**fn_name,
                           "into-dynamic-array"
@@ -2586,7 +2586,8 @@ impl Program {
                             | "remove"
                             | "concat"
                             | "reverse"
-                        );
+                        ))
+                        || &**fn_name == "audio-time";
                       // The dynamic-array constructors are VM-native, so
                       // audio code may call them (allocating on the audio
                       // hot path is the user's tradeoff to make); the

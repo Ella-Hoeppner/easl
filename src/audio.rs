@@ -752,6 +752,8 @@ impl VmAudioDriver {
       // (e.g. stateful closures) receive nothing and can read
       // `(audio-time)` instead.
       let t = self.sample_index as f32 / rate;
+      self.program.audio_samples = self.sample_index;
+      self.program.audio_rate = rate;
       self.sample_index = self.sample_index.wrapping_add(1);
       if self.arg_words > 0 {
         self.program.stack[self.arg_position] = t.to_bits();

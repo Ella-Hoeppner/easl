@@ -366,6 +366,11 @@ pub enum Op {
   Dot4U8Packed,
   Dot4I8Packed,
 
+  // `(audio-time period)`: the period's slot is `arg_positions[0]`; the
+  // sample count and rate are the program's own (`audio_samples`,
+  // `audio_rate`). See `looped_audio_time`.
+  LoopedAudioTime,
+
   // MIDI output, in both modes: builds the message of kind
   // `MidiOutKind::from_u16(return_position)` (an immediate) from the
   // three operand slots, then hands it to the host — the IO manager on the
@@ -560,6 +565,7 @@ impl Instruction {
       }
       Op::DynResize => self.arg_positions[1],
       Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
+      Op::LoopedAudioTime => self.arg_positions[0].max(self.return_position),
       // The message kind in `return_position` is an immediate.
       Op::SendMidi => *self.arg_positions.iter().max().unwrap(),
       // The var's slots are a global's, covered by the globals' range.
@@ -1107,6 +1113,42 @@ pub enum RunResult {
   Trapped(Trap),
 }
 
+/// The time `samples` samples into an audio stream at `rate`, looped to
+/// `[0, period)` (`(audio-time period)`). Computed in `f64` from the exact
+/// sample count and rounded to `f32` only at the end, so it stays as
+/// precise as an `f32` in `[0, period)` can be however long the stream has
+/// run, where an `f32` time looped in easl code loses precision as the time
+/// grows. A period that isn't positive gives 0.
+pub fn looped_audio_time(samples: u64, rate: f32, period: f32) -> f32 {
+  if !(period > 0.) || !(rate > 0.) {
+    return 0.;
+  }
+  let rate = rate as f64;
+  let looped = (samples as f64 % (period as f64 * rate)) / rate;
+  // Rounding to `f32` can reach `period` itself; the loop never does.
+  (looped as f32).min(f32::from_bits(period.to_bits() - 1))
+}
+
+#[cfg(test)]
+mod looped_audio_time_tests {
+  use super::looped_audio_time;
+
+  #[test]
+  fn loops_from_the_exact_sample_count() {
+    let rate = 44100.;
+    // A tenth of a second past a whole second, a day and a bit into the
+    // stream: an `f32` time there is only precise to ~8ms.
+    let samples = 44100 * 100_000 + 4410;
+    assert!((looped_audio_time(samples, rate, 1.) - 0.1).abs() < 1e-6);
+    assert!(((samples as f32 / rate) % 1. - 0.1).abs() > 1e-3);
+    assert_eq!(looped_audio_time(44100 * 7, rate, 1.), 0.);
+    assert_eq!(looped_audio_time(4410, rate, -1.), 0.);
+    assert_eq!(looped_audio_time(4410, rate, 0.), 0.);
+    // Never reaches the period itself.
+    assert!(looped_audio_time(44100 * 3 - 1, rate, 1.) < 1.);
+  }
+}
+
 /// A fatal runtime error in easl code. The tree-walker reports the same
 /// values, so both CPU runtimes fail with the same message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1433,6 +1475,11 @@ pub struct BytecodeProgram {
   /// after the binding syncs some other way, which only costs the next
   /// check a host call.
   pub gpu_newer: Vec<bool>,
+  /// The audio driver's exact count of samples before the current one, and
+  /// its sample rate, which `(audio-time period)` reads. Set by the driver
+  /// before every sample; zero outside the audio thread.
+  pub audio_samples: u64,
+  pub audio_rate: f32,
 }
 
 impl BytecodeProgram {
@@ -1463,6 +1510,8 @@ impl BytecodeProgram {
       shared_scratch: (0..code.shared_vars.len()).map(|_| None).collect(),
       shared_atomics: (0..code.shared_vars.len()).map(|_| None).collect(),
       gpu_newer: vec![false; code.host_bindings.len()],
+      audio_samples: 0,
+      audio_rate: 0.,
       code,
     };
     if let Some(init_idx) = program.code.init_function_index {
@@ -1558,6 +1607,8 @@ impl BytecodeProgram {
       shared_scratch,
       shared_atomics,
       gpu_newer,
+      audio_samples,
+      audio_rate,
     } = self;
     // Heap helpers for the `Heap*` ops. `release` implements
     // drop-on-overwrite: the previous occupant of a heap-id destination
@@ -1812,6 +1863,15 @@ impl BytecodeProgram {
         },
         Op::HostCall => {
           host_call!(instruction.arg_positions[0]);
+        }
+        Op::LoopedAudioTime => {
+          let period = stack[instruction.arg_positions[0] as usize];
+          stack[instruction.return_position as usize] = looped_audio_time(
+            *audio_samples,
+            *audio_rate,
+            f32::from_bits(period),
+          )
+          .to_bits();
         }
         Op::SendMidi => {
           let [a, b, c] = instruction.arg_positions;

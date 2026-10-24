@@ -1,0 +1,5 @@
+start-audio: wobble
+spawn-window
+frame 0
+audio-batch 0 x6
+samples: 0 0.125 0.25 0.375 0 0.125
