@@ -890,6 +890,18 @@ error_test!(
   )
 );
 error_test!(
+  midi_out_in_fragment,
+  CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(
+    "send-midi-note-on".to_string()
+  )
+);
+error_test!(
+  midi_sysex_in_audio,
+  CompileErrorKind::CPUExclusiveFunctionInAudioFunction(
+    "send-midi-sysex".to_string()
+  )
+);
+error_test!(
   dispatch_in_fragment,
   CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(
     "dispatch-render-shaders".to_string()

@@ -633,3 +633,4 @@ cpu_error_test!(index_error_ref_element_arg);
 cpu_error_test!(index_error_remove);
 cpu_error_test!(index_error_shared_atomic);
 cpu_error_test!(index_error_vector);
+cpu_error_test!(midi_out_of_range_error);

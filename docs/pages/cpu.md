@@ -86,7 +86,7 @@ Render dispatches draw to the window unless `set-render-target` points them at a
   (spawn-window (fn [] ())))
 ```
 
-`(sample-rate)` works anywhere. In audio code, `(audio-time)` is the stream's clock and `(audio-input)` the latest [microphone or line-in](reference/cpu-builtins.md#start-listening) sample. [MIDI input](reference/cpu-builtins.md#midi) works in audio, CPU, and shader code.
+`(sample-rate)` works anywhere. In audio code, `(audio-time)` is the stream's clock and `(audio-input)` the latest [microphone or line-in](reference/cpu-builtins.md#start-listening) sample. [MIDI input](reference/cpu-builtins.md#midi) works in audio, CPU, and shader code, and [MIDI output](reference/cpu-builtins.md#midi-output) in audio and CPU code.
 
 Each call to `start-audio` hands over the function it's given, so a later call can switch to a different sound. Call it once, or when the sound should change, rather than every frame: calling it again with a freshly made closure starts that closure over.
 

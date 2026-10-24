@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleRate, SizedSample};
 
+use crate::midi_out::MidiMessage;
 use crate::thread_sync::{ThreadSharedTable, participant};
 use crate::vm::bytecode::BytecodeProgram;
 
@@ -548,6 +549,13 @@ pub struct VmAudioDriver {
   /// devices; setting it also keeps the process-global listener from
   /// ever starting).
   pub midi_override: Option<Arc<crate::interpreter::MidiState>>,
+  /// The MIDI messages the current batch has sent, sent on after its last
+  /// sample (preallocated, so a batch sending a few allocates nothing).
+  midi_out: Vec<MidiMessage>,
+  /// When set, each batch's MIDI messages are appended here instead of
+  /// going to the MIDI output — the path for tests (which must never touch
+  /// real MIDI devices) and for hosts that send them on themselves.
+  pub midi_out_capture: Option<Vec<MidiMessage>>,
   shared_table: Option<Arc<ThreadSharedTable>>,
   sample_index: u64,
 }
@@ -614,6 +622,8 @@ impl VmAudioDriver {
       audio_input_override: None,
       last_midi_generation: None,
       midi_override: None,
+      midi_out: Vec::with_capacity(256),
+      midi_out_capture: None,
       shared_table,
       sample_index: 0,
     })
@@ -753,7 +763,7 @@ impl VmAudioDriver {
         self.program.stack[slot] = self.audio_input_scratch[i].to_bits();
       }
       self.program.prepare_to_run_function(self.fn_index);
-      self.program.execute();
+      self.program.execute_collecting_midi(&mut self.midi_out);
       emit(
         f32::from_bits(self.program.stack[self.return_position])
           .clamp(-1.0, 1.0),
@@ -763,6 +773,14 @@ impl VmAudioDriver {
       self
         .program
         .publish_shared(table, participant::AUDIO, 0, on_publish);
+    }
+    match &mut self.midi_out_capture {
+      Some(capture) => capture.append(&mut self.midi_out),
+      None => {
+        for message in self.midi_out.drain(..) {
+          crate::midi::send_midi(message);
+        }
+      }
     }
   }
 }
@@ -780,6 +798,11 @@ pub fn start_audio_thread_vm(
   function_names: Vec<Arc<str>>,
   shared_table: Option<Arc<ThreadSharedTable>>,
 ) -> Result<(), String> {
+  // The MIDI sender starts here, on the main thread, rather than at the
+  // audio thread's first send.
+  if program.code.sends_midi() {
+    crate::midi::start_output();
+  }
   let mut driver =
     VmAudioDriver::new(entry_name, program, &function_names, shared_table)?;
   let mut state_lock = AUDIO_STATE.lock().unwrap();

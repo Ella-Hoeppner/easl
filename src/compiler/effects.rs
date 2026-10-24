@@ -7,6 +7,7 @@ use crate::compiler::{
   program::Program,
   vars::{TopLevelVariableKind, VariableAddressSpace},
 };
+use crate::midi_out::MidiOutKind;
 
 /// A piece of ambient window/input state that the runtime tracks and that
 /// easl code can query (e.g. `window-time`, `mouse-coords`). On the CPU
@@ -177,6 +178,10 @@ pub enum Effect {
   /// observable, so statements with this effect are never pruned as dead
   /// code (see `is_side_effect_free`).
   FileWrite,
+  /// Sends a MIDI message out of the program (the `send-midi-*` builtins,
+  /// and `select-midi-output`, which picks where they go). Externally
+  /// observable, so never pruned.
+  MidiOut,
   Window,
   LookupBuiltinAttribute(BuiltinIOAttribute),
   InvokesUnknownFunction,
@@ -250,7 +255,7 @@ impl EffectType {
         | "remove"
         | "concat"
         | "reverse"
-    )
+    ) || MidiOutKind::BUILTIN_NAMES.contains(&name)
   }
   pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
     self

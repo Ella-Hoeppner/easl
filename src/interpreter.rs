@@ -42,6 +42,7 @@ use crate::compiler::{
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 use crate::external::ExternalVars;
+use crate::midi_out::{MidiMessage, MidiOutKind, sysex_message};
 use crate::render_settings::{RenderSetting, RenderSettings};
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, participant,
@@ -168,6 +169,8 @@ pub enum UserspaceEvalError {
   CpuEntryPointNotFound(Arc<str>),
   #[error("{0}")]
   RuntimeError(String),
+  #[error("MIDI output error: {0}")]
+  MidiOutputError(String),
 }
 
 #[derive(Clone, PartialEq, Debug, Error)]
@@ -2575,6 +2578,41 @@ fn apply_builtin_fn<IO: IOManager>(
     name if RenderSetting::of_setter(name).is_some() => {
       apply_render_command(env, &f_name, &args)
     }
+    name if MidiOutKind::of_builtin(name, args.len()).is_some() => {
+      apply_midi_out(env, &f_name, &args)
+    }
+    "send-midi-sysex" => {
+      let data: Vec<u32> = match &args[0].0 {
+        Value::Array(items) => items
+          .iter()
+          .map(|item| match item {
+            Value::Prim(Primitive::U32(n)) => *n,
+            other => panic!("send-midi-sysex: unexpected byte {other:?}"),
+          })
+          .collect(),
+        Value::ZeroedArray { length } => vec![0; *length],
+        other => panic!("send-midi-sysex: unexpected argument {other:?}"),
+      };
+      let bytes = sysex_message(&data)
+        .map_err(|e| UserspaceEvalError::Trap(Trap::Midi(e)))?;
+      env.io.send_midi(&bytes);
+      Ok(Value::Unit)
+    }
+    "select-midi-output" => {
+      let Value::String(name) = &args[0].0 else {
+        panic!("select-midi-output: expected string port name")
+      };
+      env.io.select_midi_output(name)?;
+      Ok(Value::Unit)
+    }
+    "midi-output-ports" => Ok(Value::Array(
+      env
+        .io
+        .midi_output_ports()
+        .into_iter()
+        .map(Value::String)
+        .collect(),
+    )),
     "start-listening" => {
       env.io.start_audio_input(None)?;
       Ok(Value::Unit)
@@ -3473,6 +3511,8 @@ pub enum IOEvent {
   StartAudio {
     entry: String,
   },
+  /// A MIDI message sent from the main thread, its bytes status first.
+  MidiOut(Vec<u8>),
   CloseWindow,
 }
 
@@ -4409,6 +4449,20 @@ pub trait IOManager: Sized {
   fn listenable_sources(&self) -> Vec<String> {
     vec![]
   }
+  /// Sends a MIDI message (its bytes, status first) from the main thread
+  /// (the `send-midi-*` builtins). Default: dropped — only `StdoutIO`
+  /// reaches real devices, and test managers record the messages instead.
+  fn send_midi(&mut self, _bytes: &[u8]) {}
+  /// The names of the available MIDI output ports (sorted), backing
+  /// `midi-output-ports`. Default: empty, like `listenable_sources`.
+  fn midi_output_ports(&self) -> Vec<String> {
+    vec![]
+  }
+  /// Sends later MIDI messages only to the output ports whose names contain
+  /// `name` (`select-midi-output`). Default: a no-op.
+  fn select_midi_output(&mut self, _name: &str) -> Result<(), EvalError> {
+    Ok(())
+  }
   /// The sample rate the audio stream runs (or would run) at, readable
   /// before any stream exists — main-thread `(sample-rate)` calls report
   /// this (the audio thread's copy is written by the driver from the live
@@ -4896,6 +4950,19 @@ impl IOManager for StdoutIO {
   fn listenable_sources(&self) -> Vec<String> {
     crate::audio::listenable_sources()
   }
+  #[cfg(feature = "window")]
+  fn send_midi(&mut self, bytes: &[u8]) {
+    crate::midi::send_midi_bytes(bytes);
+  }
+  #[cfg(feature = "window")]
+  fn midi_output_ports(&self) -> Vec<String> {
+    crate::midi::output_port_names()
+  }
+  #[cfg(feature = "window")]
+  fn select_midi_output(&mut self, name: &str) -> Result<(), EvalError> {
+    crate::midi::select_output(name)
+      .map_err(|e| UserspaceEvalError::MidiOutputError(e).into())
+  }
 }
 
 /// Test/debug IO manager. Records all IO events in a single ordered log and
@@ -4931,6 +4998,10 @@ impl StringIO {
 impl IOManager for StringIO {
   fn println(&mut self, s: &str) {
     self.events.push(IOEvent::Print(s.to_string()));
+  }
+
+  fn send_midi(&mut self, bytes: &[u8]) {
+    self.events.push(IOEvent::MidiOut(bytes.to_vec()));
   }
 
   /// Matches the thread-sync test harness's rate, so `t` values and
@@ -7304,6 +7375,29 @@ fn set_render_target<IO: IOManager>(
 /// The render-setting setters, `reset-render-settings`, and the
 /// target-clearing commands. Kept out of `apply_builtin_fn`'s match so its
 /// locals don't grow that function's stack frame.
+/// A `send-midi-*` call: builds the message from the argument words (each
+/// argument's bits, a missing one reading as 0, as in the VM's
+/// `Op::SendMidi`) and sends it.
+fn apply_midi_out<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  name: &str,
+  args: &[(Value, Type)],
+) -> Result<Value, EvalException> {
+  let kind = MidiOutKind::of_builtin(name, args.len()).unwrap();
+  let mut words = [0u32; 3];
+  for (word, (value, _)) in words.iter_mut().zip(args) {
+    *word = match value {
+      Value::Prim(Primitive::U32(n)) => *n,
+      Value::Prim(Primitive::F32(x)) => x.to_bits(),
+      other => panic!("{name}: unexpected argument {other:?}"),
+    };
+  }
+  let message = MidiMessage::build(kind, words)
+    .map_err(|e| UserspaceEvalError::Trap(Trap::Midi(e)))?;
+  env.io.send_midi(message.as_bytes());
+  Ok(Value::Unit)
+}
+
 fn apply_render_command<IO: IOManager>(
   env: &mut EvaluationEnvironment<IO>,
   name: &str,
@@ -8216,6 +8310,9 @@ struct VmHostView<'a, IO: IOManager> {
 
 impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
   type Error = EvalError;
+  fn send_midi(&mut self, message: MidiMessage) {
+    self.env.io.send_midi(message.as_bytes());
+  }
   fn host_call(
     &mut self,
     op: &crate::vm::bytecode::HostOp,
@@ -9404,13 +9501,34 @@ fn vm_host_call<IO: IOManager>(
       });
       env.io.start_audio_input(device.as_deref())?;
     }
-    HostOp::ListenableSources { dest } => {
+    HostOp::SendMidiSysex { data_slot } => {
+      let data = match heap_index(stack[*data_slot as usize])
+        .and_then(|i| heap[i].as_ref())
+        .map(|cell| &cell.memory)
+      {
+        Some(DynMemory::Words(words)) => words.clone(),
+        Some(DynMemory::Zeroed { elements }) => vec![0; *elements as usize],
+        _ => vec![],
+      };
+      match sysex_message(&data) {
+        Ok(bytes) => env.io.send_midi(&bytes),
+        Err(e) => return Err(UserspaceEvalError::Trap(Trap::Midi(e)).into()),
+      }
+    }
+    HostOp::SelectMidiOutput { name_slot } => {
+      let name =
+        words_to_string(heap_string_words(heap, stack[*name_slot as usize]));
+      env.io.select_midi_output(&name)?;
+    }
+    HostOp::ListenableSources { dest } | HostOp::MidiOutputPorts { dest } => {
       // Build a `[String]` heap value: a `Cells` container whose children
       // are string cells (one codepoint per word), mirroring how the VM
       // represents any `[String]`.
-      let children: Vec<Option<Arc<HeapCell>>> = env
-        .io
-        .listenable_sources()
+      let names = match op {
+        HostOp::ListenableSources { .. } => env.io.listenable_sources(),
+        _ => env.io.midi_output_ports(),
+      };
+      let children: Vec<Option<Arc<HeapCell>>> = names
         .iter()
         .map(|name| {
           Some(Arc::new(HeapCell {

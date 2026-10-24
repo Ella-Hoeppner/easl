@@ -1,0 +1,6 @@
+; MIDI output isn't implemented on the web yet: a program that sends MIDI is
+; rejected up front rather than running with its messages dropped.
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (send-midi-note-on 60u 1.))))

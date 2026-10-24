@@ -1,6 +1,6 @@
 # CPU builtins
 
-Builtins of easl's [CPU runtime](../cpu.md): printing, strings, windowing, GPU dispatch, input, textures, audio, MIDI, and video. Most are CPU-only; each entry notes where else it works.
+Builtins of easl's [CPU runtime](../cpu.md): printing, strings, windowing, GPU dispatch, input, textures, audio, MIDI input and output, and video. Most are CPU-only; each entry notes where else it works.
 
 ## Printing
 
@@ -513,6 +513,74 @@ Channel pressure, in `0.`–`1.`.
 ```
 
 The pitch bend, from `-1.` to `1.`, centered at `0.`.
+
+## MIDI output
+
+MIDI messages sent to every MIDI output port, or to the ones picked with `select-midi-output`. The `send-midi-*` builtins work in CPU **and audio** code; audio code's messages go out at the end of each audio buffer. Values use the same ranges as MIDI input: velocities, controller values, and pressures are `0.`–`1.` and pitch bend `-1.`–`1.` (clamped), while note numbers, controllers, programs, and data bytes are `0`–`127` and channels `0`–`15` (anything larger is a runtime error). Each `send-midi-*` builtin takes an optional trailing `channel`, sending on channel `0` without one. Not supported on the web yet.
+
+### `send-midi-note-on`
+
+```easl
+(send-midi-note-on note: u32 velocity: f32 [channel: u32]): ()
+(send-midi-note-off note: u32 [channel: u32]): ()
+```
+
+Starts or ends a note. A nonzero velocity always sounds (it never rounds down to `0`, which would end the note).
+<!-- index: send-midi-note-off -->
+
+### `send-midi-cc`
+
+```easl
+(send-midi-cc controller: u32 value: f32 [channel: u32]): ()
+```
+
+### `send-midi-pitch-bend`
+
+```easl
+(send-midi-pitch-bend value: f32 [channel: u32]): ()
+```
+
+### `send-midi-aftertouch`
+
+```easl
+(send-midi-aftertouch value: f32 [channel: u32]): ()
+(send-midi-note-aftertouch note: u32 value: f32 [channel: u32]): ()
+```
+
+Channel pressure, or one note's pressure.
+<!-- index: send-midi-note-aftertouch -->
+
+### `send-midi-program-change`
+
+```easl
+(send-midi-program-change program: u32 [channel: u32]): ()
+```
+
+### `send-midi-message`
+
+```easl
+(send-midi-message status: u32 [data1: u32 [data2: u32]]): ()
+```
+
+A raw message: a status byte (`128`–`255`) followed by exactly as many data bytes as it takes, e.g. `(send-midi-message 248u)` for a clock tick.
+
+### `send-midi-sysex`
+
+```easl
+(send-midi-sysex data: [u32]): ()
+```
+
+A system-exclusive message carrying `data`, the bytes between its opening `0xF0` and closing `0xF7`: `(send-midi-sysex ~[0u 32u 41u 2u 12u 14u 1u])`. CPU code only.
+
+### `midi-output-ports`
+
+```easl
+(midi-output-ports): [String]
+(select-midi-output port: String): ()
+```
+
+The available MIDI output port names, sorted. `select-midi-output` sends later messages only to the ports whose names contain `port`; it's a runtime error if none does. CPU code only.
+<!-- index: select-midi-output -->
 
 ## Video
 

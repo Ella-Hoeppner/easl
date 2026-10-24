@@ -104,6 +104,12 @@ async fn run_program(
   }
 
   check_shared_atomics_supported(&program)?;
+  if program.sends_midi() {
+    return Err(
+      "MIDI output isn't supported on the web yet: the program sends MIDI"
+        .to_string(),
+    );
+  }
   let (surface, device, queue, surface_config) =
     create_surface_and_device(&canvas).await?;
 

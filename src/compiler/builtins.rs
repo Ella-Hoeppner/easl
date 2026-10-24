@@ -2566,6 +2566,85 @@ fn render_command(
   }
 }
 
+/// The MIDI output builtins. Each channel-message builtin takes a trailing
+/// channel (`0..15`) or, without one, sends on channel 0;
+/// `send-midi-message` sends a raw message of one to three bytes. They run
+/// on the CPU and the audio thread (`cpu_exclusive_function_allowed_in_audio`)
+/// and carry `MidiOut`, so a call is never pruned. `send-midi-sysex` (a
+/// system-exclusive message of any length), `midi-output-ports`, and
+/// `select-midi-output` are main-thread only.
+fn midi_out_functions() -> Vec<AbstractFunctionSignature> {
+  let midi_out =
+    |name: &str, arg_types: Vec<AbstractType>| AbstractFunctionSignature {
+      name: name.into(),
+      arg_types: arg_types.into_iter().map(AbstractType::owned).collect(),
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::MidiOut,
+          Effect::CPUExclusiveFunction(name.into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    };
+  let u32 = || AbstractType::Type(Type::U32);
+  let f32 = || AbstractType::Type(Type::F32);
+  let channel_messages: [(&str, Vec<AbstractType>); 7] = [
+    ("send-midi-note-on", vec![u32(), f32()]),
+    ("send-midi-note-off", vec![u32()]),
+    ("send-midi-cc", vec![u32(), f32()]),
+    ("send-midi-pitch-bend", vec![f32()]),
+    ("send-midi-aftertouch", vec![f32()]),
+    ("send-midi-note-aftertouch", vec![u32(), f32()]),
+    ("send-midi-program-change", vec![u32()]),
+  ];
+  let mut signatures: Vec<AbstractFunctionSignature> = channel_messages
+    .into_iter()
+    .flat_map(|(name, args)| {
+      let with_channel = args.iter().cloned().chain([u32()]).collect();
+      [midi_out(name, args), midi_out(name, with_channel)]
+    })
+    .collect();
+  for byte_count in 1..=3 {
+    signatures.push(midi_out(
+      "send-midi-message",
+      (0..byte_count).map(|_| u32()).collect(),
+    ));
+  }
+  signatures.push(midi_out(
+    "send-midi-sysex",
+    vec![AbstractType::AbstractArray {
+      size: AbstractArraySize::Unsized,
+      inner_type: u32().into(),
+      source_trace: SourceTrace::empty(),
+    }],
+  ));
+  signatures.push(midi_out(
+    "select-midi-output",
+    vec![AbstractType::Type(Type::String)],
+  ));
+  signatures.push(AbstractFunctionSignature {
+    name: "midi-output-ports".into(),
+    arg_types: vec![],
+    return_type: AbstractType::AbstractArray {
+      size: AbstractArraySize::Unsized,
+      inner_type: AbstractType::Type(Type::String).into(),
+      source_trace: SourceTrace::empty(),
+    },
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: Effect::CPUExclusiveFunction("midi-output-ports".into())
+        .into(),
+      target_configuration: FunctionTargetConfiguration::Default,
+      target_specific_emulations: HashSet::new(),
+    },
+    ..Default::default()
+  });
+  signatures
+}
+
 /// The render-setting setters (`set-blend`, …), `reset-render-settings`,
 /// and the target-clearing commands.
 fn render_setting_functions() -> Vec<AbstractFunctionSignature> {
@@ -3930,6 +4009,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut string_functions());
   signatures.append(&mut shader_dispatch_functions());
   signatures.append(&mut render_setting_functions());
+  signatures.append(&mut midi_out_functions());
   signatures.append(&mut dynamic_array_functions());
   signatures.append(&mut dynamic_array_utility_functions());
   signatures.append(&mut atomic_functions());

@@ -1,0 +1,5 @@
+; An integer MIDI argument out of range is a runtime error on both runtimes,
+; not a silently masked byte.
+@cpu
+(defn main []
+  (send-midi-note-on 128u 1.))

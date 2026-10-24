@@ -1,0 +1,18 @@
+spawn-window
+midi-out: 90 3c 7f
+midi-out: 92 3d 01
+midi-out: 80 3c 40
+midi-out: 8f 3d 40
+midi-out: b0 4a 40
+midi-out: b3 01 7f
+midi-out: e0 00 40
+midi-out: e1 00 00
+midi-out: d0 20
+midi-out: a4 40 7f
+midi-out: c0 05
+midi-out: f8
+midi-out: c0 07
+midi-out: 90 24 64
+midi-out: f0 00 20 29 02 0c 0e 01 f7
+print: "sent"
+close-window

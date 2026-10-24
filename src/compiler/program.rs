@@ -4522,6 +4522,7 @@ impl Program {
                           | Effect::WindowInfo(_)
                           | Effect::Print
                           | Effect::FileWrite
+                          | Effect::MidiOut
                           | Effect::Window
                           | Effect::LookupBuiltinAttribute(_)
                           | Effect::InvokesUnknownFunction => None,
@@ -8054,6 +8055,21 @@ impl Program {
   /// shader touches is an ordinary CPU value with zero sync obligations
   /// (no buffer, no uploads, no readbacks), though its declaration still
   /// appears in emitted WGSL when its type is host-shareable.
+  /// Whether any function sends MIDI or picks MIDI output ports
+  /// (`Effect::MidiOut`).
+  pub fn sends_midi(&self) -> bool {
+    let mut memo = EffectsMemo::default();
+    self.abstract_functions_iter().any(|f| {
+      match &f.read().unwrap().implementation {
+        FunctionImplementationKind::Composite(implementation) => implementation
+          .read()
+          .unwrap()
+          .effects_with(&mut memo)
+          .contains(&Effect::MidiOut),
+        _ => false,
+      }
+    })
+  }
   pub fn gpu_used_globals(&self) -> HashSet<Arc<str>> {
     let var_names: HashSet<Arc<str>> =
       self.top_level_vars.iter().map(|v| v.name.clone()).collect();

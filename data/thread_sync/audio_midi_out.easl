@@ -1,0 +1,21 @@
+; MIDI sent from the audio thread: a stateful sequencer closure sends a
+; note-on at every step boundary (every 3 samples) and the previous note's
+; note-off, on the sample it happens; the driver sends the batch's
+; messages after it. The main thread sends one too, with a channel.
+(defn sequencer [notes: [3: u32]]: (Fn [] f32)
+  (let [@var sample 0u
+        @var beat 0u]
+    (fn []
+      (when (== (% sample 3u) 0u)
+        (when (> sample 0u)
+          (send-midi-note-off (notes (% (- beat 1u) 3u))))
+        (send-midi-note-on (notes (% beat 3u)) 0.5)
+        (+= beat 1u))
+      (+= sample 1u)
+      (* 0.25 (f32 beat)))))
+
+@cpu
+(defn main []
+  (start-audio (sequencer [60u 64u 67u]))
+  (spawn-window (fn []
+                  (send-midi-cc 7u 1. 9u))))

@@ -10,6 +10,7 @@ pub mod midi;
 #[cfg(all(feature = "window", target_arch = "wasm32"))]
 #[path = "midi_web.rs"]
 pub mod midi;
+pub mod midi_out;
 pub mod parse;
 pub mod render_settings;
 pub mod thread_sync;

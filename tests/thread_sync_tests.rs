@@ -262,12 +262,32 @@ impl ThreadSyncIO {
         self.audio_shared_names[index as usize]
       ));
     }
+    // The driver sends its batch's MIDI after publishing.
+    for message in driver.midi_out_capture.as_mut().unwrap().drain(..) {
+      self.trace.push(format!(
+        "audio-midi-out: {}",
+        format_midi(message.as_bytes())
+      ));
+    }
   }
+}
+
+/// MIDI bytes as trace text: hex, status first.
+fn format_midi(bytes: &[u8]) -> String {
+  bytes
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 impl IOManager for ThreadSyncIO {
   fn println(&mut self, s: &str) {
     self.trace.push(format!("print: {s}"));
+  }
+
+  fn send_midi(&mut self, bytes: &[u8]) {
+    self.trace.push(format!("midi-out: {}", format_midi(bytes)));
   }
 
   fn sample_rate(&self) -> f32 {
@@ -476,6 +496,7 @@ impl IOManager for ThreadSyncIO {
         driver.midi_override =
           Some(Arc::new(self.spoofed_midi.clone().unwrap_or_default()));
         driver.audio_input_override = self.spoofed_audio_input.clone();
+        driver.midi_out_capture = Some(vec![]);
         self.audio = Some(driver);
       }
       Some(AudioSource::C(_)) => {
@@ -866,6 +887,7 @@ thread_sync_test!(
   ]
 );
 thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
+thread_sync_test!(audio_midi_out, [Frame, AudioBatch(4), Frame, AudioBatch(4)]);
 thread_sync_test!(
   external_seed_survives_start_audio,
   [ExternalWrite("gain", &[0.5]), Frame, AudioBatch(2)]

@@ -52,6 +52,13 @@ fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
           entry: entry.to_string(),
           workgroup_count: (parts[0], parts[1], parts[2]),
         }
+      } else if let Some(rest) = line.strip_prefix("midi-out: ") {
+        IOEvent::MidiOut(
+          rest
+            .split(' ')
+            .map(|byte| u8::from_str_radix(byte, 16).expect("hex MIDI byte"))
+            .collect(),
+        )
       } else if line == "close-window" {
         IOEvent::CloseWindow
       } else if let Some(rest) = line.strip_prefix("start-audio ") {
@@ -158,3 +165,4 @@ window_test!(print_string);
 window_test!(start_audio);
 window_test!(window_info_shared_helper);
 window_test!(dynamic_array_closure_frames);
+window_test!(midi_out);

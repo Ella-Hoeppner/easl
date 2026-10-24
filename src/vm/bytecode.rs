@@ -9,6 +9,7 @@ use half::f16;
 use serde::{Deserialize, Serialize};
 
 use crate::compiler::{types::Type, vars::VariableAddressSpace};
+use crate::midi_out::{MidiMessage, MidiOutError, MidiOutKind};
 use crate::render_settings::RenderSetting;
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, ThreadSharedTable,
@@ -365,6 +366,13 @@ pub enum Op {
   Dot4U8Packed,
   Dot4I8Packed,
 
+  // MIDI output, in both modes: builds the message of kind
+  // `MidiOutKind::from_u16(return_position)` (an immediate) from the
+  // three operand slots, then hands it to the host — the IO manager on the
+  // CPU, the audio driver's batch on the audio thread. A message that
+  // can't be built traps.
+  SendMidi,
+
   // Host interface (CPU-runtime mode only; never emitted for audio).
   // `arg_positions[0]` indexes `Code::host_ops`. Everything the CPU
   // orchestration layer needs (print, GPU dispatch, sync checks, dynamic
@@ -552,6 +560,8 @@ impl Instruction {
       }
       Op::DynResize => self.arg_positions[1],
       Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
+      // The message kind in `return_position` is an immediate.
+      Op::SendMidi => *self.arg_positions.iter().max().unwrap(),
       // The var's slots are a global's, covered by the globals' range.
       Op::SharedAtomicLoad | Op::SharedAtomicStore => 0,
       Op::SharedAtomicLoadWord => {
@@ -922,6 +932,21 @@ pub enum HostOp {
   ListenableSources {
     dest: u16,
   },
+  /// `(send-midi-sysex data)`: `data_slot` holds the `[u32]` data's heap
+  /// id.
+  SendMidiSysex {
+    data_slot: u16,
+  },
+  /// `(select-midi-output name)`: `name_slot` holds the name's string heap
+  /// id.
+  SelectMidiOutput {
+    name_slot: u16,
+  },
+  /// `(midi-output-ports)`: like `ListenableSources`, for MIDI output
+  /// ports.
+  MidiOutputPorts {
+    dest: u16,
+  },
   /// `(load-wav path)`: parse the WAV file at the runtime string in
   /// `path_slot` (a heap-id slot — the argument is compiled as an
   /// ordinary `String` value, so a literal, a `String` parameter threaded
@@ -1086,10 +1111,21 @@ pub enum RunResult {
 /// values, so both CPU runtimes fail with the same message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trap {
-  IndexOutOfBounds { index: u32, length: u32 },
+  IndexOutOfBounds {
+    index: u32,
+    length: u32,
+  },
   NegativeIndex(i32),
-  InsertOutOfBounds { index: u32, length: u32 },
-  RemoveOutOfBounds { index: u32, length: u32 },
+  /// A `send-midi-*` call whose message couldn't be built.
+  Midi(MidiOutError),
+  InsertOutOfBounds {
+    index: u32,
+    length: u32,
+  },
+  RemoveOutOfBounds {
+    index: u32,
+    length: u32,
+  },
 }
 
 impl std::fmt::Display for Trap {
@@ -1098,6 +1134,7 @@ impl std::fmt::Display for Trap {
       Trap::IndexOutOfBounds { index, length } => {
         write!(f, "index {index} is out of bounds for length {length}")
       }
+      Trap::Midi(error) => write!(f, "{error}"),
       Trap::NegativeIndex(index) => {
         write!(
           f,
@@ -1151,6 +1188,8 @@ pub trait VmHost {
     shared: SharedStateParts<'_>,
     code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error>;
+  /// Sends a MIDI message (`Op::SendMidi`).
+  fn send_midi(&mut self, message: MidiMessage);
 }
 
 /// Host for pure-math execution (audio, tests): host calls never occur.
@@ -1168,6 +1207,33 @@ impl VmHost for NoopHost {
     _code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error> {
     unreachable!("host call encountered in hostless VM execution")
+  }
+  fn send_midi(&mut self, _message: MidiMessage) {
+    unreachable!("MIDI sent in hostless VM execution")
+  }
+}
+
+/// Host for audio-thread execution: host calls never occur, and MIDI
+/// messages are collected for the audio driver to send after its batch.
+pub struct MidiCollectingHost<'a> {
+  pub messages: &'a mut Vec<MidiMessage>,
+}
+impl VmHost for MidiCollectingHost<'_> {
+  type Error = std::convert::Infallible;
+  fn host_call(
+    &mut self,
+    _op: &HostOp,
+    _stack: &mut [u32],
+    _dyn_memory: &mut [DynMemory],
+    _heap: &mut Vec<Option<Arc<HeapCell>>>,
+    _heap_free: &mut Vec<u32>,
+    _shared: SharedStateParts<'_>,
+    _code: &Code,
+  ) -> Result<Option<HostSuspendReason>, Self::Error> {
+    unreachable!("host call encountered in audio VM execution")
+  }
+  fn send_midi(&mut self, message: MidiMessage) {
+    self.messages.push(message);
   }
 }
 
@@ -1227,6 +1293,13 @@ pub struct Code {
 }
 
 impl Code {
+  /// Whether this program sends MIDI (`Op::SendMidi`).
+  pub fn sends_midi(&self) -> bool {
+    self
+      .function_instructions
+      .iter()
+      .any(|instruction| instruction.op == Op::SendMidi)
+  }
   /// This program's encoding, for [`Code::from_bytes`]. Only audio-mode
   /// programs serialize: CPU-mode programs' host-call metadata refers to
   /// compiler types.
@@ -1455,6 +1528,15 @@ impl BytecodeProgram {
   /// has no caller to report to, so it panics with the trap's message.
   pub fn execute(&mut self) {
     match self.execute_with_host(&mut NoopHost) {
+      Ok(RunResult::Trapped(trap)) => panic!("easl runtime error: {trap}"),
+      Ok(_) => {}
+      Err(never) => match never {},
+    }
+  }
+  /// [`Self::execute`], appending the MIDI messages the run sends to
+  /// `messages` (audio-thread execution).
+  pub fn execute_collecting_midi(&mut self, messages: &mut Vec<MidiMessage>) {
+    match self.execute_with_host(&mut MidiCollectingHost { messages }) {
       Ok(RunResult::Trapped(trap)) => panic!("easl runtime error: {trap}"),
       Ok(_) => {}
       Err(never) => match never {},
@@ -1730,6 +1812,16 @@ impl BytecodeProgram {
         },
         Op::HostCall => {
           host_call!(instruction.arg_positions[0]);
+        }
+        Op::SendMidi => {
+          let [a, b, c] = instruction.arg_positions;
+          match MidiMessage::build(
+            MidiOutKind::from_u16(instruction.return_position),
+            [stack[a as usize], stack[b as usize], stack[c as usize]],
+          ) {
+            Ok(message) => host.send_midi(message),
+            Err(error) => trap!(Trap::Midi(error)),
+          }
         }
         Op::MarkGpuNewer => {
           gpu_newer[instruction.arg_positions[0] as usize] = true;

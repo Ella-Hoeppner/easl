@@ -18,6 +18,7 @@ use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
   ConcreteArraySize, Type, TypeDescription, TypeState,
 };
+use crate::midi_out::MidiOutKind;
 use crate::render_settings::RenderSetting;
 use crate::thread_sync::AtomicOp;
 use crate::vm::bytecode::{
@@ -1444,6 +1445,18 @@ impl BytecodeCompilationState {
     arg_types: &[Type],
     return_type: &Type,
   ) -> Option<u16> {
+    // MIDI output: the arguments in order, a missing one (a trailing
+    // channel, a raw message's absent data bytes) reading as 0.
+    if let Some(kind) = MidiOutKind::of_builtin(f_name, args.len()) {
+      let zero = (arg_positions.len() < 3).then(|| self.emit_u32_constant(0));
+      let operand = |i: usize| arg_positions.get(i).copied().or(zero).unwrap();
+      self.push_instruction(Instruction {
+        op: Op::SendMidi,
+        arg_positions: [operand(0), operand(1), operand(2)],
+        return_position: kind as u16,
+      });
+      return None;
+    }
     // Matrix constructors (e.g. mat2x2f, mat3x4i, ...). Two arg shapes:
     //   - N*M scalars laid out column-major.
     //   - N column-vecs (vecM) of the element type.
@@ -4150,6 +4163,25 @@ impl TypedExp {
       "listenable-sources" => {
         let dest = state.take_stack_slot(1);
         state.emit_host_op(HostOp::ListenableSources { dest });
+        Some(Some(dest))
+      }
+      "send-midi-sysex" => {
+        let data_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("send-midi-sysex data produced no value");
+        state.emit_host_op(HostOp::SendMidiSysex { data_slot });
+        Some(None)
+      }
+      "select-midi-output" => {
+        let name_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("select-midi-output port name produced no value");
+        state.emit_host_op(HostOp::SelectMidiOutput { name_slot });
+        Some(None)
+      }
+      "midi-output-ports" => {
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::MidiOutputPorts { dest });
         Some(Some(dest))
       }
       "load-wav-raw" => {

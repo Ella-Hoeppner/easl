@@ -1,0 +1,9 @@
+; MIDI output runs on the CPU and the audio thread; a send reachable from a
+; shader is rejected.
+(defn ping []
+  (send-midi-note-on 60u 1.))
+
+@fragment
+(defn bad-frag []: @{location 0} vec4f
+  (ping)
+  (vec4f 1. 0. 0. 1.))

@@ -1,0 +1,24 @@
+; Every MIDI output message kind, with and without a channel, and the value
+; conversions: velocities and controller values are 0..1 (clamped, and a
+; nonzero velocity never rounds to a note-off), pitch bend -1..1, and raw
+; messages take exactly their status's data bytes.
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (send-midi-note-on 60u 1.)
+                  (send-midi-note-on 61u 0.001 2u)
+                  (send-midi-note-off 60u)
+                  (send-midi-note-off 61u 15u)
+                  (send-midi-cc 74u 0.5)
+                  (send-midi-cc 1u 2. 3u)
+                  (send-midi-pitch-bend 0.)
+                  (send-midi-pitch-bend -1. 1u)
+                  (send-midi-aftertouch 0.25)
+                  (send-midi-note-aftertouch 64u 1. 4u)
+                  (send-midi-program-change 5u)
+                  (send-midi-message 248u)
+                  (send-midi-message 192u 7u)
+                  (send-midi-message 144u 36u 100u)
+                  (send-midi-sysex ~[0u 32u 41u 2u 12u 14u 1u])
+                  (print "sent")
+                  (close-window))))

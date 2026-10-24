@@ -1,0 +1,27 @@
+main-publish: <audio-scope>_beat
+main-publish: <audio-scope>_notes
+main-publish: <audio-scope>_sample
+start-audio: <audio-closure>
+spawn-window
+frame 0
+midi-out: b9 07 7f
+audio-batch 0 x4
+audio-adopt: <audio-scope>_beat
+audio-adopt: <audio-scope>_notes
+audio-adopt: <audio-scope>_sample
+samples: 0.25 0.25 0.25 0.5
+audio-publish: <audio-scope>_beat
+audio-publish: <audio-scope>_sample
+audio-midi-out: 90 3c 40
+audio-midi-out: 80 3c 40
+audio-midi-out: 90 40 40
+frame 1
+main-adopt: <audio-scope>_beat
+main-adopt: <audio-scope>_sample
+midi-out: b9 07 7f
+audio-batch 1 x4
+samples: 0.5 0.5 0.75 0.75
+audio-publish: <audio-scope>_beat
+audio-publish: <audio-scope>_sample
+audio-midi-out: 80 40 40
+audio-midi-out: 90 43 40
