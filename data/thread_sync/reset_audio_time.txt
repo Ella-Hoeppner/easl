@@ -1,0 +1,12 @@
+start-audio: clock
+spawn-window
+frame 0
+audio-batch 0 x3
+samples: 0 0.25 0.5
+frame 1
+reset-audio-time
+audio-batch 1 x3
+samples: 0 0.25 0.5
+frame 2
+audio-batch 2 x2
+samples: 0.75 1

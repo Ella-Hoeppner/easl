@@ -224,6 +224,10 @@ impl IOManager for WebIO {
     crate::audio::sample_rate().unwrap_or(44_100.)
   }
 
+  fn reset_audio_time(&mut self) {
+    crate::audio::reset_time();
+  }
+
   fn start_audio(
     &mut self,
     entry_name: &str,

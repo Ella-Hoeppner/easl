@@ -409,6 +409,14 @@ The stream's clock in seconds. **Audio code only.**
 
 With a `period`, the clock loops: it counts up from `0.` to `period` and starts over, giving `0.` for a period that isn't positive. Prefer it to `(% (audio-time) period)`: it's computed from the exact number of samples played, so it stays precise however long the stream runs, while an `f32` time loses precision as it grows (after a day, it's only precise to about 8ms).
 
+### `reset-audio-time`
+
+```easl
+(reset-audio-time): ()
+```
+
+Restarts the audio clock: from the audio thread's next buffer, an audio entry's `t` argument, `(audio-time)`, and `(audio-time period)` all count from `0.` again. Handy for restarting a patch without restarting the program. Stateful closures keep their state; call `start-audio` with a fresh closure to reset that too. CPU code only.
+
 ### `audio-input`
 
 ```easl

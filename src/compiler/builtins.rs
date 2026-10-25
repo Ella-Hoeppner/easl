@@ -2852,6 +2852,25 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // Restarts the audio clock: `t`, `(audio-time)`, and
+    // `(audio-time period)` count from 0 again from the audio thread's
+    // next batch. Main-thread only; carries `Window` so a statement-position
+    // call isn't pruned.
+    AbstractFunctionSignature {
+      name: "reset-audio-time".into(),
+      arg_types: vec![],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("reset-audio-time".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     // Begin real-time audio capture. `start-listening` uses the system
     // default input device (usually the microphone); `start-listening-from`
     // selects a device by name substring (e.g. a line-in / audio jack).

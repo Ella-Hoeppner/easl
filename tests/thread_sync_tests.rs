@@ -290,6 +290,15 @@ impl IOManager for ThreadSyncIO {
     self.trace.push(format!("midi-out: {}", format_midi(bytes)));
   }
 
+  /// The batches run between frames here, so resetting now is resetting
+  /// at the next batch.
+  fn reset_audio_time(&mut self) {
+    self.trace.push("reset-audio-time".to_string());
+    if let Some(driver) = &mut self.audio {
+      driver.reset_time();
+    }
+  }
+
   fn sample_rate(&self) -> f32 {
     TEST_SAMPLE_RATE
   }
@@ -888,6 +897,21 @@ thread_sync_test!(
 );
 thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
 thread_sync_test!(looped_audio_time, [Frame, AudioBatch(6)]);
+thread_sync_test!(
+  reset_audio_time,
+  [
+    Frame,
+    AudioBatch(3),
+    Frame,
+    AudioBatch(3),
+    Frame,
+    AudioBatch(2)
+  ]
+);
+thread_sync_test!(
+  reset_looped_audio_time,
+  [Frame, AudioBatch(3), Frame, AudioBatch(3)]
+);
 thread_sync_test!(audio_midi_out, [Frame, AudioBatch(4), Frame, AudioBatch(4)]);
 thread_sync_test!(
   external_seed_survives_start_audio,

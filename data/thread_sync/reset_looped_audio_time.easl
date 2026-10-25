@@ -1,0 +1,13 @@
+; `reset-audio-time` restarts `(audio-time period)` too: without the reset,
+; the second batch would continue 0.375 0 0.125.
+(defn looped []: f32
+  (audio-time 0.5))
+
+@cpu
+(defn main []
+  (start-audio looped)
+  (let [@var frame 0u]
+    (spawn-window (fn []
+                    (when (== frame 1u)
+                      (reset-audio-time))
+                    (+= frame 1u)))))

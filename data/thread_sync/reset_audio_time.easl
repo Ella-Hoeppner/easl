@@ -1,0 +1,15 @@
+; `reset-audio-time` restarts the audio clock from the audio thread's next
+; batch: both the entry's `t` and `(audio-time)` count from 0 again (each
+; sample is their sum, n/4 at 8 samples per second). The reset happens in
+; frame 1 only, so the last batch carries on from where the reset left it.
+(defn clock [t: f32]: f32
+  (+ t (audio-time)))
+
+@cpu
+(defn main []
+  (start-audio clock)
+  (let [@var frame 0u]
+    (spawn-window (fn []
+                    (when (== frame 1u)
+                      (reset-audio-time))
+                    (+= frame 1u)))))

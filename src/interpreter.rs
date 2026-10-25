@@ -2598,6 +2598,10 @@ fn apply_builtin_fn<IO: IOManager>(
       env.io.send_midi(&bytes);
       Ok(Value::Unit)
     }
+    "reset-audio-time" => {
+      env.io.reset_audio_time();
+      Ok(Value::Unit)
+    }
     "select-midi-output" => {
       let Value::String(name) = &args[0].0 else {
         panic!("select-midi-output: expected string port name")
@@ -4449,6 +4453,10 @@ pub trait IOManager: Sized {
   fn listenable_sources(&self) -> Vec<String> {
     vec![]
   }
+  /// Restarts the audio clock (`reset-audio-time`) from the audio
+  /// thread's next batch. Default: a no-op — only IO managers running an
+  /// audio thread have a clock.
+  fn reset_audio_time(&mut self) {}
   /// Sends a MIDI message (its bytes, status first) from the main thread
   /// (the `send-midi-*` builtins). Default: dropped — only `StdoutIO`
   /// reaches real devices, and test managers record the messages instead.
@@ -4953,6 +4961,10 @@ impl IOManager for StdoutIO {
   #[cfg(feature = "window")]
   fn send_midi(&mut self, bytes: &[u8]) {
     crate::midi::send_midi_bytes(bytes);
+  }
+  #[cfg(feature = "window")]
+  fn reset_audio_time(&mut self) {
+    crate::audio::reset_audio_time();
   }
   #[cfg(feature = "window")]
   fn midi_output_ports(&self) -> Vec<String> {
@@ -9495,6 +9507,7 @@ fn vm_host_call<IO: IOManager>(
         return Err(WindowFeatureNotEnabled.into());
       }
     }
+    HostOp::ResetAudioTime => env.io.reset_audio_time(),
     HostOp::StartListening { device_slot } => {
       let device = device_slot.map(|slot| {
         words_to_string(heap_string_words(heap, stack[slot as usize]))

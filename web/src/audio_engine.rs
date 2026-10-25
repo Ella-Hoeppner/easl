@@ -84,6 +84,14 @@ impl AudioEngine {
     }
   }
 
+  /// Restarts the audio clock (`reset-audio-time`).
+  #[wasm_bindgen(js_name = resetTime)]
+  pub fn reset_time(&mut self) {
+    if let Some(driver) = &mut self.driver {
+      driver.reset_time();
+    }
+  }
+
   /// Installs a snapshot the page published, for the next render to adopt.
   #[wasm_bindgen(js_name = installSnapshot)]
   pub fn install_snapshot(&self, index: u32, words: Vec<u32>) {

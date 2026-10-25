@@ -1,0 +1,9 @@
+start-audio: looped
+spawn-window
+frame 0
+audio-batch 0 x3
+samples: 0 0.125 0.25
+frame 1
+reset-audio-time
+audio-batch 1 x3
+samples: 0 0.125 0.25

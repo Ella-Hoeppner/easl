@@ -14,6 +14,7 @@
 //!   directly. Faster but requires `clang` on the host.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -93,6 +94,10 @@ struct VmStreamState {
   /// Function names of the running program, for resolving an entry switch
   /// to a function index before sending it to the callback.
   function_names: Vec<Arc<str>>,
+  /// Set by `reset-audio-time`; the callback restarts the clock and clears
+  /// it at its next batch. A flag rather than a mailbox message, so it
+  /// never displaces a pending swap.
+  reset_time: Arc<AtomicBool>,
 }
 
 /// Active audio thread state. The cpal stream is `!Send`, so we stash it in a
@@ -678,6 +683,12 @@ impl VmAudioDriver {
     }
   }
 
+  /// Restarts the clock: the next sample is sample 0, so `t`,
+  /// `(audio-time)`, and `(audio-time period)` count from 0 again.
+  pub fn reset_time(&mut self) {
+    self.sample_index = 0;
+  }
+
   /// Re-points the driver at a different entry function in its program, by
   /// name. Resolution happens once, here; everything past this point (the
   /// swap mailbox, the actual switch) works in function indices.
@@ -824,6 +835,8 @@ pub fn start_audio_thread_vm(
   }
   let mailbox: Arc<Mutex<Option<VmSwapMessage>>> = Arc::new(Mutex::new(None));
   let cb_mailbox = mailbox.clone();
+  let reset_time = Arc::new(AtomicBool::new(false));
+  let cb_reset_time = reset_time.clone();
   let stream = build_audio_stream_batched(move |output, channels, rate| {
     // Apply any pending swap first, so it takes effect at a batch
     // boundary. `try_lock` only: if the main thread happens to be
@@ -843,6 +856,9 @@ pub fn start_audio_thread_vm(
           driver.switch_entry_by_index(fn_index);
         }
       }
+    }
+    if cb_reset_time.swap(false, Ordering::Relaxed) {
+      driver.reset_time();
     }
     let frame_count = output.len() / channels;
     let mut frames = output.chunks_mut(channels);
@@ -864,11 +880,23 @@ pub fn start_audio_thread_vm(
       mailbox,
       current_entry: entry_name.into(),
       function_names,
+      reset_time,
     }),
     #[cfg(feature = "c_audio")]
     c: None,
   });
   Ok(())
+}
+
+/// Restarts a running VM-backed audio stream's clock at its next batch
+/// (`reset-audio-time`). Without a running stream, or on a C-backend one,
+/// there's no clock to reset.
+pub fn reset_audio_time() {
+  if let Some(state) = AUDIO_STATE.lock().unwrap().as_ref()
+    && let Some(vm) = &state.vm
+  {
+    vm.reset_time.store(true, Ordering::Relaxed);
+  }
 }
 
 /// Re-points a running VM-backed audio stream at a different entry

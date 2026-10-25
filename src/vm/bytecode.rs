@@ -927,6 +927,8 @@ pub enum HostOp {
   StartAudio {
     entry: u16,
   },
+  /// `(reset-audio-time)`.
+  ResetAudioTime,
   /// `(start-listening)` / `(start-listening-from device)`: begin real-time
   /// audio capture. `device_slot` is `None` for the default input device,
   /// or `Some(slot)` where `slot` holds a device-name string's heap id.

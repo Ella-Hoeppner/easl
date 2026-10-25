@@ -45,6 +45,9 @@ class EaslAudioProcessor extends AudioWorkletProcessor {
         case "switch":
           this.engine.switchEntry(message.entry);
           break;
+        case "reset-time":
+          this.engine.resetTime();
+          break;
         case "snapshot":
           this.engine.installSnapshot(message.index, message.words);
           break;

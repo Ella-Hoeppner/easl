@@ -735,6 +735,12 @@ error_test!(
   )
 );
 error_test!(
+  reset_audio_time_in_audio_failure,
+  CompileErrorKind::CPUExclusiveFunctionInAudioFunction(
+    "reset-audio-time".to_string()
+  )
+);
+error_test!(
   print_in_audio_failure,
   CompileErrorKind::CPUExclusiveFunctionInAudioFunction("print".to_string())
 );

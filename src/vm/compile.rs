@@ -4183,6 +4183,10 @@ impl TypedExp {
         state.emit_host_op(HostOp::SendMidiSysex { data_slot });
         Some(None)
       }
+      "reset-audio-time" => {
+        state.emit_host_op(HostOp::ResetAudioTime);
+        Some(None)
+      }
       "select-midi-output" => {
         let name_slot = args[0]
           .compile_to_bytecode(CompilePosition::Value, state)

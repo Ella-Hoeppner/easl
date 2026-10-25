@@ -221,6 +221,17 @@ fn message(fields: &[(&str, JsValue)]) -> JsValue {
 }
 
 /// Posts to the worklet, or queues until it has loaded.
+/// Restarts the worklet's audio clock (`reset-audio-time`). Before
+/// `start-audio`, there's no clock to reset.
+pub fn reset_time() {
+  let started = OUTPUT.with(|o| {
+    o.borrow().as_ref().is_some_and(|output| output.entry.is_some())
+  });
+  if started {
+    post(message(&[("type", "reset-time".into())]));
+  }
+}
+
 fn post(message: JsValue) {
   OUTPUT.with(|o| {
     let mut o = o.borrow_mut();
