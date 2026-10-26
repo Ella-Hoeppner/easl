@@ -1,0 +1,8 @@
+; `@use` only applies to `mod` forms.
+@use
+(defn f []: f32
+  1.)
+
+@cpu
+(defn main []
+  (print (f)))

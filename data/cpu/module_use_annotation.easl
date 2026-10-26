@@ -1,0 +1,39 @@
+; `@use (mod name ...)` binds the mod's public names in the enclosing scope,
+; as `(use name)` right after it would: they're usable unqualified, the mod
+; stays reachable by path, private names stay private, enums keep their
+; qualified variants, and it nests.
+@use
+(mod shapes
+  (struct Point
+    x: f32
+    y: f32)
+  (defn origin []: Point
+    (Point 0. 2.))
+  @private
+  (def secret: f32
+       1.)
+  (defn reveal []: f32
+    secret)
+  (enum Axis
+    X
+    Y))
+
+(mod outer
+  @use
+  (mod inner
+    (defn deep []: f32
+      3.))
+  (defn uses-deep []: f32
+    (* 2. (deep))))
+
+@cpu
+(defn main []
+  (print (.y (origin)))
+  (print (.x (Point 4. 5.)))
+  (print (reveal))
+  (print (shapes/reveal))
+  (print (match Axis/Y
+           Axis/X 0u
+           Axis/Y 1u))
+  (print (outer/uses-deep))
+  (print (outer/inner/deep)))

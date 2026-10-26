@@ -1,0 +1,10 @@
+; `@use` binds only a mod's public names, like `(use name)`.
+@use
+(mod hidden
+  @private
+  (defn secret []: f32
+    1.))
+
+@cpu
+(defn main []
+  (print (secret)))

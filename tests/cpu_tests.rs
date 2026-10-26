@@ -574,6 +574,7 @@ cpu_test!(module_namespace_import);
 cpu_test!(module_relative_paths);
 cpu_test!(module_unqualified_import);
 cpu_test!(module_inline_mod);
+cpu_test!(module_use_annotation);
 cpu_test!(module_overloads);
 cpu_test!(module_file_isolation);
 cpu_test!(module_diamond);

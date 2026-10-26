@@ -763,6 +763,17 @@ error_test!(
   )
 );
 error_test!(
+  module_use_annotation_private_failure,
+  CompileErrorKind::UnboundName("secret".into()),
+  CompileErrorKind::CouldntInferTypes
+);
+error_test!(
+  use_annotation_on_defn_failure,
+  CompileErrorKind::InvalidAnnotation(
+    "`@use` only applies to `mod` forms".into()
+  )
+);
+error_test!(
   var_name_collision_failure_def,
   CompileErrorKind::NameCollision("a".into())
 );

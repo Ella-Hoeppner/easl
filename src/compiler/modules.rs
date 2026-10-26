@@ -200,7 +200,12 @@ enum Form {
     kind: DefinitionKind,
     internal: Arc<str>,
   },
-  Mod(ModuleId),
+  /// An inline `mod`; with `@use`, its public members are also bound in
+  /// the enclosing scope, as `(use name)` right after it would.
+  Mod {
+    id: ModuleId,
+    used: Option<SourceTrace>,
+  },
   Import {
     alias: Option<(Arc<str>, SourceTrace)>,
     target: ModuleId,
@@ -578,7 +583,16 @@ impl<'a> Resolver<'a> {
       let (mut annotations, body) = peel_annotations(tree);
       let private = take_flag(&mut annotations, "private");
       let unpack = take_flag(&mut annotations, "unpack");
+      let used = take_flag(&mut annotations, "use");
       let head = form_head(&body).map(|head| head.to_string());
+      if used && head.as_deref() != Some("mod") {
+        self.error(
+          CompileErrorKind::InvalidAnnotation(
+            "`@use` only applies to `mod` forms".into(),
+          ),
+          tree_source.clone(),
+        );
+      }
       let form = match head.as_deref() {
         Some("import") => {
           let target = documents.imports.get(body.position()).copied();
@@ -637,7 +651,10 @@ impl<'a> Resolver<'a> {
             mod_children.into_iter().skip(2).collect(),
             documents,
           );
-          Form::Mod(child)
+          Form::Mod {
+            id: child,
+            used: used.then(|| tree_source.clone()),
+          }
         }
         Some(
           keyword @ ("defn" | "struct" | "enum" | "var" | "def" | "override"),
@@ -974,6 +991,16 @@ impl<'a> Resolver<'a> {
           }
         }
         Form::Use(tree) => self.apply_use(&mut scope, id, tree),
+        Form::Mod {
+          id: child,
+          used: Some(source),
+        } => {
+          for (name, origin) in
+            self.visible_members(Namespace::Module(*child), id)
+          {
+            self.bind(&mut scope, name, origin, source);
+          }
+        }
         _ => {}
       }
     }
@@ -1201,7 +1228,7 @@ impl<'a> Resolver<'a> {
           let body = self.rewrite_definition(id, body, kind, &internal);
           output.push(wrap_annotations(annotations, body));
         }
-        Form::Mod(child) => self.emit_module(child, output),
+        Form::Mod { id: child, .. } => self.emit_module(child, output),
         Form::Other(tree) => {
           let rewritten =
             self.rewrite(tree, Position::Value, id, &HashSet::new());
