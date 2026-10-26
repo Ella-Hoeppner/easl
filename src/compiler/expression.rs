@@ -1076,9 +1076,6 @@ impl TypedExp {
                         else {
                           return err(FnMissingArgumentList, source_trace);
                         };
-                        if children_iter.len() == 0 {
-                          return err(FunctionMissingBody, source_trace);
-                        }
                         let concrete_return_type: TypeState = match return_info
                         {
                           Some((return_type, return_type_source_trace, _)) => {

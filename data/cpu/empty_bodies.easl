@@ -1,0 +1,53 @@
+; Forms whose bodies are empty, as commenting a body out leaves them: a
+; lambda with no body is a function returning `()`, and a `when` with no
+; body still evaluates its condition. They're called directly, through a
+; higher-order function, as runtime-chosen function values, in GPU-valid
+; helpers (which the harness emits to WGSL), as dispatched compute shaders,
+; and in a frame callback.
+(defn noop [])
+
+(defn apply-twice [f: (Fn [] ())]
+  (f)
+  (f))
+
+(defn tick [@var @ref n: u32]: bool
+  (+= n 1u)
+  true)
+
+(defn shade [x: f32]: f32
+  (when (> x 0.))
+  ((fn []))
+  x)
+
+@fragment
+(defn frag []: @{location 0} vec4f
+  (when true)
+  (vec4f (shade 0.5)))
+
+@compute
+(defn empty-compute [])
+
+@cpu
+(defn main []
+  (let [@var count 0u
+        nothing (fn [])
+        ignore (fn [x: f32])]
+    (nothing)
+    (ignore 1.)
+    (apply-twice (fn []))
+    (apply-twice nothing)
+    (noop)
+    (when true)
+    (when (tick count))
+    (for [i 3u]
+      (when (> i 1u)))
+    (let [@var chosen nothing]
+      (= chosen (if (> count 0u) (fn []) noop))
+      (chosen))
+    (print count)
+    (print (shade 2.))
+    (dispatch-compute-shader empty-compute (vec3u 1u))
+    (dispatch-compute-shader (fn []) (vec3u 1u))
+    (spawn-window (fn []
+                    ((fn []))
+                    (close-window)))))

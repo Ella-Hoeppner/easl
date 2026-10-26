@@ -107,8 +107,6 @@ pub enum CompileErrorKind {
   InvalidDefn(String),
   #[error("Invalid function")]
   InvalidFunction,
-  #[error("Function missing body")]
-  FunctionMissingBody,
   #[error("Unrecognized top-level form")]
   UnrecognizedTopLevelForm(EaslTree),
   #[error("Invalid application `()`")]

@@ -1,0 +1,17 @@
+; Empty bodies on the audio thread: a bodiless lambda called each sample, and
+; a bodiless `when` whose condition still runs (advancing the state).
+(defn advance [@var @ref n: f32]: bool
+  (+= n 0.125)
+  true)
+
+(defn voice []: (Fn [] f32)
+  (let [@var level 0.]
+    (fn []
+      ((fn []))
+      (when (advance level))
+      level)))
+
+@cpu
+(defn main []
+  (start-audio (voice))
+  (spawn-window (fn [])))

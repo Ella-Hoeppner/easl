@@ -4164,7 +4164,8 @@ pub fn built_in_macros() -> Vec<Macro> {
         {
           let when_position = when_position.clone();
           let mut children = children.clone();
-          if children.len() > 2 {
+          // A `when` with no body still evaluates its condition.
+          if children.len() >= 2 {
             let condition = children.remove(1);
             let condition_position = condition.position().clone();
             std::mem::swap(
@@ -4202,9 +4203,7 @@ pub fn built_in_macros() -> Vec<Macro> {
           } else {
             Some(Err((
               SourceTrace::from(enclosing_position),
-              "\"when\" statement expects a condition and at least 1 body \
-                  statement"
-                .into(),
+              "\"when\" statement expects a condition".into(),
             )))
           }
         } else {

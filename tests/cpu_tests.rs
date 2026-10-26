@@ -587,6 +587,7 @@ cpu_test!(string_def);
 cpu_test!(heap_initializers);
 cpu_test!(closure_capture_ref_field);
 cpu_test!(ref_arg_bindings);
+cpu_test!(empty_bodies);
 
 /// `nested_lambda_returned_closure_chain` compiled and run on many fresh
 /// threads, each with new hash seeds: the specializations' closures once

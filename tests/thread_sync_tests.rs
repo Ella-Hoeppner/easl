@@ -897,6 +897,7 @@ thread_sync_test!(
 );
 thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
 thread_sync_test!(looped_audio_time, [Frame, AudioBatch(6)]);
+thread_sync_test!(audio_empty_bodies, [Frame, AudioBatch(4)]);
 thread_sync_test!(
   reset_audio_time,
   [
