@@ -755,7 +755,14 @@ impl VmAudioDriver {
         self.program.stack[slot] = self.audio_input_scratch[i].to_bits();
       }
       self.program.prepare_to_run_function(self.fn_index);
-      self.program.execute_collecting_midi(&mut self.midi_out);
+      let mut reset_time = false;
+      self
+        .program
+        .execute_audio(&mut self.midi_out, &mut reset_time);
+      // A reset by the sample's own code makes the next sample sample 0.
+      if reset_time {
+        self.sample_index = 0;
+      }
       emit(
         f32::from_bits(self.program.stack[self.return_position])
           .clamp(-1.0, 1.0),

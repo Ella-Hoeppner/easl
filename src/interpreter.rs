@@ -8325,6 +8325,9 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
   fn send_midi(&mut self, message: MidiMessage) {
     self.env.io.send_midi(message.as_bytes());
   }
+  fn reset_audio_time(&mut self) {
+    self.env.io.reset_audio_time();
+  }
   fn host_call(
     &mut self,
     op: &crate::vm::bytecode::HostOp,
@@ -9507,7 +9510,6 @@ fn vm_host_call<IO: IOManager>(
         return Err(WindowFeatureNotEnabled.into());
       }
     }
-    HostOp::ResetAudioTime => env.io.reset_audio_time(),
     HostOp::StartListening { device_slot } => {
       let device = device_slot.map(|slot| {
         words_to_string(heap_string_words(heap, stack[slot as usize]))

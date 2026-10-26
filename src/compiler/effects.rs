@@ -256,6 +256,7 @@ impl EffectType {
         | "concat"
         | "reverse"
         | "audio-time"
+        | "reset-audio-time"
     ) || MidiOutKind::BUILTIN_NAMES.contains(&name)
   }
   pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {

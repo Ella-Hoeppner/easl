@@ -377,6 +377,9 @@ pub enum Op {
   // CPU, the audio driver's batch on the audio thread. A message that
   // can't be built traps.
   SendMidi,
+  // `(reset-audio-time)`, in both modes: the host restarts the audio clock
+  // (`VmHost::reset_audio_time`). No operands.
+  ResetAudioTime,
 
   // Host interface (CPU-runtime mode only; never emitted for audio).
   // `arg_positions[0]` indexes `Code::host_ops`. Everything the CPU
@@ -533,7 +536,11 @@ impl Instruction {
     match self.op {
       // HostCall operands are metadata-table indices, not slots; the slots
       // host ops touch are covered by `Code::min_stack_size`.
-      Op::InvokeFunction | Op::Return | Op::Jump | Op::HostCall => 0,
+      Op::InvokeFunction
+      | Op::Return
+      | Op::Jump
+      | Op::HostCall
+      | Op::ResetAudioTime => 0,
       // The length operand is an immediate.
       Op::CheckIndex | Op::CheckNonNegativeIndex => self.arg_positions[0],
       Op::Constant => self.return_position,
@@ -927,8 +934,6 @@ pub enum HostOp {
   StartAudio {
     entry: u16,
   },
-  /// `(reset-audio-time)`.
-  ResetAudioTime,
   /// `(start-listening)` / `(start-listening-from device)`: begin real-time
   /// audio capture. `device_slot` is `None` for the default input device,
   /// or `Some(slot)` where `slot` holds a device-name string's heap id.
@@ -1234,6 +1239,8 @@ pub trait VmHost {
   ) -> Result<Option<HostSuspendReason>, Self::Error>;
   /// Sends a MIDI message (`Op::SendMidi`).
   fn send_midi(&mut self, message: MidiMessage);
+  /// Restarts the audio clock (`Op::ResetAudioTime`).
+  fn reset_audio_time(&mut self);
 }
 
 /// Host for pure-math execution (audio, tests): host calls never occur.
@@ -1255,14 +1262,19 @@ impl VmHost for NoopHost {
   fn send_midi(&mut self, _message: MidiMessage) {
     unreachable!("MIDI sent in hostless VM execution")
   }
+  fn reset_audio_time(&mut self) {
+    unreachable!("audio clock reset in hostless VM execution")
+  }
 }
 
-/// Host for audio-thread execution: host calls never occur, and MIDI
-/// messages are collected for the audio driver to send after its batch.
-pub struct MidiCollectingHost<'a> {
-  pub messages: &'a mut Vec<MidiMessage>,
+/// Host for audio-thread execution: host calls never occur, MIDI messages
+/// are collected for the audio driver to send after its batch, and a clock
+/// reset is recorded for the driver to apply after the sample.
+pub struct AudioHost<'a> {
+  pub midi_out: &'a mut Vec<MidiMessage>,
+  pub reset_time: &'a mut bool,
 }
-impl VmHost for MidiCollectingHost<'_> {
+impl VmHost for AudioHost<'_> {
   type Error = std::convert::Infallible;
   fn host_call(
     &mut self,
@@ -1277,7 +1289,10 @@ impl VmHost for MidiCollectingHost<'_> {
     unreachable!("host call encountered in audio VM execution")
   }
   fn send_midi(&mut self, message: MidiMessage) {
-    self.messages.push(message);
+    self.midi_out.push(message);
+  }
+  fn reset_audio_time(&mut self) {
+    *self.reset_time = true;
   }
 }
 
@@ -1584,10 +1599,18 @@ impl BytecodeProgram {
       Err(never) => match never {},
     }
   }
-  /// [`Self::execute`], appending the MIDI messages the run sends to
-  /// `messages` (audio-thread execution).
-  pub fn execute_collecting_midi(&mut self, messages: &mut Vec<MidiMessage>) {
-    match self.execute_with_host(&mut MidiCollectingHost { messages }) {
+  /// [`Self::execute`] on the audio thread: appends the MIDI messages the
+  /// run sends to `midi_out`, and sets `reset_time` if it resets the audio
+  /// clock.
+  pub fn execute_audio(
+    &mut self,
+    midi_out: &mut Vec<MidiMessage>,
+    reset_time: &mut bool,
+  ) {
+    match self.execute_with_host(&mut AudioHost {
+      midi_out,
+      reset_time,
+    }) {
       Ok(RunResult::Trapped(trap)) => panic!("easl runtime error: {trap}"),
       Ok(_) => {}
       Err(never) => match never {},
@@ -1885,6 +1908,7 @@ impl BytecodeProgram {
             Err(error) => trap!(Trap::Midi(error)),
           }
         }
+        Op::ResetAudioTime => host.reset_audio_time(),
         Op::MarkGpuNewer => {
           gpu_newer[instruction.arg_positions[0] as usize] = true;
         }

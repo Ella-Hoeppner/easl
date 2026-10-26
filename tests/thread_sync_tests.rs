@@ -909,6 +909,7 @@ thread_sync_test!(
     AudioBatch(2)
   ]
 );
+thread_sync_test!(audio_reset_audio_time, [Frame, AudioBatch(7)]);
 thread_sync_test!(
   reset_looped_audio_time,
   [Frame, AudioBatch(3), Frame, AudioBatch(3)]

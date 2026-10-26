@@ -2852,10 +2852,11 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
-    // Restarts the audio clock: `t`, `(audio-time)`, and
-    // `(audio-time period)` count from 0 again from the audio thread's
-    // next batch. Main-thread only; carries `Window` so a statement-position
-    // call isn't pruned.
+    // Restarts the audio clock: `(audio-time)` and `(audio-time period)`
+    // count from 0 again, from the audio thread's next batch when called on
+    // the main thread, or from the next sample when called by audio code
+    // (`cpu_exclusive_function_allowed_in_audio`). Carries `Window` so a
+    // statement-position call isn't pruned.
     AbstractFunctionSignature {
       name: "reset-audio-time".into(),
       arg_types: vec![],

@@ -1,0 +1,13 @@
+; Audio code can reset the audio clock itself: the sample that calls
+; `reset-audio-time` keeps its time, and the next sample is sample 0. Here
+; the clock wraps whenever it reaches 0.25 (2 samples at 8 per second).
+(defn looping []: f32
+  (let [t (audio-time)]
+    (when (>= t 0.25)
+      (reset-audio-time))
+    t))
+
+@cpu
+(defn main []
+  (start-audio looping)
+  (spawn-window (fn [] ())))

@@ -415,7 +415,7 @@ With a `period`, the clock loops: it counts up from `0.` to `period` and starts 
 (reset-audio-time): ()
 ```
 
-Restarts the audio clock: from the audio thread's next buffer, `(audio-time)` and `(audio-time period)` count from `0.` again. Handy for restarting a patch without restarting the program. Stateful closures keep their state; call `start-audio` with a fresh closure to reset that too. CPU code only.
+Restarts the audio clock: `(audio-time)` and `(audio-time period)` count from `0.` again. Called from CPU code, it takes effect from the audio thread's next buffer, which is handy for restarting a patch without restarting the program. Called from audio code, the current sample keeps its time and the next one is at `0.`. The clock is the whole stream's, so a reset affects every voice. Stateful closures keep their state; call `start-audio` with a fresh closure to reset that too.
 
 ### `audio-input`
 

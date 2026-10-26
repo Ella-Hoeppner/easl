@@ -1445,6 +1445,14 @@ impl BytecodeCompilationState {
     arg_types: &[Type],
     return_type: &Type,
   ) -> Option<u16> {
+    if f_name == "reset-audio-time" {
+      self.push_instruction(Instruction {
+        op: Op::ResetAudioTime,
+        arg_positions: [0; 3],
+        return_position: 0,
+      });
+      return None;
+    }
     // `(audio-time period)` (the zero-argument form is rewritten into a
     // var read by `extract_audio_info`).
     if f_name == "audio-time" {
@@ -4181,10 +4189,6 @@ impl TypedExp {
           .compile_to_bytecode(CompilePosition::Value, state)
           .expect("send-midi-sysex data produced no value");
         state.emit_host_op(HostOp::SendMidiSysex { data_slot });
-        Some(None)
-      }
-      "reset-audio-time" => {
-        state.emit_host_op(HostOp::ResetAudioTime);
         Some(None)
       }
       "select-midi-output" => {
