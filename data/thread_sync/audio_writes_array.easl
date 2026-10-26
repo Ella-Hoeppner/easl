@@ -4,9 +4,9 @@
 (var buf: [f32])
 
 @audio
-(defn f [t: f32]: f32
-  (= (buf (% (u32 (* t (sample-rate))) 3u))
-     t)
+(defn f []: f32
+  (= (buf (% (u32 (* (audio-time) (sample-rate))) 3u))
+     (audio-time))
   0.)
 
 @cpu

@@ -1,6 +1,6 @@
 ; `start-audio` needs a statically-known function.
-(defn a [t: f32]: f32 (sin t))
-(defn b [t: f32]: f32 (cos t))
+(defn a []: f32 (sin (audio-time)))
+(defn b []: f32 (cos (audio-time)))
 @cpu
 (defn main []
   (let [fs [a b]]

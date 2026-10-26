@@ -1,8 +1,8 @@
 ; `reset-audio-time` is called from the main thread, not the audio thread.
 @audio
-(defn f [t: f32]: f32
+(defn f []: f32
   (reset-audio-time)
-  t)
+  (audio-time))
 
 @cpu
 (defn main []

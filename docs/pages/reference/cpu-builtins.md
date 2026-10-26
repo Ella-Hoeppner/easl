@@ -388,7 +388,7 @@ See [audio](../cpu.md#audio) in the runtime guide.
 (start-audio f: (Fn [f32] f32)): ()
 ```
 
-Starts (or switches) the audio output stream. `f` is called once per sample, optionally with the time in seconds, and returns a sample in `[-1, 1]`. Usually a closure, whose captured state persists between samples. Each call hands off the function it's given, so call it once or when the sound should change, not every frame.
+Starts (or switches) the audio output stream. `f` takes no arguments and is called once per sample, returning a sample in `[-1, 1]`; `(audio-time)` gives the time in seconds. Usually a closure, whose captured state persists between samples. Each call hands off the function it's given, so call it once or when the sound should change, not every frame.
 
 ### `sample-rate`
 
@@ -415,7 +415,7 @@ With a `period`, the clock loops: it counts up from `0.` to `period` and starts 
 (reset-audio-time): ()
 ```
 
-Restarts the audio clock: from the audio thread's next buffer, an audio entry's `t` argument, `(audio-time)`, and `(audio-time period)` all count from `0.` again. Handy for restarting a patch without restarting the program. Stateful closures keep their state; call `start-audio` with a fresh closure to reset that too. CPU code only.
+Restarts the audio clock: from the audio thread's next buffer, `(audio-time)` and `(audio-time period)` count from `0.` again. Handy for restarting a patch without restarting the program. Stateful closures keep their state; call `start-audio` with a fresh closure to reset that too. CPU code only.
 
 ### `audio-input`
 
@@ -459,8 +459,8 @@ Loads a `.wav` file as mono samples (multi-channel files are averaged). `load-wa
 @cpu
 (defn main []
   (= kick (load-wav "kick.wav"))
-  (start-audio (fn [t: f32]
-                 (let [i (u32 (* t (sample-rate)))]
+  (start-audio (fn []
+                 (let [i (u32 (* (audio-time) (sample-rate)))]
                    (if (< i (array-length kick)) (kick i) 0.))))
   (spawn-window (fn [] ())))
 ```

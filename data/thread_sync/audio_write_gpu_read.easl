@@ -11,8 +11,8 @@
 (var out: [1: f32])
 
 @audio
-(defn f [t: f32]: f32
-  (= level t)
+(defn f []: f32
+  (= level (audio-time))
   0.)
 
 @{workgroup-size 1}

@@ -10618,8 +10618,8 @@ fn try_compile_audio_bytecode(
 /// pointer, so the wrapper stores the ambient audio info into the
 /// implicit `easl_audio_time`/`easl_sample_rate` globals (when the
 /// program uses them — the fixed names are what make this generable
-/// against a separate compilation of the same source) and forwards `t`
-/// to the actual 0- or 1-arg entry.
+/// against a separate compilation of the same source) and calls the
+/// entry.
 #[cfg(all(feature = "window", feature = "c_audio"))]
 fn append_c_audio_wrappers(program: &Program, c_source: &mut String) {
   let has_var =
@@ -10638,20 +10638,8 @@ fn append_c_audio_wrappers(program: &Program, c_source: &mut String) {
     }
   );
   for name in program.find_fn_names_by_entry_point(|e| e == EntryPoint::Audio) {
-    let arg_count = program
-      .abstract_functions
-      .get(name.as_str())
-      .into_iter()
-      .flatten()
-      .next()
-      .map(|signature| signature.read().unwrap().arg_types.len())
-      .unwrap_or(0);
     let entry_c = compile_word(name.as_str().into());
-    let call = if arg_count > 0 {
-      format!("{entry_c}(t)")
-    } else {
-      format!("{entry_c}()")
-    };
+    let call = format!("{entry_c}()");
     c_source.push_str(&format!(
       "\nfloat {entry_c}_easl_audio_wrapper(float t, float rate) {{\n\
        {stores}  (void)rate;\n  return {call};\n}}\n"

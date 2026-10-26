@@ -8,7 +8,7 @@
      0.5)
 
 @audio
-(defn f [t: f32]: f32
+(defn f []: f32
   (= phase (+ phase 0.125))
   phase)
 

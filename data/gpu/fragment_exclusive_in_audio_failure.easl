@@ -2,8 +2,8 @@
 ; must be a compile error, not the VM-compile `todo!()` panic it used to
 ; be.
 @audio
-(defn f [t: f32]: f32
-  (dpdx t))
+(defn f []: f32
+  (dpdx (audio-time)))
 
 @cpu
 (defn main []

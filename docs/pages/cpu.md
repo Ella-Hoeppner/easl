@@ -71,7 +71,7 @@ Render dispatches draw to the window unless `set-render-target` points them at a
 
 ## Audio
 
-`start-audio` calls a function once per sample on a real-time audio thread. The function takes no arguments, or the time in seconds, and returns a sample between `-1.` and `1.`. It's usually a closure, whose variables carry state from one sample to the next:
+`start-audio` calls a function once per sample on a real-time audio thread. The function takes no arguments (`(audio-time)` gives the time in seconds) and returns a sample between `-1.` and `1.`. It's usually a closure, whose variables carry state from one sample to the next:
 
 ```easl
 (defn sine [freq: f32]: (Fn [] f32)

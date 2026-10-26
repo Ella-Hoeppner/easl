@@ -4,11 +4,11 @@
 ; preserved across the switch (an entry switch is a live-performance move,
 ; not a restart).
 @audio
-(defn f [t: f32]: f32
-  t)
+(defn f []: f32
+  (audio-time))
 
 @audio
-(defn g [t: f32]: f32
-  (- 0. t))
+(defn g []: f32
+  (- 0. (audio-time)))
 
 @cpu (defn main [])

@@ -22,9 +22,10 @@
           (+= sum (* layer.weight (layer.f x)))))
       sum)))
 
-(defn voice [merges: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
-  (fn [t]
-    (* 0.5 (+ ((merges 0u) t) ((merges 1u) t)))))
+(defn voice [merges: [2: (Fn [f32] f32)]]: (Fn [] f32)
+  (fn []
+    (let [t (audio-time)]
+      (* 0.5 (+ ((merges 0u) t) ((merges 1u) t))))))
 
 @cpu
 (defn main []

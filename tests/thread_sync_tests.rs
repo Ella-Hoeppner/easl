@@ -921,7 +921,6 @@ thread_sync_test!(
   audio_closure_scope,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
 );
-thread_sync_test!(audio_entry_one_arg, [Frame, AudioBatch(4)]);
 thread_sync_test!(ref_wavetable, [Frame, AudioBatch(8)]);
 thread_sync_test!(granular_engine, [Frame, AudioBatch(6), Frame]);
 thread_sync_test!(audio_two_combs, [Frame, AudioBatch(6)]);

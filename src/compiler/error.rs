@@ -484,10 +484,7 @@ pub enum CompileErrorKind {
   ComputeEntryReturnAttributes,
   #[error("Audio entry point must return an f32")]
   AudioEntryHasWrongReturnType,
-  #[error(
-    "Audio functions take at most one f32 argument (the time); use \
-     `(sample-rate)` and `(audio-time)` for ambient audio info"
-  )]
+  #[error("Audio functions take no arguments")]
   AudioEntryHasWrongArgumentTypes,
   #[error(
     "`{0}` may only be called from audio functions (the function passed to \

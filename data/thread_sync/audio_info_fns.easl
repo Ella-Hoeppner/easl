@@ -5,8 +5,8 @@
 ; `sample-rate` also works on the main thread — it reports the rate the
 ; stream runs (or would run) at, here the harness's 8 Hz.
 @audio
-(defn f [t: f32]: f32
-  (+ (* 100. (- (audio-time) t))
+(defn f []: f32
+  (+ (* 100. (- (audio-time) (audio-time)))
      (/ 1. (sample-rate))))
 
 @cpu

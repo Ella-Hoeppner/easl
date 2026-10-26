@@ -18,8 +18,8 @@
   (fn [pos] pos))
 
 @audio
-(defn tone [t: f32]: f32
-  (sin (* 440. t)))
+(defn tone []: f32
+  (sin (* 440. (audio-time))))
 
 @cpu
 (defn main []

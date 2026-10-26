@@ -6515,15 +6515,9 @@ impl Program {
                 ));
                 errored = true;
               }
-              // Audio entries take at most one f32 arg: the time. (A
-              // stateful closure entry usually takes none; ambient info
-              // is available via `audio-time`/`sample-rate`.)
-              if signature.args.len() > 1
-                || signature
-                  .args
-                  .iter()
-                  .any(|(arg, _)| arg.var_type.unwrap_known() != Type::F32)
-              {
+              // Audio entries take no arguments: ambient info is
+              // available via `audio-time`/`sample-rate`.
+              if !signature.args.is_empty() {
                 errors.log(CompileError::new(
                   AudioEntryHasWrongArgumentTypes,
                   f.expression.source_trace.clone(),

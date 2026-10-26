@@ -14,5 +14,5 @@
         two (wrap one 0.125)
         three (wrap two 0.25)
         four (wrap three -0.5)]
-    (start-audio four)
+    (start-audio (fn [] (four (audio-time))))
     (spawn-window (fn [] (print 1u)))))

@@ -6,9 +6,10 @@
 
 (defn triple [x: f32]: f32 (* x 3.))
 
-(defn voice [fs: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
-  (fn [t]
-    (* 0.125 (+ ((fs 0u) t) ((fs 1u) t)))))
+(defn voice [fs: [2: (Fn [f32] f32)]]: (Fn [] f32)
+  (fn []
+    (let [t (audio-time)]
+      (* 0.125 (+ ((fs 0u) t) ((fs 1u) t))))))
 
 @cpu
 (defn main []

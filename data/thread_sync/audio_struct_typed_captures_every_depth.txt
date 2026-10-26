@@ -1,10 +1,8 @@
-main-publish: <audio-scope>_g
-main-publish: <audio-scope>_k
+main-publish: <audio-scope>_four
 start-audio: <audio-closure>
 spawn-window
 frame 0
 print: 1u
 audio-batch 0 x2
-audio-adopt: <audio-scope>_g
-audio-adopt: <audio-scope>_k
+audio-adopt: <audio-scope>_four
 samples: -0.125 -0.0625

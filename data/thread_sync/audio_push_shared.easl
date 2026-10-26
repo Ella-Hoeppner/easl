@@ -3,8 +3,8 @@
 ; batch boundary publishes the reallocated array, and main adopts it.
 (var events: [f32])
 
-(defn voice [t: f32]: f32
-  (= events (push events t))
+(defn voice []: f32
+  (= events (push events (audio-time)))
   0.)
 
 @cpu

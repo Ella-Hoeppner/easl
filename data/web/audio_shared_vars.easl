@@ -5,10 +5,10 @@
 (var heard-gain: f32)
 (var samples: u32)
 
-(defn tone [t: f32]: f32
+(defn tone []: f32
   (+= samples 1u)
   (= heard-gain gain)
-  (* gain (sin (* 2764.6 t))))
+  (* gain (sin (* 2764.6 (audio-time)))))
 
 @cpu
 (defn main []

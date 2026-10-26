@@ -513,12 +513,6 @@ pub struct VmAudioDriver {
   function_names: Vec<Arc<str>>,
   fn_index: usize,
   return_position: usize,
-  /// Whether the entry takes the optional `t` argument (0..=1 args): a
-  /// stateful closure entry usually takes none.
-  arg_words: usize,
-  /// Slot of the entry's `t` argument, when it takes one (args follow the
-  /// reserved return slot, so this is distinct from `return_position`).
-  arg_position: usize,
   /// Slot of the implicit `easl_audio_time` var, present iff the program
   /// calls `(audio-time)` (see `Program::extract_audio_info`). Written
   /// before every sample.
@@ -578,9 +572,6 @@ impl VmAudioDriver {
     let fn_index = find_audio_fn_index(entry_name, function_names)?;
     let return_position =
       program.get_function_return_position(fn_index) as usize;
-    let arg_words = program.code.functions[fn_index].arg_words as usize;
-    let arg_position =
-      program.code.functions[fn_index].first_arg_position as usize;
     let time_slot = program
       .get_global_slot("easl_audio_time")
       .map(|(slot, _)| slot as usize);
@@ -613,8 +604,6 @@ impl VmAudioDriver {
       function_names: function_names.to_vec(),
       fn_index,
       return_position,
-      arg_words,
-      arg_position,
       time_slot,
       rate_slot,
       midi_cc_slot,
@@ -714,9 +703,6 @@ impl VmAudioDriver {
     self.fn_index = fn_index;
     self.return_position =
       self.program.get_function_return_position(fn_index) as usize;
-    self.arg_words = self.program.code.functions[fn_index].arg_words as usize;
-    self.arg_position =
-      self.program.code.functions[fn_index].first_arg_position as usize;
   }
 
   /// Runs one batch of `frames` samples, calling `emit` with each computed
@@ -758,17 +744,10 @@ impl VmAudioDriver {
       }
     }
     for i in 0..frames {
-      // The audio entry takes at most one f32 arg, `t`, living just past
-      // the reserved return slot at the frame start. Zero-arg entries
-      // (e.g. stateful closures) receive nothing and can read
-      // `(audio-time)` instead.
       let t = self.sample_index as f32 / rate;
       self.program.audio_samples = self.sample_index;
       self.program.audio_rate = rate;
       self.sample_index = self.sample_index.wrapping_add(1);
-      if self.arg_words > 0 {
-        self.program.stack[self.arg_position] = t.to_bits();
-      }
       if let Some(slot) = self.time_slot {
         self.program.stack[slot] = t.to_bits();
       }

@@ -9,8 +9,8 @@
   (load-wav name))
 
 @audio
-(defn tone [t: f32]: f32
-  (let [i (u32 (* t (sample-rate)))]
+(defn tone []: f32
+  (let [i (u32 (* (audio-time) (sample-rate)))]
     (if (< i (array-length sample))
       (sample i)
       0.)))

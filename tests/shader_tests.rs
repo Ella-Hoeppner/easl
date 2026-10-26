@@ -741,6 +741,10 @@ error_test!(
   )
 );
 error_test!(
+  audio_entry_with_argument_failure,
+  CompileErrorKind::AudioEntryHasWrongArgumentTypes
+);
+error_test!(
   print_in_audio_failure,
   CompileErrorKind::CPUExclusiveFunctionInAudioFunction("print".to_string())
 );

@@ -123,8 +123,8 @@
 @local
 (var drum-fm-state: [3: f32])
 
-(defn audio [t: f32]: f32
-  (set-rand-seed t)
+(defn audio []: f32
+  (set-rand-seed (audio-time))
   (let [melody [[1.5 (slider 0)]
                 [1.75 (slider 0)]
                 [1.5 (slider 0.6402101)]
@@ -134,7 +134,7 @@
                 [2.75 (slider 0)]
                 [2.25 (slider 0.139337)]]
         time-factor (/ (slider 0.3))
-        scaled-t (* t time-factor)
+        scaled-t (* (audio-time) time-factor)
         melody-value (-> scaled-t
                          u32
                          (% (array-length melody))
@@ -146,13 +146,13 @@
     (fm-update main-fm-state
                [(vec2f 2. (* fundamental 0.25))
                 (vec2f 1.33333 (* fundamental 0.5))]
-               t
+               (audio-time)
                dt)
     (fm-update drum-fm-state
                [(vec2f 1.5 (* drum-fundamental 0.5))
                 (vec2f 2. (* drum-fundamental 2.))
                 (vec2f 1.5 (* drum-fundamental 0.5))]
-               t
+               (audio-time)
                dt)
     (let [unfiltered-sample (+ (* (slider 1.)
                                   (beat (+ (/ scaled-t 2.) (/ 8))
@@ -163,7 +163,7 @@
                                       (* drum-fundamental)
                                       osc
                                       (sympow 0.2))
-                                  #_(sympow (osc (* t 50.))
+                                  #_(sympow (osc (* (audio-time) 50.))
                                             (slider 0.23405948)))
                                (* (slider 0.3)
                                   (max (beat (+ (/ scaled-t 2.) (/ 3. 16.))
@@ -188,7 +188,7 @@
               (slider 1.)))
       (* (slider 0.25) filter))))
 
-#_(defn audio-2 [t: f32]: f32
+#_(defn audio-2 []: f32
     (let [fundamental 80.
           divisions 100u
           range 7.
@@ -203,9 +203,9 @@
                         f32
                         (/ (f32 (- divisions 1)))
                         (* range))]
-              (* (spectrum-amplitude f t)
+              (* (spectrum-amplitude f (audio-time))
                  (osc (+ (rand)
-                         (* t fundamental (pow 2 f))))))))
+                         (* (audio-time) fundamental (pow 2 f))))))))
       (= filter
          (mix filter
               #_sum
@@ -277,16 +277,16 @@
 @local
 (var main-synth-fm-state: [3: f32])
 
-(defn audio-3 [t: f32]: f32
+(defn audio-3 []: f32
   (let [fundamental 110
         dt (/ 44100)]
     (fm-update main-fm-state
                [(vec2f 2. (* fundamental 0.25))
                 (vec2f 1.33333 (* fundamental 0.5))]
-               t
+               (audio-time)
                dt)
     (last main-fm-state))
-  #_(osc (* t 110)))
+  #_(osc (* (audio-time) 110)))
 
 @cpu
 (defn main []: ()

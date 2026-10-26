@@ -1,0 +1,12 @@
+; Audio functions take no arguments: the time is `(audio-time)`. Both a
+; one-argument `@audio` function and a one-argument lambda handed to
+; `start-audio` are rejected.
+@audio
+(defn f [t: f32]: f32
+  t)
+
+@cpu
+(defn main []
+  (start-audio f)
+  (start-audio (fn [x: f32] (* x 0.5)))
+  (spawn-window (fn [] ())))

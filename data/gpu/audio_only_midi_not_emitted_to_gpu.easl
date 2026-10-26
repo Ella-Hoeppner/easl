@@ -6,7 +6,7 @@
 ; binding would dangle. A compiler-generated GPU-space var emits only when
 ; a shader actually uses it.
 @audio
-(defn synth [t: f32]: f32
+(defn synth []: f32
   (match (get-midi-note 60u)
     (Some n) n.velocity
     None 0.))

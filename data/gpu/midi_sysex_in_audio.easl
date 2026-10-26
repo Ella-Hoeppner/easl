@@ -1,9 +1,9 @@
 ; Short MIDI messages can be sent from the audio thread, but a
 ; system-exclusive message (any length) is main-thread only.
 @audio
-(defn f [t: f32]: f32
+(defn f []: f32
   (send-midi-sysex ~[1u 2u])
-  t)
+  (audio-time))
 
 @cpu
 (defn main []
