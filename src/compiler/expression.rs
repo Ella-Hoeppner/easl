@@ -4158,6 +4158,37 @@ impl TypedExp {
               }
             }
           }
+          // An argument to a `@var @ref` parameter is written, so it must
+          // be mutable too. Checked here, where a lambda still sees the
+          // bindings it captures by their own names (after closure
+          // extraction, a capture is a field of the closure's scope).
+          if let Type::Function(signature) = f.data.unwrap_known()
+            && let Some(ancestor) = &signature.abstract_ancestor
+            && let ancestor = ancestor.read().unwrap()
+            && let FunctionImplementationKind::Composite(_) =
+              ancestor.implementation
+          {
+            for (arg, (_, ownership)) in args.iter().zip(&ancestor.arg_types) {
+              if *ownership != Ownership::MutableReference {
+                continue;
+              }
+              let Some(var_name) = arg.name_or_inner_accessed_name() else {
+                continue;
+              };
+              let error = match arg.data.ownership {
+                Ownership::Reference => Some(ReferenceMustBeMutable),
+                Ownership::Owned
+                  if ctx.get_variable_kind(var_name) != VariableKind::Var =>
+                {
+                  Some(ImmutableOwnedPassedAsMutableReference)
+                }
+                _ => None,
+              };
+              if let Some(error) = error {
+                return err(error, arg.source_trace.clone());
+              }
+            }
+          }
           for arg in args {
             arg.validate_assignments_inner(ctx)?;
           }

@@ -864,6 +864,10 @@ error_test!(
   ownership_failure_owned_immutable,
   CompileErrorKind::ImmutableOwnedPassedAsMutableReference
 );
+error_test!(
+  captured_immutable_mutable_ref_failure,
+  CompileErrorKind::ImmutableOwnedPassedAsMutableReference
+);
 error_test!(duplicate_field, CompileErrorKind::DuplicateStructFieldName);
 error_test!(
   duplicate_variant_simple,

@@ -1,0 +1,10 @@
+; Passing an immutable binding to a `@var @ref` parameter is an error inside
+; a closure that captures it, just as it is directly.
+(defn f [@var @ref x: f32]
+  (+= x 1.))
+
+@cpu
+(defn main []
+  (let [x 0.
+        apply-f (fn [] (f x) (print x))]
+    (apply-f)))
