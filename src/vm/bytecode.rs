@@ -900,6 +900,7 @@ pub enum HostOp {
     frag: u16,
     sets: u16,
     vert_count_slot: u16,
+    instance_count_slot: u16,
   },
   WindowQuery {
     kind: WindowQueryKind,

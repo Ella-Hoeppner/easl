@@ -2696,39 +2696,50 @@ fn render_setting_functions() -> Vec<AbstractFunctionSignature> {
   signatures
 }
 
+/// `(dispatch-render-shaders vert frag vertex-count)`, and with
+/// `instanced` a trailing instance count.
+fn dispatch_render_shaders(instanced: bool) -> AbstractFunctionSignature {
+  let mut arg_types = vec![
+    AbstractType::Generic("V".into()).owned(),
+    AbstractType::Generic("F".into()).owned(),
+    AbstractType::Type(Type::U32).owned(),
+  ];
+  if instanced {
+    arg_types.push(AbstractType::Type(Type::U32).owned());
+  }
+  AbstractFunctionSignature {
+    name: "dispatch-render-shaders".into(),
+    generic_args: vec![
+      (
+        "V".into(),
+        GenericArgument::Type(vec![TypeConstraint::function()]),
+        SourceTrace::empty(),
+      ),
+      (
+        "F".into(),
+        GenericArgument::Type(vec![TypeConstraint::function()]),
+        SourceTrace::empty(),
+      ),
+    ],
+    arg_types,
+    return_type: AbstractType::Unit,
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: vec![
+        Effect::Window,
+        Effect::CPUExclusiveFunction("dispatch-render-shaders".into()),
+      ]
+      .into(),
+      target_configuration: FunctionTargetConfiguration::Default,
+      target_specific_emulations: HashSet::new(),
+    },
+    ..Default::default()
+  }
+}
+
 fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   vec![
-    AbstractFunctionSignature {
-      name: "dispatch-render-shaders".into(),
-      generic_args: vec![
-        (
-          "V".into(),
-          GenericArgument::Type(vec![TypeConstraint::function()]),
-          SourceTrace::empty(),
-        ),
-        (
-          "F".into(),
-          GenericArgument::Type(vec![TypeConstraint::function()]),
-          SourceTrace::empty(),
-        ),
-      ],
-      arg_types: vec![
-        AbstractType::Generic("V".into()).owned(),
-        AbstractType::Generic("F".into()).owned(),
-        AbstractType::Type(Type::U32).owned(),
-      ],
-      return_type: AbstractType::Unit,
-      implementation: FunctionImplementationKind::Builtin {
-        effect_type: vec![
-          Effect::Window,
-          Effect::CPUExclusiveFunction("dispatch-render-shaders".into()),
-        ]
-        .into(),
-        target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashSet::new(),
-      },
-      ..Default::default()
-    },
+    dispatch_render_shaders(false),
+    dispatch_render_shaders(true),
     AbstractFunctionSignature {
       name: "dispatch-compute-shader".into(),
       generic_args: vec![(

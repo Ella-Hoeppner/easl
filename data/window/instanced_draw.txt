@@ -1,0 +1,5 @@
+spawn-window
+dispatch-render-shaders v f 3 10
+dispatch-render-shaders v f 6
+dispatch-render-shaders v f 6
+close-window

@@ -18,16 +18,20 @@ fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
       } else if line == "spawn-window" {
         IOEvent::SpawnWindow
       } else if let Some(rest) = line.strip_prefix("dispatch-render-shaders ") {
-        let parts: Vec<&str> = rest.splitn(3, ' ').collect();
-        assert_eq!(
-          parts.len(),
-          3,
+        // `<vert> <frag> <vertex count>`, then the instance count when
+        // it isn't 1
+        let parts: Vec<&str> = rest.split(' ').collect();
+        assert!(
+          parts.len() == 3 || parts.len() == 4,
           "{name}: malformed dispatch-render-shaders line: {line:?}"
         );
         IOEvent::DispatchShaders {
           vert: parts[0].to_string(),
           frag: parts[1].to_string(),
           vert_count: parts[2].parse().expect("vert_count must be u32"),
+          instance_count: parts
+            .get(3)
+            .map_or(1, |n| n.parse().expect("instance_count must be u32")),
         }
       } else if let Some(rest) = line.strip_prefix("dispatch-compute-shader ") {
         let (entry, counts) =
@@ -146,6 +150,7 @@ macro_rules! window_test {
 }
 
 window_test!(simple);
+window_test!(instanced_draw);
 window_test!(indirect);
 window_test!(vec4f_in_between);
 window_test!(abstraction);

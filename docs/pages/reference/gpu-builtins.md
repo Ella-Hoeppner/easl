@@ -20,7 +20,7 @@ Every wgsl [builtin input](https://www.w3.org/TR/WGSL/#builtin-inputs-outputs) c
 (instance-index): u32
 ```
 
-**Vertex.** The index of the current instance.
+**Vertex.** The index of the current instance, from 0 up to the draw's instance count (see [`dispatch-render-shaders`](cpu-builtins.md#dispatch-render-shaders)).
 
 ### `position`
 

@@ -147,6 +147,7 @@ mod window_region {
       vert: entry("vert"),
       frag: entry(frag),
       vert_count: 3,
+      instance_count: 1,
       pre_upload: vec![],
       settings: RenderSettings::default(),
       render_target: None,

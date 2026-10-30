@@ -426,6 +426,7 @@ enum RenderItem {
     vert: u16,
     frag: u16,
     vert_count: u32,
+    instance_count: u32,
     settings: RenderSettings,
     target: Option<(u8, u8)>,
   },
@@ -482,6 +483,7 @@ struct PlannedDraw {
   /// when the pipeline also binds it as a texture.
   placeholder: Option<Vec<wgpu::BindGroup>>,
   vert_count: u32,
+  instance_count: u32,
   blend_constant: [f32; 4],
 }
 
@@ -1377,6 +1379,7 @@ impl GpuCore {
           vert,
           frag,
           vert_count,
+          instance_count,
           settings,
           target,
         } => {
@@ -1418,6 +1421,7 @@ impl GpuCore {
             pipeline: index,
             placeholder,
             vert_count,
+            instance_count,
             blend_constant: settings.blend_constant(),
           });
         }
@@ -1491,7 +1495,7 @@ impl GpuCore {
           let [r, g, b, a] = blend_constant.map(f64::from);
           render_pass.set_blend_constant(wgpu::Color { r, g, b, a });
         }
-        render_pass.draw(0..draw.vert_count, 0..1);
+        render_pass.draw(0..draw.vert_count, 0..draw.instance_count);
       }
     }
     self.queue.submit(std::iter::once(encoder.finish()));
@@ -1764,6 +1768,7 @@ impl GpuCore {
           vert,
           frag,
           vert_count,
+          instance_count,
           pre_upload,
           settings,
           render_target,
@@ -1778,6 +1783,7 @@ impl GpuCore {
             vert: *vert,
             frag: *frag,
             vert_count: *vert_count,
+            instance_count: *instance_count,
             settings: *settings,
             target: *render_target,
           });
@@ -2361,6 +2367,7 @@ impl GpuCore {
           vert,
           frag,
           vert_count,
+          instance_count,
           pre_upload,
           settings,
           render_target,
@@ -2376,6 +2383,7 @@ impl GpuCore {
             vert: *vert,
             frag: *frag,
             vert_count: *vert_count,
+            instance_count: *instance_count,
             settings: *settings,
             target: *render_target,
           });

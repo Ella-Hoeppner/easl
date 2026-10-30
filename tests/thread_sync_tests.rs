@@ -314,19 +314,27 @@ impl IOManager for ThreadSyncIO {
     vert_name: &str,
     frag_name: &str,
     vert_count: u32,
+    instance_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
-    self.trace.push(format!(
-      "dispatch-render-shaders {vert_name} {frag_name} {vert_count}"
-    ));
+    self.trace.push(match instance_count {
+      1 => {
+        format!("dispatch-render-shaders {vert_name} {frag_name} {vert_count}")
+      }
+      _ => format!(
+        "dispatch-render-shaders {vert_name} {frag_name} {vert_count} \
+         {instance_count}"
+      ),
+    });
     self.inner.record_draw(
       vert,
       frag,
       vert_name,
       frag_name,
       vert_count,
+      instance_count,
       pre_upload,
       settings,
       render_target,

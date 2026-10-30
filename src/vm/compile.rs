@@ -4390,12 +4390,19 @@ impl TypedExp {
         let vert_count_slot = args[2]
           .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
+        let instance_count_slot = match args.get(3) {
+          Some(count) => count
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap(),
+          None => state.emit_u32_constant(1),
+        };
         state.emit_dispatch(
           HostOp::DispatchRender {
             vert,
             frag,
             sets,
             vert_count_slot,
+            instance_count_slot,
           },
           &writes,
         );

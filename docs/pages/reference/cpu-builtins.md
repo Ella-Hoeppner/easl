@@ -92,9 +92,10 @@ Closes the window at the end of the current frame, ending the `spawn-window` loo
 
 ```easl
 (dispatch-render-shaders vert: V frag: F vert-count: u32): ()
+(dispatch-render-shaders vert: V frag: F vert-count: u32 instance-count: u32): ()
 ```
 
-Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `frag`, which can be named functions or inline `fn`s. The draw uses the [render settings](#render-settings) current when it's dispatched, and goes to the window unless `set-render-target` redirects it.
+Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `frag`, which can be named functions or inline `fn`s. With `instance-count`, it draws that many instances of them, and the vertex shader tells them apart with [`instance-index`](gpu-builtins.md#instance-index); the three-argument form draws one. The draw uses the [render settings](#render-settings) current when it's dispatched, and goes to the window unless `set-render-target` redirects it.
 
 ### `dispatch-compute-shader`
 

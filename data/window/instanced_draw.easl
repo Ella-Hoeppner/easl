@@ -1,0 +1,16 @@
+@vertex
+(defn v [@{builtin vertex-index} i: u32
+         @{builtin instance-index} instance: u32]: @{builtin position} vec4f
+  (vec4f (f32 i) (f32 instance) 0. 1.))
+
+@fragment
+(defn f []: @{location 0} vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (dispatch-render-shaders v f 3u 10u)
+                  (dispatch-render-shaders v f 6u 1u)
+                  (dispatch-render-shaders v f 6u)
+                  (close-window))))

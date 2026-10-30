@@ -173,6 +173,7 @@ screen_test!(screen_draw_flushes);
 screen_test!(screen_draw_frames);
 screen_test!(screen_fragment_captured_closures);
 screen_test!(screen_vertex_reads_storage_write);
+screen_test!(screen_instanced_draw);
 
 macro_rules! buffer_test {
   ($name:ident) => {

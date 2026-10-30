@@ -2176,6 +2176,11 @@ fn apply_builtin_fn<IO: IOManager>(
       let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
         panic!()
       };
+      let instance_count = match args.get(3) {
+        Some((Value::Prim(Primitive::U32(count)), _)) => *count,
+        Some(_) => panic!(),
+        None => 1,
+      };
       env.setup_gpu_if_needed();
       let mut pre_upload =
         env.collect_dirty_uploads(&read_global_variable_names);
@@ -2187,6 +2192,7 @@ fn apply_builtin_fn<IO: IOManager>(
         &vert_f_name,
         &frag_f_name,
         *vert_count,
+        instance_count,
         pre_upload,
         env.render_settings,
         render_target,
@@ -3457,6 +3463,7 @@ pub enum WindowEvent {
     vert: u16,
     frag: u16,
     vert_count: u32,
+    instance_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     /// If Some, render to this texture binding instead of the screen.
@@ -3507,6 +3514,7 @@ pub enum IOEvent {
     vert: String,
     frag: String,
     vert_count: u32,
+    instance_count: u32,
   },
   DispatchComputeShader {
     entry: String,
@@ -4231,6 +4239,7 @@ pub trait IOManager: Sized {
     vert_name: &str,
     frag_name: &str,
     vert_count: u32,
+    instance_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
@@ -4623,6 +4632,7 @@ impl IOManager for StdoutIO {
     _vert_name: &str,
     _frag_name: &str,
     vert_count: u32,
+    instance_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
@@ -4631,6 +4641,7 @@ impl IOManager for StdoutIO {
       vert,
       frag,
       vert_count,
+      instance_count,
       pre_upload,
       settings,
       render_target,
@@ -5081,6 +5092,7 @@ impl IOManager for StringIO {
     vert_name: &str,
     frag_name: &str,
     vert_count: u32,
+    instance_count: u32,
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
     _settings: RenderSettings,
     _render_target: Option<(u8, u8)>,
@@ -5089,6 +5101,7 @@ impl IOManager for StringIO {
       vert: vert_name.to_string(),
       frag: frag_name.to_string(),
       vert_count,
+      instance_count,
     });
     Ok(())
   }
@@ -5248,6 +5261,7 @@ impl IOManager for CaptureIO {
     vert_name: &str,
     frag_name: &str,
     vert_count: u32,
+    instance_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
@@ -5258,6 +5272,7 @@ impl IOManager for CaptureIO {
       vert_name,
       frag_name,
       vert_count,
+      instance_count,
       pre_upload,
       settings,
       render_target,
@@ -9383,6 +9398,7 @@ fn vm_host_call<IO: IOManager>(
       frag,
       sets,
       vert_count_slot,
+      instance_count_slot,
     } => {
       let dispatch = &code.host_dispatches[*sets as usize];
       refresh_dirty_slots(
@@ -9405,6 +9421,7 @@ fn vm_host_call<IO: IOManager>(
         .map(|&i| code.host_bindings[i as usize].name.clone())
         .collect();
       let vert_count = stack[*vert_count_slot as usize];
+      let instance_count = stack[*instance_count_slot as usize];
       env.setup_gpu_if_needed();
       let mut pre_upload = env.collect_dirty_uploads(&read_names);
       let (render_target, target_uploads) = env.prepare_render_target();
@@ -9417,6 +9434,7 @@ fn vm_host_call<IO: IOManager>(
         vert_name,
         frag_name,
         vert_count,
+        instance_count,
         pre_upload,
         env.render_settings,
         render_target,
