@@ -1,0 +1,44 @@
+; Render shaders read storage-write vars through read-only views (WebGPU
+; doesn't allow read-write storage in vertex shaders): the vertex shader
+; reads `points` and `scale` through helpers the compute shader shares, two
+; calls deep, and takes `points`' runtime-sized length. A fragment shader that
+; only reads `scale` reads it through its view too, while one that writes
+; `scale` uses the var itself (drawn with a vertex shader that doesn't read
+; it).
+(var points: [vec2f])
+
+(var scale: f32)
+
+(defn point [i: u32]: vec2f
+  (* scale (points i)))
+
+(defn last-point []: vec2f
+  (point (- (array-length points) 1u)))
+
+@compute
+(defn step-points [@{builtin global-invocation-id} id: vec3u]
+  (= (points id.x) (+ (point id.x) (last-point))))
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: vec4f
+  (vec4f (+ (point i) (last-point)) 0. 1.))
+
+@vertex
+(defn plain-vert [@{builtin vertex-index} i: u32]: vec4f
+  (vec4f (f32 i) 0. 0. 1.))
+
+@fragment
+(defn read-scale []: vec4f
+  (vec4f scale))
+
+@fragment
+(defn write-scale []: vec4f
+  (= scale 1.)
+  (vec4f 0.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (dispatch-compute-shader step-points (vec3u 4u 1u 1u))
+                  (dispatch-render-shaders vert read-scale 3u)
+                  (dispatch-render-shaders plain-vert write-scale 3u))))

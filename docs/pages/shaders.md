@@ -75,11 +75,13 @@ A top-level `var` is a is shared by the CPU and GPU default, with the exact rule
 
 | Address space | |
 | --- | --- |
-| `storage-write` | read-write storage buffer; the default. Not usable in vertex shaders |
+| `storage-write` | read-write storage buffer; the default. Vertex shaders can read it but not write it |
 | `storage` (or `storage-read`) | read-only storage buffer |
 | `uniform` | read-only in shaders |
 | `workgroup` | shared within a compute workgroup |
 | `local` | one copy per GPU invocation or CPU thread; the only kind that can have an initial value (wgsl's `private`) |
+
+Vertex shaders can read `storage-write` variables but can't write them, since WebGPU doesn't let vertex shaders write GPU memory. To make reading possible, the compiler gives each `storage-write` variable a vertex shader reads a second, read-only binding (`<name>_read_view` in the WGSL) that vertex shaders, and fragment shaders that don't write the variable, read it through, and the runtime binds the same buffer to both, so nothing is copied. If you run the WGSL in another host, bind the variable's buffer at that binding too. One draw can't have its vertex shader read a variable its fragment shader writes.
 
 Binding numbers can be annotated on any global variable like `@{address uniform group 0 binding 0}`, or more tersely as `@[uniform 0 0]`. However, if you don't explicitly annotate these binding numbers, easl will simply infer them for you, based on the order that the variables are declared in your code, and when using the easl CPU runtime all the bindings will be managed automatically for you, so you should never need to think about binding numbers. But the syntax for assigning them explicitly is included for use-cases that involve compiling easl to wgsl to be executed in some other host language.
 

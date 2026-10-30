@@ -2,7 +2,7 @@ use std::{
   collections::{HashMap, HashSet},
   ops::Range,
   path::{Path, PathBuf},
-  vec,
+  slice, vec,
 };
 use take_mut::take;
 use thiserror::Error;
@@ -3790,6 +3790,11 @@ pub struct GpuBindingInfo {
   /// Static size in bytes; 0 for dynamically-sized (unsized array) bindings.
   pub byte_size: u64,
   pub stages: BindingStages,
+  /// For a read-only view of a storage-write var (see
+  /// [`crate::compiler::storage_views`]): the var's binding, whose buffer
+  /// is bound here too. A view has no buffer, uploads, or readbacks of its
+  /// own.
+  pub alias_of: Option<(u8, u8)>,
 }
 
 /// Describes the GPU buffer type for a top-level variable binding.
@@ -3831,11 +3836,17 @@ pub struct DerivedGpuInterface {
   pub gpu_entries: Vec<GpuEntryInfo>,
   /// Source-level entry name -> dense id into `gpu_entries`.
   pub gpu_entry_ids: HashMap<Arc<str>, u16>,
+  /// The bindings of the read-only views render shaders read storage-write
+  /// vars through, each an alias of its var's binding.
+  pub read_view_infos: Vec<GpuBindingInfo>,
 }
 
 impl DerivedGpuInterface {
   pub fn binding_infos(&self) -> Vec<GpuBindingInfo> {
-    gpu_binding_infos_from(&self.binding_vars, &self.binding_stages)
+    let mut infos =
+      gpu_binding_infos_from(&self.binding_vars, &self.binding_stages);
+    infos.extend(self.read_view_infos.iter().cloned());
+    infos
   }
 }
 
@@ -3980,6 +3991,7 @@ fn gpu_binding_infos_from(
         kind,
         byte_size: size,
         stages: binding_stages.get(name).copied().unwrap_or_default(),
+        alias_of: None,
       }
     })
     .collect()
@@ -4035,6 +4047,10 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
   // require the binding to be visible, since WGSL's arrayLength derives
   // from buffer size.
   let mut binding_stages: HashMap<Arc<str>, BindingStages> = HashMap::new();
+  // A render entry reading a storage-write var through its read-only view
+  // uses the view's binding instead (see `crate::compiler::storage_views`).
+  let views = &program.storage_read_views;
+  let mut view_stages: HashMap<Arc<str>, BindingStages> = HashMap::new();
   // Dense GPU entry table: every vertex/fragment/compute entry point gets
   // an id (its index), its WGSL-compiled name, and the (group, binding)
   // keys of the buffer bindings its code transitively references — the
@@ -4069,7 +4085,11 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     }
     let (reads, writes) = effects.gpu_read_and_written_globals();
     for name in reads.into_iter().chain(writes.into_iter()) {
-      let stages = binding_stages.entry(name).or_default();
+      let stages = if views.reads_through_view(&f.name, &name) {
+        view_stages.entry(name).or_default()
+      } else {
+        binding_stages.entry(name).or_default()
+      };
       match entry {
         EntryPoint::Vertex => stages.vertex = true,
         EntryPoint::Fragment => stages.fragment = true,
@@ -4083,10 +4103,19 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     let (reads, writes) = effects.gpu_read_and_written_globals();
     let mut used_bindings: Vec<(u8, u8)> = vec![];
     for global in reads.into_iter().chain(writes.into_iter()) {
-      if let Some(key) = group_and_binding_by_name.get(&global) {
-        if !used_bindings.contains(key) {
-          used_bindings.push(*key);
+      let key = match views.view_of(&global) {
+        Some(view)
+          if views.reads_through_view(&name, &global)
+            && group_and_binding_by_name.contains_key(&global) =>
+        {
+          Some((view.binding.group, view.binding.binding))
         }
+        _ => group_and_binding_by_name.get(&global).copied(),
+      };
+      if let Some(key) = key
+        && !used_bindings.contains(&key)
+      {
+        used_bindings.push(key);
       }
     }
     gpu_entry_ids.insert(name.clone(), gpu_entries.len() as u16);
@@ -4096,11 +4125,30 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
       writes_frag_depth,
     });
   }
+  let read_view_infos = views
+    .views
+    .iter()
+    .filter_map(|view| {
+      let var = binding_vars
+        .iter()
+        .find(|(_, name, ..)| *name == view.var)?;
+      let mut info =
+        gpu_binding_infos_from(slice::from_ref(var), &HashMap::new()).pop()?;
+      info.alias_of = Some((info.group, info.binding));
+      info.group = view.binding.group;
+      info.binding = view.binding.binding;
+      info.name = format!("{} (read-only view)", view.var).into();
+      info.kind = GpuBufferKind::StorageReadOnly;
+      info.stages = view_stages.get(&view.var).copied().unwrap_or_default();
+      Some(info)
+    })
+    .collect();
   DerivedGpuInterface {
     binding_vars,
     binding_stages,
     gpu_entries,
     gpu_entry_ids,
+    read_view_infos,
   }
 }
 
@@ -5509,6 +5557,8 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   gpu_entries: Vec<GpuEntryInfo>,
   /// Source-level entry name -> dense id into `gpu_entries`.
   gpu_entry_ids: HashMap<Arc<str>, u16>,
+  /// The read-only view bindings (see `DerivedGpuInterface::read_view_infos`).
+  read_view_infos: Vec<GpuBindingInfo>,
   /// Implicit uniform vars for window-info queries, refreshed from the IO
   /// manager at the start of each frame. The type is carried here (rather
   /// than looked up in `binding_vars`) because a query used only by CPU
@@ -5613,6 +5663,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       binding_stages,
       gpu_entries,
       gpu_entry_ids,
+      read_view_infos,
     } = derive_gpu_interface(&program);
     let shared_globals: Vec<(Arc<str>, Type, u32)> = program
       .thread_shared_globals()
@@ -5674,6 +5725,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       binding_stages,
       gpu_entries,
       gpu_entry_ids,
+      read_view_infos,
       last_midi_generation: None,
       last_vm_midi_generation: None,
       window_info_bindings: program
@@ -5907,10 +5959,14 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     })
   }
 
-  /// Returns a `GpuBindingInfo` for each GPU-bound variable. `byte_size` is
-  /// 0 for dynamically-sized (unsized array) bindings.
+  /// Returns a `GpuBindingInfo` for each GPU-bound variable, then for each
+  /// read-only view of one. `byte_size` is 0 for dynamically-sized (unsized
+  /// array) bindings.
   pub fn binding_infos(&self) -> Vec<GpuBindingInfo> {
-    gpu_binding_infos_from(&self.binding_vars, &self.binding_stages)
+    let mut infos =
+      gpu_binding_infos_from(&self.binding_vars, &self.binding_stages);
+    infos.extend(self.read_view_infos.iter().cloned());
+    infos
   }
 
   /// Returns the current byte representation of each GPU-bound variable,

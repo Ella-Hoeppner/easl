@@ -1,0 +1,44 @@
+; A vertex shader reading a storage-write var, which WebGPU only allows as
+; read-only storage. `params` is written by the CPU and by a compute shader,
+; and read by the vertex shader through a helper the compute shader uses too,
+; and by the fragment shader directly. The draws see every write: the CPU's
+; in frame 0, the compute shader's in frame 1, and the CPU's again in frame
+; 2, where zero coverage collapses the triangle so nothing is drawn.
+(var params: [2: f32])
+
+(defn coverage []: f32
+  (params 0u))
+
+@compute
+(defn brighten []
+  (= (params 1u) (* 0.5 (coverage))))
+
+@vertex
+(defn fullscreen [@{builtin vertex-index} i: u32]: vec4f
+  (* (coverage)
+     (match i
+       0u (vec4f -1. -1. 0. 1.)
+       1u (vec4f 3. -1. 0. 1.)
+       _ (vec4f -1. 3. 0. 1.))))
+
+@fragment
+(defn shade []: vec4f
+  (vec4f (params 1u) 0. 0. 1.))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        0u (do (= params [1. 1.])
+               (dispatch-render-shaders fullscreen shade 3u))
+        1u (do (dispatch-compute-shader brighten (vec3u 1u))
+               (dispatch-render-shaders fullscreen shade 3u)
+               (print (params 1u)))
+        2u (do (= (params 0u) 0.)
+               (dispatch-render-shaders fullscreen shade 3u))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

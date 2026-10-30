@@ -1,0 +1,18 @@
+; A vertex shader reads storage-write vars through a read-only view, and one
+; draw can't bind a buffer both read-only and read-write: a draw whose
+; fragment shader writes a var its vertex shader reads is an error.
+(var counts: [3: u32])
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: vec4f
+  (vec4f (f32 (counts i)) 0. 0. 1.))
+
+@fragment
+(defn frag []: vec4f
+  (= (counts 0u) 1u)
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (dispatch-render-shaders vert frag 3u))))

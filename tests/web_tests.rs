@@ -191,16 +191,6 @@ mod harness {
     ("cpu/wav_sample_rate", "reads a file"),
     ("cpu/save_wav_roundtrip", "writes a file"),
     (
-      "buffer/struct_array_buffer",
-      "reads storage-write data in a vertex shader, which browsers don't \
-       support (web/vertex_storage_write_unsupported pins the error)",
-    ),
-    (
-      "buffer/bidirectional_transfer_render",
-      "writes storage from a vertex shader, which browsers don't support \
-       (web/vertex_storage_write_unsupported pins the error)",
-    ),
-    (
       "cpu/audio_closure_entry",
       "its window never closes (the native suite stops it after its \
        simulated frames); web/audio_closure_hofs covers its audio graph",

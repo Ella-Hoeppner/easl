@@ -1,6 +1,6 @@
-; Browsers can't write (or read) storage-write variables from vertex
-; shaders, so the web runtime rejects the program with an error naming the
-; variable, rather than running it with the writes silently dropped.
+; Vertex shaders can't write GPU memory in WebGPU (without extensions,
+; which easl doesn't use), so writing a storage-write var from one is a
+; compile error on every runtime.
 @storage-write
 (var x: u32)
 

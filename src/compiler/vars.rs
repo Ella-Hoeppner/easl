@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Display;
 
 use std::sync::Arc;
@@ -102,6 +103,18 @@ impl Display for VariableAddressSpace {
 pub struct GroupAndBinding {
   pub group: u8,
   pub binding: u8,
+}
+
+impl GroupAndBinding {
+  /// The first (group, binding) not in `used`, in group-then-binding order.
+  pub fn first_free(used: &HashSet<GroupAndBinding>) -> Self {
+    (0u8..=u8::MAX)
+      .flat_map(|group| {
+        (0u8..=u8::MAX).map(move |binding| GroupAndBinding { group, binding })
+      })
+      .find(|candidate| !used.contains(candidate))
+      .expect("all 65536 group/binding slots exhausted")
+  }
 }
 
 /// A GPU-bound var's binding numbers: either explicitly written in the

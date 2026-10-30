@@ -73,6 +73,7 @@ use super::{
   functions::FunctionImplementationKind,
   macros::{Macro, macroexpand},
   modules::{MainFileIndex, display_name, resolve_modules},
+  storage_views::{StorageReadViews, ViewFunctions},
   structs::AbstractStruct,
   vars::TopLevelVar,
 };
@@ -456,12 +457,12 @@ pub(crate) struct FnContexts {
 }
 
 /// A target's emitted functions (see `Program::emitted_function_closure`).
-struct EmittedFunctions {
+pub(crate) struct EmittedFunctions {
   /// Every composite function, callees first (the deterministic emission
   /// order).
-  ordered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
+  pub(crate) ordered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
   /// The reachable subset of `ordered`: the functions that emit.
-  emitted: HashSet<Arc<str>>,
+  pub(crate) emitted: HashSet<Arc<str>>,
   /// The functions that are themselves valid for the target
   /// (`TopLevelFunction::is_valid_for_target`); an emitted function outside
   /// this set compiles to an empty string.
@@ -501,6 +502,10 @@ pub struct Program {
   pub overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
   /// What the main file's names refer to, for editor tooling.
   pub main_file_index: MainFileIndex,
+  /// The read-only views render shaders read storage-write vars through
+  /// (see [`crate::compiler::storage_views`]). Planned at the end of
+  /// validation.
+  pub storage_read_views: StorageReadViews,
 }
 
 impl Clone for Program {
@@ -518,6 +523,7 @@ impl Clone for Program {
       split_globals: self.split_globals.clone(),
       overload_groups: self.overload_groups.clone(),
       main_file_index: self.main_file_index.clone(),
+      storage_read_views: self.storage_read_views.clone(),
     }
   }
 }
@@ -543,6 +549,7 @@ impl Program {
       split_globals: HashMap::new(),
       overload_groups: HashMap::new(),
       main_file_index: MainFileIndex::default(),
+      storage_read_views: StorageReadViews::default(),
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar) {
@@ -1870,6 +1877,22 @@ impl Program {
                           exp.source_trace.clone(),
                         ));
                       }
+                      if let FunctionImplementationKind::Composite(
+                        vertex_implementation,
+                      ) = &abstract_vertex_fn.read().unwrap().implementation
+                      {
+                        for var in self.vertex_reads_of_fragment_writes(
+                          &vertex_implementation.read().unwrap(),
+                          &frag_implementation.read().unwrap(),
+                        ) {
+                          errors.log(CompileError::new(
+                            StorageReadInVertexWrittenInFragment(
+                              display_name(&var).to_string(),
+                            ),
+                            exp.source_trace.clone(),
+                          ));
+                        }
+                      }
                     }
                   }
                   "start-audio" => {
@@ -2415,9 +2438,10 @@ impl Program {
     use crate::compiler::expression::ExpKind;
     use execution_context::{
       AUDIO, COMPUTE, CONTEXT_COUNT, CONTEXT_ENTRIES, CONTEXT_NAMES, CPU,
-      FRAGMENT, bit,
+      FRAGMENT, VERTEX, bit,
     };
     let fns = self.compute_function_contexts();
+    let storage_write_vars = self.storage_write_vars();
     // rule scan: check each function's direct uses against every context
     // it can run in
     let runtime_sized_error_present = errors.iter().any(|e| {
@@ -2455,6 +2479,24 @@ impl Program {
               ));
             }
             ExpKind::Application(applied_f, args) => {
+              // Vertex shaders can't write GPU memory (WebGPU without
+              // extensions); they read storage-write vars through
+              // read-only views (`storage_views`).
+              for effect in exp.argument_writes().0.iter() {
+                if let Effect::ModifiesGlobalVar(var) = effect
+                  && storage_write_vars.contains(var)
+                {
+                  violations.push((
+                    exp.source_trace.clone(),
+                    !bit(VERTEX),
+                    std::array::from_fn(|_| {
+                      Some(StorageWriteInVertexShader(
+                        display_name(var).to_string(),
+                      ))
+                    }),
+                  ));
+                }
+              }
               if let ExpKind::Name(applied_name) = &applied_f.kind
                 && &**applied_name == "workgroup-size"
                 && args.is_empty()
@@ -5153,6 +5195,12 @@ impl Program {
       }
       compiled_string += &v.clone().compile(&mut names, target);
       compiled_string += ";\n";
+      if target == CompilerTarget::WGSL
+        && let Some(view) = self.storage_read_view_declaration(v)
+      {
+        compiled_string += &view.compile(&mut names, target);
+        compiled_string += ";\n";
+      }
     }
     compiled_string += "\n";
     let default_structs = built_in_structs_for_target(target);
@@ -5384,7 +5432,15 @@ impl Program {
     // an emitted function can never reference an unemitted one, and audio
     // clones / CPU-only specializations fall away by unreachability. This is
     // also the set `wgsl_referenced_globals` walks to decide which
-    // compiler-generated vars' declarations to emit.
+    // compiler-generated vars' declarations to emit. Render entries that
+    // read storage-write vars through read-only views emit with those reads
+    // renamed, followed by the helper copies they call
+    // (`storage_read_view_functions`).
+    let mut view_functions = if target == CompilerTarget::WGSL {
+      self.storage_read_view_functions(&functions, &mut names)
+    } else {
+      ViewFunctions::default()
+    };
     for (f_name, implementation) in functions.ordered {
       if !functions.emitted.contains(&f_name) {
         continue;
@@ -5403,10 +5459,23 @@ impl Program {
           continue;
         }
       }
-      compiled_string += &implementation.read().unwrap().clone().compile(
+      let body = view_functions
+        .entries
+        .remove(&f_name)
+        .unwrap_or_else(|| implementation.read().unwrap().clone());
+      compiled_string += &body.compile(
         &f_name,
         &mut names,
         functions.valid.contains(&f_name),
+        target,
+      )?;
+      compiled_string += "\n\n";
+    }
+    for (copy_name, original, body) in view_functions.helpers {
+      compiled_string += &body.compile(
+        &copy_name,
+        &mut names,
+        functions.valid.contains(&original),
         target,
       )?;
       compiled_string += "\n\n";
@@ -6957,13 +7026,7 @@ impl Program {
       } = &mut var.kind
         && *binding_spec == BindingSpec::Elided
       {
-        let assigned = (0u8..=u8::MAX)
-          .flat_map(|group| {
-            (0u8..=u8::MAX)
-              .map(move |binding| GroupAndBinding { group, binding })
-          })
-          .find(|candidate| !used.contains(candidate))
-          .expect("all 65536 group/binding slots exhausted");
+        let assigned = GroupAndBinding::first_free(&used);
         used.insert(assigned);
         *binding_spec = BindingSpec::Specified(assigned);
       }
@@ -7543,6 +7606,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.plan_storage_read_views();
     self.mark_value_names_owned();
     self.track_emulated_builtins(target);
     self.has_been_validated = true;

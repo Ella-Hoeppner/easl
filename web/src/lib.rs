@@ -22,7 +22,7 @@ use easl::{
   audio::AudioSource,
   compiler::{entry::EntryPoint, program::Program},
   interpreter::{
-    EvalError, GpuBindingInfo, GpuBufferKind, IOManager, VmCpuRuntime,
+    EvalError, IOManager, VmCpuRuntime,
     VmRunState, pick_entry_point_name,
   },
   load_easl_program_from_sources,
@@ -115,7 +115,6 @@ async fn run_program(
 
   let mut runtime = VmCpuRuntime::new(program, WebIO::new(), audio_source)
     .map_err(describe_error)?;
-  check_browser_support(&runtime.env.binding_infos())?;
   install_gpu_error_handler(&device);
   let gpu = GpuCore::new_from_parts(
     device,
@@ -178,29 +177,6 @@ fn compile_program(
     }
     Ok((documents, Err(errors))) => Err(errors.describe(&documents)),
     Err(failed_documents) => Err(failed_documents.describe_parse_failures()),
-  }
-}
-
-/// Rejects programs whose vertex shaders use storage-write variables: native
-/// easl requests the `VERTEX_WRITABLE_STORAGE` feature for them, which
-/// browsers don't offer.
-fn check_browser_support(bindings: &[GpuBindingInfo]) -> Result<(), String> {
-  let names: Vec<&str> = bindings
-    .iter()
-    .filter(|binding| {
-      binding.kind == GpuBufferKind::StorageReadWrite && binding.stages.vertex
-    })
-    .map(|binding| &*binding.name)
-    .collect();
-  if names.is_empty() {
-    Ok(())
-  } else {
-    Err(format!(
-      "vertex shaders use the storage-write variable(s) {}, which browsers \
-       don't support; make them `@storage` (read-only) or only use them \
-       outside vertex shaders",
-      names.join(", ")
-    ))
   }
 }
 

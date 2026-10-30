@@ -189,6 +189,7 @@ success_test!(inversion);
 success_test!(associative);
 success_test!(assignment);
 success_test!(simple_shader);
+success_test!(storage_read_views);
 success_test!(variadic_vec);
 success_test!(let_binding);
 success_test!(block);
@@ -737,6 +738,14 @@ error_test!(
 error_test!(
   audio_entry_with_argument_failure,
   CompileErrorKind::AudioEntryHasWrongArgumentTypes
+);
+error_test!(
+  storage_write_in_vertex_shader_failure,
+  CompileErrorKind::StorageWriteInVertexShader("x".to_string())
+);
+error_test!(
+  storage_read_in_vertex_written_in_fragment_failure,
+  CompileErrorKind::StorageReadInVertexWrittenInFragment("counts".to_string())
 );
 error_test!(
   print_in_audio_failure,

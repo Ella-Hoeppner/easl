@@ -354,6 +354,17 @@ pub struct BindingSlot {
   /// Source-level variable name, for diagnostics.
   pub name: std::sync::Arc<str>,
   pub kind: GpuBufferKind,
+  /// For a read-only view of a storage-write var, the var's binding: the
+  /// view binds that binding's buffer (see `GpuBindingInfo::alias_of`).
+  pub alias_of: Option<(u8, u8)>,
+}
+
+impl BindingSlot {
+  /// The binding whose buffer this slot binds: its own, or the one it's a
+  /// view of.
+  fn buffer_key(&self) -> (u8, u8) {
+    self.alias_of.unwrap_or((self.group, self.binding))
+  }
 }
 
 /// Where a `GpuCore` renders screen-targeted draws. Every target runs them
@@ -638,7 +649,7 @@ impl GpuCore {
             GpuBufferKind::Sampler => {
               wgpu::BindingResource::Sampler(&self.samplers[&key].1)
             }
-            _ => self.binding_buffers[&key].as_entire_binding(),
+            _ => self.binding_buffers[&slot.buffer_key()].as_entire_binding(),
           },
         }
       })
@@ -707,6 +718,22 @@ impl GpuCore {
     }
     if let Err(message) = self.validate_pipeline_bindings(label, &used) {
       panic!("easl: {message}");
+    }
+    // One pipeline can't bind a buffer as both read-only and read-write
+    // storage. Validation rejects the draws that would (a vertex shader
+    // reading a var its fragment shader writes); this names the var if one
+    // gets here some other way.
+    for slot in &self.binding_slots {
+      if let Some(of) = slot.alias_of
+        && used.contains_key(&(slot.group, slot.binding))
+        && used.contains_key(&of)
+      {
+        panic!(
+          "easl: {label} reads {} in its vertex shader while another stage \
+           writes it, which WebGPU doesn't allow in one pipeline",
+          slot.name
+        );
+      }
     }
     let group_count = used
       .keys()
@@ -864,6 +891,15 @@ impl GpuCore {
   /// of the changed bindings (buffers/textures are recreated on resize, and
   /// bind groups are immutable snapshots of buffer references).
   fn rebuild_bind_groups_for(&mut self, changed: &[(u8, u8)]) {
+    // A view binds its var's buffer, so it changes along with the var's.
+    let views: Vec<(u8, u8)> = self
+      .binding_slots
+      .iter()
+      .filter(|slot| slot.alias_of.is_some_and(|of| changed.contains(&of)))
+      .map(|slot| (slot.group, slot.binding))
+      .collect();
+    let changed: Vec<(u8, u8)> = changed.iter().copied().chain(views).collect();
+    let changed = &changed[..];
     let mut rebuilt_compute: Vec<(usize, Vec<wgpu::BindGroup>)> = vec![];
     for (id, cached) in self.compute_pipelines.iter().enumerate() {
       if let Some(cached) = cached
@@ -940,6 +976,7 @@ impl GpuCore {
         binding: info.binding,
         name: info.name.clone(),
         kind: info.kind,
+        alias_of: info.alias_of,
       })
       .collect();
 
@@ -952,6 +989,10 @@ impl GpuCore {
       let (group, binding, kind, size) =
         (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
+      if info.alias_of.is_some() {
+        // A view binds its var's buffer.
+        continue;
+      }
       if kind == GpuBufferKind::Sampler {
         // Keep an existing sampler; a new one starts at the defaults.
         if !self.samplers.contains_key(&key) {
@@ -2183,6 +2224,7 @@ impl GpuCore {
         binding: info.binding,
         name: info.name.clone(),
         kind: info.kind,
+        alias_of: info.alias_of,
       })
       .collect();
 
@@ -2194,7 +2236,9 @@ impl GpuCore {
       let (group, binding, kind, size) =
         (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
-      if kind == GpuBufferKind::Sampler {
+      if info.alias_of.is_some() {
+        // A view binds its var's buffer.
+      } else if kind == GpuBufferKind::Sampler {
         let settings = SamplerSettings::default();
         samplers.insert(key, (settings, create_sampler(&device, settings)));
       } else if kind == GpuBufferKind::Texture2D {
@@ -2732,7 +2776,7 @@ pub fn create_headless_gpu_core(
     let (device, queue) = adapter
       .request_device(&wgpu::DeviceDescriptor {
         label: None,
-        required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
+        required_features: wgpu::Features::empty(),
         required_limits: adapter.limits(),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
@@ -3402,12 +3446,11 @@ impl RenderState {
     let (device, queue) = adapter
       .request_device(&wgpu::DeviceDescriptor {
         label: None,
-        // todo! right now this feature is necessary to make `delaunay.easl`,
-        // but eventually this should be `Features::empty()`. The delaunay
-        // example should be refactored once it's possible to have a
-        // global var like `particles` be treated as storage-write from inside
-        // compute shaders, but just storage from inside render shaders
-        required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
+        // No optional features: easl targets WebGPU without extensions, so
+        // native programs run on the web too (vertex shaders read
+        // storage-write vars through read-only views, see
+        // `crate::compiler::storage_views`).
+        required_features: wgpu::Features::empty(),
         required_limits: adapter.limits(),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()

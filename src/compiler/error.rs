@@ -611,6 +611,18 @@ pub enum CompileErrorKind {
   )]
   IllegalAddressSpaceGpuWrite(String, VariableAddressSpace),
   #[error(
+    "vertex shaders can't write to GPU memory, but this write to \"{0}\" can \
+     run in a vertex shader; write it from a compute or fragment shader \
+     instead"
+  )]
+  StorageWriteInVertexShader(String),
+  #[error(
+    "this draw's vertex shader reads \"{0}\" while its fragment shader \
+     writes it, which WebGPU doesn't allow in one draw; write it from a \
+     compute shader, or in a separate draw"
+  )]
+  StorageReadInVertexWrittenInFragment(String),
+  #[error(
     "closures dispatched to the GPU cannot mutate captured variable \"{0}\""
   )]
   CantMutateDispatchedClosureCapture(String),
@@ -950,6 +962,14 @@ impl PartialEq for CompileErrorKind {
       (Self::TypeDependencyCycle(l0), Self::TypeDependencyCycle(r0)) => {
         l0 == r0
       }
+      (
+        Self::StorageWriteInVertexShader(l0),
+        Self::StorageWriteInVertexShader(r0),
+      ) => l0 == r0,
+      (
+        Self::StorageReadInVertexWrittenInFragment(l0),
+        Self::StorageReadInVertexWrittenInFragment(r0),
+      ) => l0 == r0,
       _ => core::mem::discriminant(self) == core::mem::discriminant(other),
     }
   }
