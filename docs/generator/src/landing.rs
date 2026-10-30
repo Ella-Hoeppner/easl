@@ -3,16 +3,34 @@
 //! The landing page is self-verifying: every easl snippet displayed on it
 //! is compiled with the real easl compiler when the site is built (a
 //! snippet that stops compiling fails the build), and the animated hero
-//! background is an actual easl program — `assets/demo.easl` — whose
-//! compiled WGSL is naga-validated and embedded into the page for WebGPU
-//! to run in the browser.
+//! background is a whole easl program — `pages/main_page_example.easl`,
+//! `@cpu` entry and all — run in the browser by the easl web runtime
+//! (`web/`), exactly as `easl compile --web` would package it.
+
+use std::{
+  fs,
+  path::{Path, PathBuf},
+  process::Command,
+};
+
+use easl::{
+  compile_easl_file_to_wgsl,
+  web_bundle::{RUNTIME_SUPPORT_FILES, bundle_program},
+};
 
 use crate::highlight;
 
-/// The hero background program. Compiled to WGSL at build time; the page
-/// runs the output with WebGPU, writing `[time, width, height, 0]` into
-/// the `@[uniform 0 0]` binding each frame.
-const DEMO_SOURCE: &str = include_str!("../assets/demo.easl");
+/// The hero background program, relative to the generator's manifest
+/// directory. It's validated at build time and shipped as source: the web
+/// runtime compiles and runs it in the browser.
+const HERO_PROGRAM_PATH: &str = "../pages/main_page_example.easl";
+
+/// The easl web runtime crate, relative to the generator's manifest
+/// directory.
+const WEB_RUNTIME_PATH: &str = "../../web";
+
+/// Where the hero program and the web runtime go, relative to the site root.
+const HERO_RUNTIME_DIR: &str = "easl-web";
 
 struct Showcase {
   id: &'static str,
@@ -145,13 +163,68 @@ fn naga_validate(label: &str, wgsl: &str) {
   });
 }
 
-pub fn generate(site_dir: &std::path::Path) {
-  // compile-check every snippet, and compile + validate the hero demo
+/// Builds the web runtime (`web/build.sh`) so the page runs the program
+/// with the same compiler that validated it, and returns its output
+/// directory. The nested cargo build gets none of this process's cargo
+/// environment: `cargo run` sets variables describing the generator's own
+/// build, which would leak into the runtime's build scripts.
+fn build_web_runtime(web_dir: &Path) -> PathBuf {
+  let mut build = Command::new(web_dir.join("build.sh"));
+  for (name, _) in std::env::vars_os() {
+    let name = name.to_string_lossy();
+    if (name.starts_with("CARGO") && name != "CARGO_HOME") || name == "TARGET"
+    {
+      build.env_remove(name.as_ref());
+    }
+  }
+  let status = build
+    .status()
+    .unwrap_or_else(|e| panic!("couldn't run web/build.sh: {e}"));
+  assert!(status.success(), "web/build.sh failed (see its output above)");
+  web_dir.join("dist")
+}
+
+/// Writes the hero program and everything the web runtime needs to run it
+/// into `out_dir`, failing the build if the program doesn't compile.
+fn package_hero_program(program_path: &Path, web_dir: &Path, out_dir: &Path) {
+  let bundle = bundle_program(program_path).unwrap_or_else(|errors| {
+    panic!(
+      "the landing page program {} doesn't compile:\n{errors}",
+      program_path.display()
+    )
+  });
+  match compile_easl_file_to_wgsl(program_path) {
+    Ok(Ok(Ok(wgsl))) => naga_validate("landing page program", &wgsl),
+    _ => panic!("the landing page program validated but didn't compile to WGSL"),
+  }
+  let dist = build_web_runtime(web_dir);
+  fs::create_dir_all(out_dir).unwrap();
+  fs::write(out_dir.join("easl-program.js"), bundle.program_js).unwrap();
+  for (name, contents) in RUNTIME_SUPPORT_FILES {
+    fs::write(out_dir.join(name), contents).unwrap();
+  }
+  for name in ["easl_web.js", "easl_web_bg.wasm"] {
+    fs::copy(dist.join(name), out_dir.join(name)).unwrap_or_else(|e| {
+      panic!("couldn't copy {name} from {}: {e}", dist.display())
+    });
+  }
+}
+
+pub fn generate(site_dir: &Path) {
   for showcase in SHOWCASES {
     compile_check(showcase.id, showcase.source);
   }
-  let demo_wgsl = compile_check("hero demo", DEMO_SOURCE);
-  naga_validate("hero demo", &demo_wgsl);
+
+  let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let hero_path = manifest_dir.join(HERO_PROGRAM_PATH);
+  let hero_source = fs::read_to_string(&hero_path).unwrap_or_else(|e| {
+    panic!("couldn't read {}: {e}", hero_path.display())
+  });
+  package_hero_program(
+    &hero_path,
+    &manifest_dir.join(WEB_RUNTIME_PATH),
+    &site_dir.join(HERO_RUNTIME_DIR),
+  );
 
   let mut showcases_html = String::new();
   for (index, showcase) in SHOWCASES.iter().enumerate() {
@@ -178,21 +251,17 @@ pub fn generate(site_dir: &std::path::Path) {
     ));
   }
 
-  let demo_highlighted = highlight::highlight_easl(DEMO_SOURCE);
-  let html = landing_html(&demo_wgsl, &demo_highlighted, &showcases_html);
-  std::fs::write(site_dir.join("index.html"), html).unwrap();
-  std::fs::write(
+  let hero_highlighted = highlight::highlight_easl(&hero_source);
+  let html = landing_html(&hero_highlighted, &showcases_html);
+  fs::write(site_dir.join("index.html"), html).unwrap();
+  fs::write(
     site_dir.join("landing.css"),
     include_str!("../assets/landing.css"),
   )
   .unwrap();
 }
 
-fn landing_html(
-  demo_wgsl: &str,
-  demo_highlighted: &str,
-  showcases: &str,
-) -> String {
+fn landing_html(hero_highlighted: &str, showcases: &str) -> String {
   format!(
     r##"<!doctype html>
 <html lang="en">
@@ -228,7 +297,7 @@ itself.</p>
 <a class="button" href="guide.html">Read the guide</a>
 </div>
 <p class="hero-note" id="hero-note">the background of this page is an
-easl program, compiled by the easl compiler when this site was built —
+easl program, compiled and run in your browser by the easl runtime —
 <a href="#hero-source">view its source</a></p>
 <p class="hero-note fallback-note">this page's background is normally a
 live easl program — your browser doesn't support WebGPU, so it's taking
@@ -262,13 +331,14 @@ shares itself with the rest of the program automatically.</p>
 <div class="showcase-text">
 <span class="kicker">show, don't tell</span>
 <h2>The page you're looking at</h2>
-<p>This is the program painting the background above. The site's build
-step compiles it with the real easl compiler, validates the WGSL, and
-embeds the result for WebGPU — if it ever stops compiling, the site
-stops building.</p>
+<p>This is the program painting the background above. Your browser is
+running it with the easl web runtime — the same compiler and bytecode VM
+as <code>easl run</code>, compiled to WebAssembly — and the site's build
+step checks it with the real easl compiler, so if it ever stops
+compiling, the site stops building.</p>
 </div>
 <figure class="showcase-code">
-<pre class="code easl tall"><code>{demo_highlighted}</code></pre>
+<pre class="code easl tall"><code>{hero_highlighted}</code></pre>
 <figcaption>fract, palette, glow: four octaves of folded space in a
 couple dozen lines.</figcaption>
 </figure>
@@ -310,78 +380,21 @@ cd easl_cli &amp;&amp; cargo install --path .</code></pre>
 <p class="fine">Easl is a work in progress; expect breaking changes.</p>
 </footer>
 
-<script>
-const WGSL = `{wgsl}`;
-async function boot() {{
-  if (!navigator.gpu) throw new Error("no webgpu");
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("no adapter");
-  const device = await adapter.requestDevice();
-  const canvas = document.getElementById("hero-canvas");
-  const ctx = canvas.getContext("webgpu");
-  const format = navigator.gpu.getPreferredCanvasFormat();
-  ctx.configure({{ device, format, alphaMode: "opaque" }});
-  const module = device.createShaderModule({{ code: WGSL }});
-  const pipeline = device.createRenderPipeline({{
-    layout: "auto",
-    vertex: {{ module, entryPoint: "vert" }},
-    fragment: {{ module, entryPoint: "frag", targets: [{{ format }}] }},
-    primitive: {{ topology: "triangle-list" }},
+<script type="module">
+import {{ startEaslProgram }} from "./{HERO_RUNTIME_DIR}/easl-program.js";
+if (navigator.gpu) {{
+  startEaslProgram(document.getElementById("hero-canvas")).catch((error) => {{
+    console.error(error);
+    document.body.classList.add("no-webgpu");
   }});
-  const ubuf = device.createBuffer({{
-    size: 16,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  }});
-  const bind = device.createBindGroup({{
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [{{ binding: 0, resource: {{ buffer: ubuf }} }}],
-  }});
-  const start = performance.now();
-  function frame() {{
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.floor(canvas.clientWidth * dpr);
-    const h = Math.floor(canvas.clientHeight * dpr);
-    if (w && h && (canvas.width !== w || canvas.height !== h)) {{
-      canvas.width = w;
-      canvas.height = h;
-    }}
-    device.queue.writeBuffer(
-      ubuf,
-      0,
-      new Float32Array([
-        (performance.now() - start) / 1000,
-        canvas.width,
-        canvas.height,
-        0,
-      ])
-    );
-    const encoder = device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({{
-      colorAttachments: [
-        {{
-          view: ctx.getCurrentTexture().createView(),
-          loadOp: "clear",
-          clearValue: {{ r: 0.05, g: 0.05, b: 0.07, a: 1 }},
-          storeOp: "store",
-        }},
-      ],
-    }});
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.draw(3);
-    pass.end();
-    device.queue.submit([encoder.finish()]);
-    requestAnimationFrame(frame);
-  }}
-  requestAnimationFrame(frame);
+}} else {{
+  document.body.classList.add("no-webgpu");
 }}
-boot().catch(() => document.body.classList.add("no-webgpu"));
 </script>
 </body>
 </html>
 "##,
     showcases = showcases,
-    demo_highlighted = demo_highlighted,
-    wgsl = demo_wgsl.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${"),
+    hero_highlighted = hero_highlighted,
   )
 }

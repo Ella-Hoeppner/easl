@@ -113,6 +113,7 @@ version = "0.0.0"
 dependencies = [
  "arc-swap",
  "fsexp",
+ "half",
  "hound",
  "image",
  "lazy_static",

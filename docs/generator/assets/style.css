@@ -246,15 +246,15 @@ pre.code code {
   font-size: 0.85rem;
 }
 
-/* easl syntax highlighting */
-.easl .c { color: var(--hl-comment); font-style: italic; }
-.easl .s { color: var(--hl-string); }
-.easl .n { color: var(--hl-number); }
-.easl .k { color: var(--hl-keyword); font-weight: 600; }
-.easl .t { color: var(--hl-type); }
-.easl .f { color: var(--hl-call); font-weight: 550; }
-.easl .p { color: var(--hl-paren); }
-.easl .a { color: var(--hl-annotation); }
+/* easl and GLSL syntax highlighting */
+:is(.easl, .glsl) .c { color: var(--hl-comment); font-style: italic; }
+:is(.easl, .glsl) .s { color: var(--hl-string); }
+:is(.easl, .glsl) .n { color: var(--hl-number); }
+:is(.easl, .glsl) .k { color: var(--hl-keyword); font-weight: 600; }
+:is(.easl, .glsl) .t { color: var(--hl-type); }
+:is(.easl, .glsl) .f { color: var(--hl-call); font-weight: 550; }
+:is(.easl, .glsl) .p { color: var(--hl-paren); }
+:is(.easl, .glsl) .a { color: var(--hl-annotation); }
 
 /* ---- tables ---- */
 

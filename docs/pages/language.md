@@ -25,7 +25,7 @@ Easl has three types of comments, `;` for single line comments, `;* ... *;` for 
 #_(skips the next expression)
 ```
 
-`#_` skips exactly one expression. This makes it different from other types of comments in that the content inside the comment must still parse to valid easl syntax, though it of course doesn't need to type-check. `#_` is very useful for temporarily disabling part of an expression.
+`#_` skips exactly one expression. This makes it different from other types of comments in that the content inside the comment must still parse to valid easl syntax, though it of course doesn't need to type-check. `#_` is very useful for temporarily disabling part of a program.
 
 ## Literals and types
 
@@ -569,6 +569,8 @@ Easl code is organized into modules. Each easl file is treated as an implicit mo
 To access a value or function defined in a module, you have to qualify the name with the name of the module, such as `random/hash` in the above code.
 
 The `use` expression lets you unpack the names defined in a module into the top-level scope. For instance, we could add `(use random [hash])` to make `hash` available directly by that name, without the need for the `random/` prefix. You can also do simply `(use random)` to make all names in the module available.
+
+Putting `@use` in front of a `mod` does both at once: `@use (mod random ...)` defines the module and makes all its names available, just like `(mod random ...)` followed by `(use random)`. The names are still reachable through the module too (`random/hash`). This is handy for grouping definitions without having to refer to them through the group's name.
 
 `import` is used to include code from other files:
 

@@ -6,7 +6,7 @@ Consider a simple raymarching function written in a traditional shader language,
 
 ```glsl
 vec3 raymarch(vec3 rayOrigin, vec3 rayDirection) {
-	float offset=0.;
+  float offset=0.;
   for(int i = 0; i < 256; i++) {
     vec3 pos = rayOrigin + rayDirection*offset;
     float dist = sdf(pos);
@@ -18,7 +18,7 @@ vec3 raymarch(vec3 rayOrigin, vec3 rayDirection) {
 }
 ```
 
-This function takes in a ray origin and a ray direction, and marches the ray forward according to the `sdf` signed distance function. When it reaches the surface it returns the point on the surface that it terminated at, and if it can't reach the surface within 256 iteration then it instead returns `vec3(0.)` as a 
+This function takes in a ray origin and a ray direction, and marches the ray forward according to the `sdf` signed distance function. When it reaches the surface it returns the point on the surface that it terminated at, and if it can't reach the surface within 256 iteration then it instead returns `vec3(0.)` as a way to indicate that the ray didn't converge.
 
 This can be straightforwardly translated to easl:
 
@@ -37,11 +37,11 @@ This can be straightforwardly translated to easl:
   (vec3f 0.))
 ```
 
-Now that the code is in easl, there are some quick improvements we can make using easl's unique features.
+Now that the code is in easl, there are some quick improvements we can make using easl's features that aren't available in a language like glsl.
 
 For one, rather than hard-coding the `sdf` function into the `raymarch` function body, we can simply take `sdf` as a function-typed argument. That way, this same `raymarch` function can be immediately used on any new signed distance function that we defined, whereas in glsl, without support for higher order functions, we'd just have to create a new copy of the `raymarch` function with a different function inlined into the body if we wanted to be able to raymarch over multiple different distance fields in the same program.
 
-The other improvement is that we can return an `(Option vec3f)` rather than a bare `vec3f`. An `Option` is an enum that has two variants, `None` which carries no value, and `(Some ...)` which carries a value inside, so it makes a convenient representation as the return type for a function that may or may not converge to a proper value. This way, rather than just returning a sentinel value like `(vec3f 0.)` that all consumers are supposed to remember to treat as "the function didn't converge", we can simply return `None` at the end of the function, to be more explicit and force all consumers to explicitly handle this possibility.
+The other improvement is that we can return an `(Option vec3f)` rather than a bare `vec3f`. An `Option` is an enum that has two variants, `None` which carries no value, and `(Some ...)` which carries a value inside, so it makes a convenient representation as the return type for a function that may or may not converge to a proper value. This way, rather than just returning a sentinel value like `(vec3f 0.)` that all consumers are supposed to remember to treat as "the function didn't converge", we can simply return `None` when the ray doesn't converge, to force all usage sites to explicitly handle this possibility.
 
 With those changes made, the code now looks like this:
 
@@ -68,19 +68,21 @@ To put this into action, let's write a quick little `main` function to manage a 
 @cpu
 (defn main []
   (spawn-window (fn []
-                  (dispatch-render-shaders vertex fragment 3))))
+                  (dispatch-render-shaders raymarch-vertex
+                                           raymarch-fragment
+                                           3))))
 ```
 
 The `@cpu` annotation above `main` indicates that this function is a CPU-side entry point, so that the compiler will know to start our program with this function.
 
 This `main` function calls `spawn-window`, easl's built-in function for creating windows. This function takes a callback function that will be used as an update loop, telling the window what to do each frame. The callback function we pass here, the outermost `(fn [] ...)` expression, is simply a zero-argument function that calls `dispatch-render-shaders` inside. The `dispatch-render-shaders` function is the basis for all rendering in easl, and it takes three arguments: a vertex shader, a fragment shader, and a number of vertices to draw.
 
-The first two arguments we pass here are `vertex` and `fragment`, which we haven't defined yet but we'll get to in a moment. The third argument is `3`, which indicates that we want to draw three vertices, a single triangle. Since we'll be doing all of our rendering with a raymarcher, we don't need any kind of complicated triangle geometry, so a single big triangle covering the whole screen will be enough for our purposes.
+The first two arguments we pass here are `raymarch-vertex` and `raymarch-fragment`, which we haven't defined yet but we'll get to in a moment. The third argument is `3`, which indicates that we want to draw three vertices, just enough for a single triangle. Since we'll be doing all of our rendering with a raymarcher, we don't need any kind of complicated triangle geometry, so a single big triangle covering the whole screen will be enough for our purposes.
 
 Now to the definitions of the actual vertex and fragment shaders:
 
 ```easl
-(defn vertex []: vec4f
+(defn raymarch-vertex []: vec4f
   (vec4f (match (vertex-index)
            0 (vec2f -1.)
            1 (vec2f -1. 3.)
@@ -88,7 +90,7 @@ Now to the definitions of the actual vertex and fragment shaders:
          0.
          1.))
 
-(defn fragment []: vec4f
+(defn raymarch-fragment []: vec4f
   (let [resolution (vec2f (window-resolution))
         pos (-> (.xy (position))
                 (/ resolution)
@@ -99,7 +101,7 @@ Now to the definitions of the actual vertex and fragment shaders:
     (vec4f pos 0. 1.)))
 ```
 
-The `vertex` function calls `vertex-index`, a built-in function that returns the index of the current vertex, and uses a `match` block to position the corners of the triangle differently for each vertex. The `fragment` function uses the `window-resolution` function to get the current resolution of the window, and then computes `pos` (using  easl's [threading syntax](language.md#the-threading-operator--)) as a normalized position value based on the pixel coordinates that are looked up using the `position` function. If you run the code yourself at this point, you'll see a window with the four quadrants colored in a simple black-red-yellow-green pattern.
+The `raymarch-vertex` function calls `vertex-index`, a built-in function that returns the index of the current vertex, and uses a `match` block to position the corners of the triangle differently for each vertex. The `raymarch-fragment` function uses the `window-resolution` function to get the current resolution of the window, and then computes `pos` (using easl's [threading syntax](language.md#the-threading-operator--)) as a normalized position value based on the pixel coordinates that are looked up using the `position` function. If you run the code yourself at this point, you'll see a window with the four quadrants of the window colored in a simple black-red-yellow-green pattern.
 
 To start using our raymarcher for rendering, we'll need a few more things; an SDF (signed distance function) to march against, and a way to compute the gradient of the SDF, so that we can use the gradient information to shade the surface.
 
@@ -117,10 +119,10 @@ To start using our raymarcher for rendering, we'll need a few more things; an SD
        eps)))
 ```
 
-`sphere` here is an extremely simple SDF describing a sphere centered at the origin with radius 1. The `gradient` function here is another higher-order function, like the `raymarch` function itself, which can accept any arbitrary function (such `sphere`) as an input. With all of these pieces created, let's modify the `fragment` function to use our raymarcher for rendering:
+`sphere` here is an extremely simple SDF describing a sphere centered at the origin with radius 1. The `gradient` function here is another higher-order function, like the `raymarch` function itself, which can accept any arbitrary function (such `sphere`) as an input. With all of these pieces created, let's modify the `raymarch-fragment` function to use our raymarcher for rendering:
 
 ```easl
-(defn fragment []: vec4f
+(defn raymarch-fragment []: vec4f
   (let [resolution (vec2f (window-resolution))
         pos (-> (.xy (position))
                 (/ resolution)
@@ -140,7 +142,7 @@ To start using our raymarcher for rendering, we'll need a few more things; an SD
            1.)))
 ```
 
-Now `fragment` uses the normalized screen position to determine the direction of a ray, then calls `raymarch` to find the surface in the direction of the ray. `raymarch-result` is an `(Option vec3f)`, so to compute the final color we `match` on it. In the `(Some surface-pos)` branch, we return a color given by the gradient (renormalized from [-1, 1] to [0, 1]), while in the `None` branch we simply return black, `(vec3f 0.)`.
+Now `raymarch-fragment` uses the normalized screen position to determine the direction of a ray, then calls `raymarch` to find the surface in the direction of the ray. `raymarch-result` is an `(Option vec3f)`, so to compute the final color we `match` on it. In the `(Some surface-pos)` branch, we return a color given by the gradient (renormalized from [-1, 1] to [0, 1]), while in the `None` branch we simply return black, `(vec3f 0.)`.
 
 Here's the full current program, which clocks in around 60 lines. Try to run it for yourself with `easl run my_file.program` - you should see a simple sphere, with some colorful shading.
 
@@ -171,7 +173,7 @@ Here's the full current program, which clocks in around 60 lines. Try to run it 
 (defn sphere [pos: vec3f]: f32
   (- (length pos) 1.))
 
-(defn vertex []: vec4f
+(defn raymarch-vertex []: vec4f
   (vec4f (match (vertex-index)
            0 (vec2f -1.)
            1 (vec2f -1. 3.)
@@ -179,7 +181,7 @@ Here's the full current program, which clocks in around 60 lines. Try to run it 
          0.
          1.))
 
-(defn fragment []: vec4f
+(defn raymarch-fragment []: vec4f
   (let [resolution (vec2f (window-resolution))
         pos (-> (.xy (position))
                 (/ resolution)
@@ -201,15 +203,15 @@ Here's the full current program, which clocks in around 60 lines. Try to run it 
 @cpu
 (defn main []
   (spawn-window (fn []
-                  (dispatch-render-shaders vertex fragment 3))))
+                  (dispatch-render-shaders raymarch-vertex raymarch-fragment 3))))
 ```
 
 ## Abstraction
 
-Right now our `raymarch` and `gradient` functions have both been expressed as higher-order functions, so that they can avoid hard-coding in any particular SDF. Our `fragment` function, however, still just uses `sphere` directly, so if we ever wanted to change which sdf we're using we'd have to reach into it's internals. Let's fix that, by letting `fragment` abstract over the SDF that it uses, too:
+Right now our `raymarch` and `gradient` functions have both been expressed as higher-order functions, so that they can avoid hard-coding in any particular SDF. Our `raymarch-fragment` function, however, still just uses `sphere` directly, so if we ever wanted to change which sdf we're using we'd have to reach into it's internals. Let's fix that, by letting `raymarch-fragment` abstract over the SDF that it uses, too:
 
 ```easl
-(defn fragment [sdf: (Fn [vec3f] f32)]: vec4f
+(defn raymarch-fragment [sdf: (Fn [vec3f] f32)]: vec4f
   (let [resolution (vec2f (window-resolution))
         pos (-> (.xy (position))
                 (/ resolution)
@@ -232,20 +234,20 @@ Right now our `raymarch` and `gradient` functions have both been expressed as hi
 (defn main []
   (spawn-window (fn []
                   (dispatch-render-shaders
-                    vertex
-                    (fn [] (fragment sphere))
+                    raymarch-vertex
+                    (fn [] (raymarch-fragment sphere))
                     3))))
 ```
 
-Notice that we had to change the way we use `fragment` inside `main` now. The fragment shader function passed to `dispatch-render-shaders` is expected to be a zero-argument function (with some caveats, see [shaders](shaders.md) for details), but our `fragment` function no longer has zero arguments, since it now accepts `sdf` as an input. So instead of passing `fragment` directly to `dispatch-render-shaders`, we instead use `(fn [] ...)` to declare a local, zero-argument function that internally calls `fragment` with `sphere` as an argument.
+Notice that we had to change the way we use `raymarch-fragment` inside `main` now. The fragment shader function passed to `dispatch-render-shaders` is expected to be a zero-argument function (with some caveats, see [shaders](shaders.md) for details), but our `raymarch-fragment` function no longer has zero arguments, since it now accepts `sdf` as an input. So instead of passing `raymarch-fragment` directly to `dispatch-render-shaders`, we instead use `(fn [] ...)` to declare a local, zero-argument function that internally calls `raymarch-fragment` with `sphere` as an argument.
 
 This call to `dispatch-render-shaders` in `main` function is getting kinda ugly now, so let's introduce one more helper function to simplify things:
 
 ```easl
 (defn render-sdf [sdf: (Fn [vec3f] f32)]
   (dispatch-render-shaders
-    vertex
-    (fn [] (fragment sdf))
+    raymarch-vertex
+    (fn [] (raymarch-fragment sdf))
     3))
 
 @cpu
@@ -256,9 +258,9 @@ This call to `dispatch-render-shaders` in `main` function is getting kinda ugly 
 
 `render-sdf` now hides all of the implementation complexity of the specific shaders involved in the raymarching process, and gives us a very simple tool to use from the CPU side of things in `main`: we give it an `sdf` function, and it sends that SDF to the GPU and displays the results on screen for us.
 
-This demonstrates an important point about easl's design philosophy: Functions can cross the CPU/GPU boundary easily, and can be used in both context. The `main` and `render-sdf` functions run on the CPU, but they pass around the `sphere` function to eventually be run on the GPU, and this works fine. In general, any easl function be called either on the CPU or GPU, unless it uses context-specific features (e.g. the `vertex-index` function only works inside vertex shaders, and any function that calls it can't be called from the CPU).
+This demonstrates an important point about easl's design philosophy: Functions can cross the CPU/GPU boundary easily, and can be used in both context. The `main` and `render-sdf` functions run on the CPU, but they pass around the `sphere` function to eventually be run on the GPU, and this works fine. In general, any easl function be called either on the CPU or GPU, unless it uses context-specific features (e.g. the `vertex-index` function only works inside vertex shaders, so any function that calls it can't be called from the CPU).
 
-For another example of how this ability to send functions across the CPU/GPU divide can be useful, let's first make a small refactor to our `fragment` function:
+For another example of how this ability to send functions across the CPU/GPU divide can be useful, let's first make a small refactor to our `raymarch-fragment` function:
 
 ```easl
 (def camera-origin: vec3f
@@ -274,7 +276,7 @@ For another example of how this ability to send functions across the CPU/GPU div
                       (f32 (min resolution.x resolution.y)))))]
     (normalize (vec3f pos 1.))))
 
-(defn fragment [sdf: (Fn [vec3f] f32)]: vec4f
+(defn raymarch-fragment [sdf: (Fn [vec3f] f32)]: vec4f
   (let [camera-direction (camera-direction-from-pixel-coords (.xy (position)))
         raymarch-result (raymarch sdf
                                   camera-origin
@@ -302,13 +304,13 @@ Here we've moved `camera-origin` into a global constant, and extracted the logic
       (render-sdf sphere))))
 ```
 
-Here we've modified our `main` function to, whenever the user clicks (as measured by teh `mouse-just-down?` built-in function), print out the result of raymarching in the direction of the mouse. The results of the `raymarch` function called on the CPU like this will be exactly the same as if you called them on the GPU (up to hardware-level differences in the floating point logic, at least). This kind of thing can be *extremely* useful for easily debugging shader programs in ways that are normally challenging.
+Here we've modified our `main` function to print out the result of raymarching in the direction of the mouse whenever the user clicks (as measured by the `mouse-just-down?` built-in function). The results of the `raymarch` function called on the CPU like this will be exactly the same as if you called them on the GPU (up to hardware-level differences in the floating point logic, at least). This ability to share code across the CPU/GPU boundary can make it easy to debug shader programs in ways that would be challenging in any traditional shader language.
 
 ## Higher-order helpers for SDFs
 
 Now that we've established a solid baseline program for rendering SDFs, let's start to explore more complex kinds of distance functions.
 
-As shown earlier, easl makes it easy to define a function locally using the `(fn [...] ...)` syntax. So if we want to render a different sdf, we don't necessarily need to declare it as a top-level function, we can also just define it in-place where we call `render-sdf`, for instance:
+As shown earlier, easl makes it easy to define a function locally using the `(fn [...] ...)` syntax. So if we want to render a different sdf, we don't necessarily need to declare it as a top-level function, we can instead just define it in-place where we call `render-sdf`, for instance:
 
 ```easl
 @cpu
@@ -346,7 +348,7 @@ Now let's implement another simple SDF, one for a box with arbitrary side length
        (min (max q.x (max q.y q.z)) 0.))))
 ```
 
-When you want to render more than one object in a raymarching scene, the usual tool is to render the *union* of two SDFs. The union is computed by taking the minimum of the two sdf values. Here's how you might render a shape compose of a sphere and a 
+When you want to render more than one object in a raymarching scene, the usual tool is to render the *union* of two SDFs. The union is computed by taking the minimum of the two sdf values. Here's how you might render a shape compose of a sphere and a box:
 
 ```easl
 @cpu
@@ -460,7 +462,7 @@ As a further convenience, we can define an overload of `rotate` that accepts the
 
 It's worth noting here that this second `rotate` definition has an interesting property that you might not notice if you don't look carefully: Since the local `rotation` binding that it declares is outside of the `fn` that it defines, the value of the rotation matrix will only be computed once, and each different invocation of the returned function will just use that pre-computed value. That much is standard for any language with closures, but the unique thing happening here is that this the calculation of the `rotation` matrix *happens on the CPU*, whereas the evaluation of the returned function *happens on the GPU*, in the fragment shader. The `rotate` function, after all, is being called directly on the CPU inside `main`, so any computation that it does will happen on the CPU.
 
-Calculating a rotation matrix on the CPU before your shader runs like this is, of course, good practice, since it would be wasteful to re-calculate a shared value independently in each pixel. In any traditional graphics-programming framework, to accomplish this CPU/GPU computational split you'd have to declare a global binding site in your shader code and then, in a separate CPU-side "host" language, write some code to connect to locate that binding and explictly assign a value to it before dispatching your shaders. But because a singular easl program can target both the CPU and the GPU, and because the type system and semantics are shared between both sides of that divide, we can simply have a value like this calculated in a local binding of a helper function, and everything will work seamlessly without any explicit binding annotations. The easl compiler keeps track of all of the different pieces of data that need to cross the CPU/GPU threshold, and manages all of the data transfer logic automatically, so things just work.
+Calculating a rotation matrix on the CPU before your shader runs like this is, of course, good practice, since it would be wasteful to re-calculate a shared value independently in each pixel. In any traditional graphics-programming framework, to accomplish this CPU/GPU computational split you'd have to declare a global binding site in your shader code and then, in a separate CPU-side language, write some code to connect to locate that binding and explictly assign a value to it before dispatching your shaders. But because a singular easl program can target both the CPU and the GPU, and because the type system and semantics are shared between both sides of that divide, we can simply have a value like this calculated in a local binding of a helper function, and everything will work seamlessly without any explicit binding annotations. The easl compiler keeps track of all of the different pieces of data that need to cross the CPU/GPU threshold, and manages all of the data transfer logic automatically.
 
 We've now built a fairly nice, declarative-looking set of functions that we can use to combine and manipulate primitve SDFs into more complex shapes. However, one section still leaves a bit to be desired. In our call to `union`, we pass two shapes, one of which is simply `sphere`, while the other is this ugly-looking `(fn [pos] (box pos (vec3f 0.7)))` function. All that this represents is a box centered at the origin with a size `0.7` on each side, but the way we've written it obscures that slightly, since we have to declare a whole new explicit function to abstract over `pos`. Thankfully, we can add a new overload to the `box` function to make this look cleaner:
 
@@ -521,8 +523,8 @@ Now we have a base `sphere` overload that accepts an explicit radius argument, a
 So far we've just been coloring all of our geometry directly with the gradient, which is fine for debugging, but not what you'd want in a practical raymarching engine. Let's fix that:
 
 ```
-(defn fragment [sdf: (Fn [vec3f] f32)
-                surface-color: (Fn [vec3f vec3f vec3f] vec3f)]: vec4f
+(defn raymarch-fragment [sdf: (Fn [vec3f] f32)
+                         surface-color: (Fn [vec3f vec3f vec3f] vec3f)]: vec4f
   (let [camera-direction (camera-direction-from-pixel-coords (.xy (position)))
         raymarch-result (raymarch sdf
                                   camera-origin
@@ -537,22 +539,22 @@ So far we've just been coloring all of our geometry directly with the gradient, 
 (defn render-sdf [sdf: (Fn [vec3f] f32)
                   surface-color: (Fn [vec3f vec3f vec3f] vec3f)]
   (dispatch-render-shaders
-    vertex
+    raymarch-vertex
     (fn []
-      (fragment sdf surface-color))
+      (raymarch-fragment sdf surface-color))
     3))
 
 (defn render-sdf [sdf: (Fn [vec3f] f32)]
   (dispatch-render-shaders
-    vertex
+    raymarch-vertex
     (fn []
-      (fragment sdf
-                (fn [pos view-direction normal]
-                  (* 0.5 (+ 1. normal)))))
+      (raymarch-fragment sdf
+                         (fn [pos view-direction normal]
+                           (* 0.5 (+ 1. normal)))))
     3))
 ```
 
-Now `fragment` and `render-sdf` each take a new argument, `surface-color`, which is a function that is used to choose which color to display once a ray has hit the surface. The passed function needs to take three `vec3f` arguments, representing the surface position, view direction, and surface normal, respectively, all of which can be useful for different kinds of lighting calculations. `render-sdf` also has an overload that passes the simple gradient-based shading that we used before, so our old `main` function that didn't pass any value for this `surface-color` argument remains valid. But now we can modify our `main` to pass in arbitrary surface-coloring logic:
+Now `raymarch-fragment` and `render-sdf` each take a new argument, `surface-color`, which is a function that is used to choose which color to display once a ray has hit the surface. The passed function needs to take three `vec3f` arguments, representing the surface position, view direction, and surface normal, respectively, all of which can be useful for different kinds of lighting calculations. `render-sdf` also has an overload that passes the simple gradient-based shading that we used before, so our old `main` function that didn't pass any value for this `surface-color` argument remains valid. But now we can modify our `main` to pass in arbitrary surface-coloring logic:
 
 ```
 @cpu

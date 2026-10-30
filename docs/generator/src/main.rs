@@ -34,6 +34,7 @@ const PAGES: &[PageSpec] = &[
   PageSpec { source: "language.md", nav_title: "Language guide", section: "Guide" },
   PageSpec { source: "shaders.md", nav_title: "Writing shaders", section: "Guide" },
   PageSpec { source: "cpu.md", nav_title: "The CPU runtime", section: "Guide" },
+  PageSpec { source: "raymarch.md", nav_title: "Ray marching", section: "Walkthroughs" },
   PageSpec { source: "reference/overview.md", nav_title: "Builtin reference", section: "Reference" },
   PageSpec { source: "reference/operators.md", nav_title: "Operators", section: "Reference" },
   PageSpec { source: "reference/math.md", nav_title: "Math functions", section: "Reference" },
@@ -241,6 +242,11 @@ fn render_page(
           format!(
             "<pre class=\"code easl\"><code>{}</code></pre>\n",
             highlight::highlight_easl(&code)
+          )
+        } else if lang == "glsl" {
+          format!(
+            "<pre class=\"code glsl\"><code>{}</code></pre>\n",
+            highlight::highlight_glsl(&code)
           )
         } else {
           format!(
