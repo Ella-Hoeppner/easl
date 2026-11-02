@@ -1,0 +1,15 @@
+(var corners: [3: vec4f])
+
+@vertex
+(defn vert [corner: vec2f]: vec4f
+  (vec4f corner 0. 1.))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (dispatch-render-shaders vert frag corners))))

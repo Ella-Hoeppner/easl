@@ -97,6 +97,9 @@ sync_test!(storage_ref_write_upload);
 // Same, but with no direct assignment to the var anywhere in the
 // program: the ref-mediated write alone must set the dirty flag.
 sync_test!(storage_ref_clean_var_upload);
+// Draws read their data arrays only on the GPU: compute-written vertex
+// data needs no readback, CPU-written indices and instance data upload.
+sync_test!(vertex_data_no_readback);
 // Data flows GPU→GPU only (dispatch 2 reads what dispatch 1 wrote): the
 // array uploads exactly once and no GPU→CPU readback ever happens.
 sync_test!(gpu_only_dataflow_no_readback);

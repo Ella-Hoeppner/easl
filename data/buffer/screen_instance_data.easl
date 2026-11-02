@@ -1,0 +1,64 @@
+; Per-instance data. Each instance is a full-screen triangle moved by its
+; offset (off screen, or not) adding its color, so the pixel sums the
+; colors of the instances that cover it. Frame 0 takes the vertices from a
+; count and the instances from a sized array; frame 1 takes both from
+; runtime-sized arrays, after a push; frame 2 draws an empty instance array,
+; drawing nothing.
+(struct Spot
+  offset: vec2f
+  color: vec4f)
+
+(var spots: [3: Spot])
+(var corners: [vec2f])
+(var more-spots: [Spot])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+(defn covering-corner [i: u32]: vec2f
+  (match i
+    0u (vec2f -1. -1.)
+    1u (vec2f 3. -1.)
+    _ (vec2f -1. 3.)))
+
+@vertex
+(defn counted-vert [@{builtin vertex-index} i: u32 spot: Spot]: Varyings
+  (Varyings (vec4f (+ (covering-corner i) spot.offset) 0. 1.) spot.color))
+
+@vertex
+(defn data-vert [corner: vec2f spot: Spot]: Varyings
+  (Varyings (vec4f (+ corner spot.offset) 0. 1.) spot.color))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  in.color)
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Add)
+  (spawn-window
+    (fn []
+      (match frame
+        0u (do (= spots
+                  [(Spot (vec2f 0.) (vec4f 1. 0. 0. 1.))
+                   (Spot (vec2f 10.) (vec4f 0. 1. 0. 1.))
+                   (Spot (vec2f 0.) (vec4f 0. 0. 0.5 1.))])
+               (dispatch-render-shaders counted-vert frag 3u spots))
+        1u (do (= corners
+                  (into-dynamic-array
+                    [(vec2f -1. -1.) (vec2f 3. -1.) (vec2f -1. 3.)]))
+               (= more-spots
+                  (into-dynamic-array
+                    [(Spot (vec2f 0.) (vec4f 0. 0.25 0. 1.))
+                     (Spot (vec2f -10.) (vec4f 1. 0. 0. 1.))]))
+               (= more-spots
+                  (push more-spots (Spot (vec2f 0.) (vec4f 0. 0.25 0. 1.))))
+               (dispatch-render-shaders data-vert frag corners more-spots))
+        2u (do (= more-spots (remove (remove (remove more-spots 0u) 0u) 0u))
+               (dispatch-render-shaders data-vert frag corners more-spots))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

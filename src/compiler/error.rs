@@ -623,6 +623,39 @@ pub enum CompileErrorKind {
   )]
   StorageReadInVertexWrittenInFragment(String),
   #[error(
+    "this vertex shader's data parameters take {0} vertex attributes, more \
+     than WebGPU's limit of 16 (each number, vector, and matrix column takes \
+     one)"
+  )]
+  TooManyVertexAttributes(usize),
+  #[error(
+    "this vertex shader reads vertex data at location {0}, past WebGPU's \
+     limit of 15"
+  )]
+  VertexLocationOutOfRange(usize),
+  #[error("this vertex shader's inputs use location {0} twice")]
+  OverlappingVertexLocations(usize),
+  #[error(
+    "a draw's vertex data, instance data, and indices must be arrays held \
+     by GPU-bound globals (`var`s not marked `@local`), passed by name"
+  )]
+  DrawDataNotGpuArray,
+  #[error(
+    "the vertex shader `{0}` takes {1} data parameter(s), but this draw \
+     passes {2} data array(s)"
+  )]
+  VertexDataCountMismatch(String, usize, usize),
+  #[error(
+    "this draw's data array holds `{1}`, but the vertex shader's data \
+     parameter is `{0}`"
+  )]
+  VertexDataTypeMismatch(TypeDescription, TypeDescription),
+  #[error(
+    "this draw's fragment shader writes \"{0}\", which the draw also reads \
+     as vertex data or indices; WebGPU doesn't allow both in one draw"
+  )]
+  DrawWritesItsData(String),
+  #[error(
     "closures dispatched to the GPU cannot mutate captured variable \"{0}\""
   )]
   CantMutateDispatchedClosureCapture(String),
@@ -970,6 +1003,27 @@ impl PartialEq for CompileErrorKind {
         Self::StorageReadInVertexWrittenInFragment(l0),
         Self::StorageReadInVertexWrittenInFragment(r0),
       ) => l0 == r0,
+      (
+        Self::TooManyVertexAttributes(l0),
+        Self::TooManyVertexAttributes(r0),
+      ) => l0 == r0,
+      (
+        Self::VertexLocationOutOfRange(l0),
+        Self::VertexLocationOutOfRange(r0),
+      ) => l0 == r0,
+      (
+        Self::OverlappingVertexLocations(l0),
+        Self::OverlappingVertexLocations(r0),
+      ) => l0 == r0,
+      (
+        Self::VertexDataCountMismatch(l0, l1, l2),
+        Self::VertexDataCountMismatch(r0, r1, r2),
+      ) => l0 == r0 && l1 == r1 && l2 == r2,
+      (
+        Self::VertexDataTypeMismatch(l0, l1),
+        Self::VertexDataTypeMismatch(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (Self::DrawWritesItsData(l0), Self::DrawWritesItsData(r0)) => l0 == r0,
       _ => core::mem::discriminant(self) == core::mem::discriminant(other),
     }
   }

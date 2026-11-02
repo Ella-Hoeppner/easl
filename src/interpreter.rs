@@ -20,6 +20,9 @@ use crate::compiler::effects::{
 use crate::compiler::entry::EntryPoint;
 use crate::compiler::modules::display_name;
 use crate::compiler::util::compile_word;
+use crate::compiler::vertex_inputs::{
+  DrawPositions, VertexInputLayout, is_draw_array,
+};
 use crate::compiler::{
   builtins::{
     ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS, address_mode_enum, filter_mode_enum,
@@ -2132,74 +2135,6 @@ fn apply_builtin_fn<IO: IOManager>(
         chars[start..end].iter().collect()
       }))
     }
-    "dispatch-render-shaders" => {
-      let (vert_value, Type::Function(vert_f)) = &args[0] else {
-        panic!()
-      };
-      env.upload_dispatched_closure_scope(vert_value, vert_f);
-      let vert_effects = vert_f.effects();
-      let (vert_read_global_variable_names, vert_written_global_variable_names) =
-        vert_effects.gpu_read_and_written_globals();
-      let vert_f_name = vert_f
-        .abstract_ancestor
-        .as_ref()
-        .unwrap()
-        .read()
-        .unwrap()
-        .name
-        .clone();
-      let (frag_value, Type::Function(frag_f)) = &args[1] else {
-        panic!()
-      };
-      env.upload_dispatched_closure_scope(frag_value, frag_f);
-      let frag_effects = frag_f.effects();
-      let (frag_read_global_variable_names, frag_written_global_variable_names) =
-        frag_effects.gpu_read_and_written_globals();
-      let frag_f_name = frag_f
-        .abstract_ancestor
-        .as_ref()
-        .unwrap()
-        .read()
-        .unwrap()
-        .name
-        .clone();
-      let read_global_variable_names: Vec<Arc<str>> =
-        vert_read_global_variable_names
-          .into_iter()
-          .chain(frag_read_global_variable_names.into_iter())
-          .collect();
-      let written_global_variable_names: Vec<Arc<str>> =
-        vert_written_global_variable_names
-          .into_iter()
-          .chain(frag_written_global_variable_names.into_iter())
-          .collect();
-      let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
-        panic!()
-      };
-      let instance_count = match args.get(3) {
-        Some((Value::Prim(Primitive::U32(count)), _)) => *count,
-        Some(_) => panic!(),
-        None => 1,
-      };
-      env.setup_gpu_if_needed();
-      let mut pre_upload =
-        env.collect_dirty_uploads(&read_global_variable_names);
-      let (render_target, target_uploads) = env.prepare_render_target();
-      pre_upload.extend(target_uploads);
-      env.io.record_draw(
-        env.gpu_entry_id(&vert_f_name),
-        env.gpu_entry_id(&frag_f_name),
-        &vert_f_name,
-        &frag_f_name,
-        *vert_count,
-        instance_count,
-        pre_upload,
-        env.render_settings,
-        render_target,
-      )?;
-      env.mark_gpu_written(&written_global_variable_names);
-      Ok(Value::Unit)
-    }
     "dispatch-compute-shader" => {
       let (compute_value, Type::Function(compute_f)) = &args[0] else {
         panic!()
@@ -3453,6 +3388,57 @@ pub enum BufferUpload {
   Sampler(SamplerSettings),
 }
 
+/// What a draw draws besides its shaders: how many vertices (or indices)
+/// and instances, and the buffers of the GPU-bound globals it reads as its
+/// index buffer and as vertex data (see `vertex_inputs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawGeometry {
+  /// The vertices drawn, or the indices with `indices`.
+  pub count: u32,
+  pub instance_count: u32,
+  pub indices: Option<(u8, u8)>,
+  /// The arrays feeding the vertex shader's data parameters, in order:
+  /// stepping per vertex, then per instance.
+  pub vertex_data: Option<(u8, u8)>,
+  pub instance_data: Option<(u8, u8)>,
+}
+
+impl DrawGeometry {
+  /// `count` vertices of `instance_count` instances, with no buffers.
+  pub fn counts(count: u32, instance_count: u32) -> Self {
+    Self {
+      count,
+      instance_count,
+      indices: None,
+      vertex_data: None,
+      instance_data: None,
+    }
+  }
+
+  /// The event-log line for a draw of `vert` and `frag`: the builtin, the
+  /// shaders, the vertex (or index) count, then the instance count when
+  /// it isn't 1.
+  pub fn log_line(&self, vert: &str, frag: &str) -> String {
+    let builtin = if self.indices.is_some() {
+      "dispatch-indexed-render-shaders"
+    } else {
+      "dispatch-render-shaders"
+    };
+    let count = self.count;
+    match self.instance_count {
+      1 => format!("{builtin} {vert} {frag} {count}"),
+      instances => format!("{builtin} {vert} {frag} {count} {instances}"),
+    }
+  }
+
+  /// The buffers the draw reads, by binding key.
+  pub fn buffers(&self) -> impl Iterator<Item = (u8, u8)> {
+    [self.indices, self.vertex_data, self.instance_data]
+      .into_iter()
+      .flatten()
+  }
+}
+
 /// Internal frame-level GPU command, used by StdoutIO to pass commands to
 /// the wgpu renderer in window.rs. Entry points are referenced by dense id
 /// (index into the env's GPU entry table, resolved once at dispatch-record
@@ -3462,8 +3448,7 @@ pub enum WindowEvent {
   RenderShaders {
     vert: u16,
     frag: u16,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     /// If Some, render to this texture binding instead of the screen.
@@ -3499,6 +3484,9 @@ pub enum WindowEvent {
 pub struct GpuEntryInfo {
   pub name: String,
   pub used_bindings: Vec<(u8, u8)>,
+  /// A vertex entry's data parameters' layouts, in order (see
+  /// `vertex_inputs`).
+  pub vertex_inputs: Vec<VertexInputLayout>,
   /// A fragment entry with a `frag-depth` output: its pipelines need a
   /// depth attachment even with depth testing off.
   pub writes_frag_depth: bool,
@@ -3513,8 +3501,10 @@ pub enum IOEvent {
   DispatchShaders {
     vert: String,
     frag: String,
-    vert_count: u32,
+    /// Vertices, or indices when `indexed`.
+    count: u32,
     instance_count: u32,
+    indexed: bool,
   },
   DispatchComputeShader {
     entry: String,
@@ -4070,7 +4060,13 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     .collect();
   let mut gpu_entries: Vec<GpuEntryInfo> = vec![];
   let mut gpu_entry_ids: HashMap<Arc<str>, u16> = HashMap::new();
-  let mut entry_fns: Vec<(Arc<str>, EntryPoint, EffectType, bool)> = vec![];
+  let mut entry_fns: Vec<(
+    Arc<str>,
+    EntryPoint,
+    EffectType,
+    bool,
+    Vec<VertexInputLayout>,
+  )> = vec![];
   for f in program.abstract_functions_iter() {
     let f = f.read().unwrap();
     let Some(entry) = f.entry_point else {
@@ -4089,6 +4085,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
         entry,
         effects.clone(),
         entry == EntryPoint::Fragment && implementation.writes_frag_depth(),
+        implementation.vertex_inputs.clone(),
       ));
     }
     let (reads, writes) = effects.gpu_read_and_written_globals();
@@ -4107,7 +4104,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     }
   }
   entry_fns.sort_by(|(a, ..), (b, ..)| a.cmp(b));
-  for (name, _, effects, writes_frag_depth) in entry_fns {
+  for (name, _, effects, writes_frag_depth, vertex_inputs) in entry_fns {
     let (reads, writes) = effects.gpu_read_and_written_globals();
     let mut used_bindings: Vec<(u8, u8)> = vec![];
     for global in reads.into_iter().chain(writes.into_iter()) {
@@ -4130,6 +4127,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     gpu_entries.push(GpuEntryInfo {
       name: compile_word(name.clone()),
       used_bindings,
+      vertex_inputs,
       writes_frag_depth,
     });
   }
@@ -4238,8 +4236,7 @@ pub trait IOManager: Sized {
     frag: u16,
     vert_name: &str,
     frag_name: &str,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
@@ -4631,8 +4628,7 @@ impl IOManager for StdoutIO {
     frag: u16,
     _vert_name: &str,
     _frag_name: &str,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
@@ -4640,8 +4636,7 @@ impl IOManager for StdoutIO {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
       vert,
       frag,
-      vert_count,
-      instance_count,
+      geometry,
       pre_upload,
       settings,
       render_target,
@@ -5091,8 +5086,7 @@ impl IOManager for StringIO {
     _frag: u16,
     vert_name: &str,
     frag_name: &str,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
     _settings: RenderSettings,
     _render_target: Option<(u8, u8)>,
@@ -5100,8 +5094,9 @@ impl IOManager for StringIO {
     self.events.push(IOEvent::DispatchShaders {
       vert: vert_name.to_string(),
       frag: frag_name.to_string(),
-      vert_count,
-      instance_count,
+      count: geometry.count,
+      instance_count: geometry.instance_count,
+      indexed: geometry.indices.is_some(),
     });
     Ok(())
   }
@@ -5260,8 +5255,7 @@ impl IOManager for CaptureIO {
     frag: u16,
     vert_name: &str,
     frag_name: &str,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
@@ -5271,8 +5265,7 @@ impl IOManager for CaptureIO {
       frag,
       vert_name,
       frag_name,
-      vert_count,
-      instance_count,
+      geometry,
       pre_upload,
       settings,
       render_target,
@@ -7435,6 +7428,127 @@ fn write_back_through_lhs<IO: IOManager>(
   Ok(())
 }
 
+/// A draw application's data arrays: their roles, and the global each
+/// argument names when it's one.
+struct DrawArrays {
+  positions: DrawPositions,
+  names: Vec<Option<Arc<str>>>,
+}
+
+impl DrawArrays {
+  /// The data arrays of an application of `name` to `args`, when it's a
+  /// draw.
+  fn of(name: &str, args: &[Exp<ExpTypeInfo>]) -> Option<Box<Self>> {
+    let positions = DrawPositions::of(name, args)?;
+    let names = args
+      .iter()
+      .map(|arg| match &arg.kind {
+        ExpKind::Name(name) if is_draw_array(arg) => Some(name.clone()),
+        _ => None,
+      })
+      .collect();
+    Some(Box::new(Self { positions, names }))
+  }
+}
+
+/// The length of the array global `name`, read without syncing it: the
+/// GPU can't resize an array.
+fn draw_array_length<IO: IOManager>(
+  env: &EvaluationEnvironment<IO>,
+  name: &Arc<str>,
+) -> Result<Value, EvalException> {
+  let length = match env.lookup(name)? {
+    Value::Array(array) => array.len(),
+    Value::ZeroedArray { length } => *length,
+    Value::Uninitialized => 0,
+    _ => panic!("a draw data array that isn't an array"),
+  };
+  Ok(Value::Prim(Primitive::U32(length as u32)))
+}
+
+/// Draws (`dispatch-render-shaders` / `dispatch-indexed-render-shaders`):
+/// `args` are the shaders, then counts, a data array's argument being its
+/// length (its contents are never read on the CPU; the draw reads its
+/// buffer, uploaded first when the CPU wrote it).
+fn eval_draw<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  draw: &DrawArrays,
+  args: Vec<(Value, Type)>,
+) -> Result<Value, EvalException> {
+  let (vert_value, Type::Function(vert_f)) = &args[0] else {
+    panic!()
+  };
+  env.upload_dispatched_closure_scope(vert_value, vert_f);
+  let (mut reads, mut writes) = vert_f.effects().gpu_read_and_written_globals();
+  let vert_f_name = vert_f
+    .abstract_ancestor
+    .as_ref()
+    .unwrap()
+    .read()
+    .unwrap()
+    .name
+    .clone();
+  let (frag_value, Type::Function(frag_f)) = &args[1] else {
+    panic!()
+  };
+  env.upload_dispatched_closure_scope(frag_value, frag_f);
+  let (frag_reads, frag_writes) =
+    frag_f.effects().gpu_read_and_written_globals();
+  let frag_f_name = frag_f
+    .abstract_ancestor
+    .as_ref()
+    .unwrap()
+    .read()
+    .unwrap()
+    .name
+    .clone();
+  reads.extend(frag_reads);
+  reads.extend(draw.names.iter().flatten().cloned());
+  writes.extend(frag_writes);
+  let count = |position: usize| match &args[position].0 {
+    Value::Prim(Primitive::U32(count)) => *count,
+    _ => panic!("a draw count that isn't a u32"),
+  };
+  let key = |position: Option<usize>| {
+    let name = draw.names[position?].as_ref()?;
+    let (binding, ..) = env
+      .binding_vars
+      .iter()
+      .find(|(_, binding_name, ..)| binding_name == name)
+      .expect("a draw data array without a GPU binding");
+    Some((binding.group, binding.binding))
+  };
+  let positions = draw.positions;
+  let geometry = DrawGeometry {
+    count: count(
+      positions
+        .indices
+        .or(positions.vertices)
+        .expect("a draw without a vertex or index count"),
+    ),
+    instance_count: positions.instances.map_or(1, count),
+    indices: key(positions.indices),
+    vertex_data: key(positions.vertices),
+    instance_data: key(positions.instances),
+  };
+  env.setup_gpu_if_needed();
+  let mut pre_upload = env.collect_dirty_uploads(&reads);
+  let (render_target, target_uploads) = env.prepare_render_target();
+  pre_upload.extend(target_uploads);
+  env.io.record_draw(
+    env.gpu_entry_id(&vert_f_name),
+    env.gpu_entry_id(&frag_f_name),
+    &vert_f_name,
+    &frag_f_name,
+    geometry,
+    pre_upload,
+    env.render_settings,
+    render_target,
+  )?;
+  env.mark_gpu_written(&writes);
+  Ok(Value::Unit)
+}
+
 /// Makes the texture global `target` names the render target.
 fn set_render_target<IO: IOManager>(
   env: &mut EvaluationEnvironment<IO>,
@@ -7823,9 +7937,16 @@ fn eval_application<IO: IOManager>(
         })
         .collect();
       let is_array_length = &*f_arc.read().unwrap().name == "array-length";
+      let draw = DrawArrays::of(&name, &args);
       let arg_values: Vec<Value> = args
         .into_iter()
-        .map(|arg| {
+        .enumerate()
+        .map(|(i, arg)| {
+          if let Some(draw) = &draw
+            && let Some(array_name) = &draw.names[i]
+          {
+            return draw_array_length(env, array_name);
+          }
           if is_array_length && let ExpKind::Name(array_name) = &arg.kind {
             // A length-only read: the GPU can never resize an array, so
             // this needs no readback.
@@ -7853,6 +7974,13 @@ fn eval_application<IO: IOManager>(
           }
         })
         .collect::<Result<_, _>>()?;
+      if let Some(draw) = draw {
+        return eval_draw(
+          env,
+          &draw,
+          arg_values.into_iter().zip(arg_types).collect(),
+        );
+      }
       let mut return_value = match f {
         Function::Builtin(name) => {
           // `progress-video-frame` / `jump-to-video-frame` take a `@var
@@ -9397,8 +9525,11 @@ fn vm_host_call<IO: IOManager>(
       vert,
       frag,
       sets,
-      vert_count_slot,
+      count_slot,
       instance_count_slot,
+      indices,
+      vertex_data,
+      instance_data,
     } => {
       let dispatch = &code.host_dispatches[*sets as usize];
       refresh_dirty_slots(
@@ -9420,8 +9551,21 @@ fn vm_host_call<IO: IOManager>(
         .iter()
         .map(|&i| code.host_bindings[i as usize].name.clone())
         .collect();
-      let vert_count = stack[*vert_count_slot as usize];
-      let instance_count = stack[*instance_count_slot as usize];
+      let gpu_key = |binding: &Option<u16>| {
+        binding.map(|i| {
+          let (group, binding, _) = code.host_bindings[i as usize]
+            .gpu
+            .expect("a draw data array without a GPU binding");
+          (group, binding)
+        })
+      };
+      let geometry = DrawGeometry {
+        count: stack[*count_slot as usize],
+        instance_count: stack[*instance_count_slot as usize],
+        indices: gpu_key(indices),
+        vertex_data: gpu_key(vertex_data),
+        instance_data: gpu_key(instance_data),
+      };
       env.setup_gpu_if_needed();
       let mut pre_upload = env.collect_dirty_uploads(&read_names);
       let (render_target, target_uploads) = env.prepare_render_target();
@@ -9433,8 +9577,7 @@ fn vm_host_call<IO: IOManager>(
         env.gpu_entry_id(frag_name),
         vert_name,
         frag_name,
-        vert_count,
-        instance_count,
+        geometry,
         pre_upload,
         env.render_settings,
         render_target,

@@ -1,0 +1,49 @@
+; Vertex inputs WGSL can take directly stay as written, for hosts drawing
+; them with their own vertex buffers: written locations, inferred ones, and
+; a struct mixing builtins with other fields. Only `flattened`'s matrix is
+; rebuilt from attributes, which take the locations written on them.
+(struct Located
+  @{location 5} position: vec2f
+  @{location 2} color: vec4f)
+
+(struct Mixed
+  @{builtin vertex-index} index: u32
+  position: vec2f)
+
+(struct Placed
+  transform: mat2x2f
+  @{location 9} tint: vec4f)
+
+@vertex
+(defn written [@{location 3} corner: vec2f
+               @{location 1} @{interpolate flat} id: u32]: vec4f
+  (vec4f corner (f32 id) 1.))
+
+@vertex
+(defn located [in: Located]: vec4f
+  (+ in.color (vec4f in.position 0. 1.)))
+
+@vertex
+(defn mixed [in: Mixed]: vec4f
+  (vec4f in.position (f32 in.index) 1.))
+
+@vertex
+(defn flattened [@{location 0} corner: vec2f
+                 placed: Placed
+                 @{location 12} rotation: mat2x2f]: vec4f
+  (+ placed.tint
+     (vec4f (* rotation (* placed.transform corner)) 0. 1.)))
+
+; Two entries inferring different locations for one struct: the first by
+; name keeps it as written, and the other flattens it.
+(struct Shared
+  a: vec2f
+  b: vec4f)
+
+@vertex
+(defn shared-first [s: Shared]: vec4f
+  (+ s.b (vec4f s.a 0. 1.)))
+
+@vertex
+(defn shared-second [c: vec2f s: Shared]: vec4f
+  (+ s.b (vec4f (+ c s.a) 0. 1.)))

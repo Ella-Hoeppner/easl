@@ -1,0 +1,72 @@
+; Per-vertex data from an array global, its element a struct with padding
+; (a vec3f after a vec2f), a fixed-size array, a matrix with padded columns,
+; and a nested struct of integers: each vertex attribute reads its part at
+; its storage-layout offset. A wrong offset shows up as blue (as only
+; frame 3's inline vertex shader, capturing its color, draws on purpose).
+(struct Tag
+  id: u32
+  offset: i32)
+
+(struct Corner
+  position: vec2f
+  color: vec3f
+  weights: [2: f32]
+  basis: mat3x3f
+  tag: Tag)
+
+(var corners: [3: Corner])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+@vertex
+(defn vert [c: Corner]: Varyings
+  (Varyings
+    (vec4f (.xy (* c.basis (vec3f c.position 1.))) 0. 1.)
+    (if (&& (== c.tag.id 7u) (== c.tag.offset -2i))
+      (vec4f (* c.color (+ (c.weights 0u) (c.weights 1u))) 1.)
+      (vec4f 0. 0. 1. 1.))))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  in.color)
+
+(defn make-corner [at: vec2f color: vec3f weights: [2: f32] basis: mat3x3f]: Corner
+  (Corner at color weights basis (Tag 7u -2i)))
+
+(defn fill [color: vec3f weights: [2: f32] basis: mat3x3f]
+  (= corners
+     [(make-corner (vec2f -1. -1.) color weights basis)
+      (make-corner (vec2f 3. -1.) color weights basis)
+      (make-corner (vec2f -1. 3.) color weights basis)]))
+
+(def identity: mat3x3f
+  (mat3x3f 1. 0. 0. 0. 1. 0. 0. 0. 1.))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        0u (do (fill (vec3f 0.5 0. 0.) [0.25 0.75] identity)
+               (dispatch-render-shaders vert frag corners))
+        1u (do (fill (vec3f 0. 1. 0.) [1. 0.] identity)
+               (dispatch-render-shaders vert frag corners))
+        ; A zero matrix collapses the triangle: nothing is drawn.
+        2u (do (fill (vec3f 1. 1. 1.) [1. 0.] (mat3x3f 0. 0. 0. 0. 0. 0. 0. 0. 0.))
+               (dispatch-render-shaders vert frag corners))
+        ; An inline vertex shader taking vertex data, with a capture.
+        3u (let [shade (vec4f 0. 0. 1. 1.)]
+             (fill (vec3f 0.) [0. 0.] identity)
+             (dispatch-render-shaders
+               (fn [c: Corner]
+                 (Varyings (vec4f c.position 0. 1.)
+                           (* shade (f32 (- c.tag.id 6u)))))
+               frag
+               corners))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

@@ -354,6 +354,8 @@ pub(crate) fn generated_function(
     entry_point: None,
     dispatched: false,
     directly_user_written: false,
+    vertex_inputs: vec![],
+    flattened_vertex_params: vec![],
     expression: ExpBuilder::at(source).unit(),
   }));
   let signature = Arc::new(RwLock::new(AbstractFunctionSignature {

@@ -5802,11 +5802,12 @@ impl Program {
 // ===========================================================================
 
 /// The builtins that take a function to run later (keeping a copy of it).
-const HOST_BUILTINS: [&str; 4] = [
+const HOST_BUILTINS: [&str; 5] = [
   "start-audio",
   "spawn-window",
   "dispatch-compute-shader",
   "dispatch-render-shaders",
+  "dispatch-indexed-render-shaders",
 ];
 
 /// A body the copy check walks: its function's name, the function (for its

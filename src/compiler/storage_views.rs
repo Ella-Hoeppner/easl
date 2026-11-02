@@ -15,6 +15,9 @@
 //! helpers they call that read the var) copies with the var's name swapped
 //! for the view's.
 //!
+//! A var a draw reads as vertex data or indices is read-only in that draw
+//! too, so render shaders read it through a view as well.
+//!
 //! Vertex shaders writing GPU memory are rejected by context exclusivity
 //! (`StorageWriteInVertexShader`). A fragment shader reads through the view
 //! only when it doesn't write the var: one draw can't bind a buffer both as
@@ -178,17 +181,26 @@ impl Program {
     entries
   }
 
-  /// Gives each storage-write var a vertex shader reads a read-only view
-  /// (see the module docs). Runs after `assign_elided_bindings`, so every
+  /// Gives each storage-write var a vertex shader reads, or a render shader
+  /// reads and a draw reads as vertex data or indices, a read-only view (see
+  /// the module docs). Runs after `assign_elided_bindings`, so every
   /// binding is known and views take free ones.
   pub fn plan_storage_read_views(&mut self) {
     let entries = self.render_entry_storage_uses(&self.storage_write_vars());
     let mut entry_names: Vec<&Arc<str>> = entries.keys().collect();
     entry_names.sort();
+    // Vars draws read as vertex data or indices are read-only in those
+    // draws, so render shaders read them through views too.
+    let draw_data = self.draw_data_vars();
     let viewed: BTreeSet<Arc<str>> = entries
       .values()
-      .filter(|entry| entry.vertex)
-      .flat_map(|entry| entry.reads.iter().cloned())
+      .flat_map(|entry| {
+        entry
+          .reads
+          .iter()
+          .filter(|var| entry.vertex || draw_data.contains(*var))
+          .cloned()
+      })
       .collect();
     if viewed.is_empty() {
       return;

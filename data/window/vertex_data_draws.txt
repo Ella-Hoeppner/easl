@@ -1,0 +1,6 @@
+spawn-window
+dispatch-render-shaders data-vert f 3 2
+dispatch-indexed-render-shaders pulled-vert f 6
+dispatch-indexed-render-shaders pulled-vert f 6 4
+dispatch-indexed-render-shaders data-vert f 7 2
+close-window

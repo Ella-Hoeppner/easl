@@ -1,0 +1,29 @@
+; Draws read their data arrays on the GPU, never on the CPU: vertex data a
+; compute shader wrote is drawn without a readback, and CPU-written
+; instance data and indices are uploaded before the draw.
+(var corners: [3: vec2f])
+(var tints: [vec4f])
+(var picks: [3: u32])
+
+@compute
+(defn build []
+  (= corners [(vec2f -1. -1.) (vec2f 3. -1.) (vec2f -1. 3.)]))
+
+@vertex
+(defn vert [corner: vec2f tint: vec4f]: vec4f
+  (+ (vec4f corner 0. 1.) (* 0. tint)))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (= tints (into-dynamic-array [(vec4f 1.)]))
+  (= picks [0u 1u 2u])
+  (spawn-window (fn []
+                  (dispatch-compute-shader build (vec3u 1u))
+                  (dispatch-indexed-render-shaders vert frag picks corners
+                                                   tints)
+                  (print (array-length tints))
+                  (close-window))))

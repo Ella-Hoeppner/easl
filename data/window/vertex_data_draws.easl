@@ -1,0 +1,28 @@
+(var corners: [3: vec2f])
+(var offsets: [vec2f])
+(var indices: [u32])
+
+@vertex
+(defn data-vert [corner: vec2f offset: vec2f]: vec4f
+  (vec4f (+ corner offset) 0. 1.))
+
+@vertex
+(defn pulled-vert [@{builtin vertex-index} i: u32]: vec4f
+  (vec4f (f32 i)))
+
+@fragment
+(defn f []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (= offsets (into-dynamic-array [(vec2f 0.) (vec2f 1.)]))
+  (= indices (into-dynamic-array [0u 1u 2u 2u 1u 0u]))
+  (spawn-window (fn []
+                  (dispatch-render-shaders data-vert f corners offsets)
+                  (dispatch-indexed-render-shaders pulled-vert f indices)
+                  (dispatch-indexed-render-shaders pulled-vert f indices 4u)
+                  (= indices (push indices 0u))
+                  (dispatch-indexed-render-shaders data-vert f indices corners
+                                                   offsets)
+                  (close-window))))

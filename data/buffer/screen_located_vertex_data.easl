@@ -1,0 +1,74 @@
+; Vertex data with `@{location}`s written on it, drawn by easl itself: the
+; pipeline reads each attribute at the location the shader declares. Frame
+; 0: struct fields at non-sequential locations. Frame 1: a struct mixing a
+; builtin with data (the stored `index` is 99u, so reading it from the
+; buffer instead of the GPU shows blue). Frame 2: a written location beside
+; a flattened struct, whose matrix takes the free locations and whose tint
+; keeps its written one.
+(struct Located
+  @{location 5} position: vec2f
+  @{location 2} color: vec4f)
+
+(struct Mixed
+  @{builtin vertex-index} index: u32
+  position: vec2f)
+
+(struct Placed
+  transform: mat2x2f
+  @{location 9} tint: vec4f)
+
+(var located: [3: Located])
+(var mixed: [3: Mixed])
+(var corners: [3: vec2f])
+(var placed: [1: Placed])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+@vertex
+(defn located-vert [in: Located]: Varyings
+  (Varyings (vec4f in.position 0. 1.) in.color))
+
+@vertex
+(defn mixed-vert [in: Mixed]: Varyings
+  (Varyings (vec4f in.position 0. 1.)
+            (if (< in.index 3u)
+              (vec4f 0. 1. 0. 1.)
+              (vec4f 0. 0. 1. 1.))))
+
+@vertex
+(defn placed-vert [@{location 0} corner: vec2f p: Placed]: Varyings
+  (Varyings (vec4f (* p.transform corner) 0. 1.) p.tint))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  in.color)
+
+(def covering: [3: vec2f]
+  [(vec2f -1. -1.) (vec2f 3. -1.) (vec2f -1. 3.)])
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (let [red (vec4f 1. 0. 0. 1.)]
+    (= located
+       [(Located (covering 0u) red)
+        (Located (covering 1u) red)
+        (Located (covering 2u) red)]))
+  (= mixed
+     [(Mixed 99u (covering 0u))
+      (Mixed 99u (covering 1u))
+      (Mixed 99u (covering 2u))])
+  (= corners covering)
+  (= placed [(Placed (mat2x2f 1. 0. 0. 1.) (vec4f 1. 1. 0. 1.))])
+  (spawn-window
+    (fn []
+      (match frame
+        0u (dispatch-render-shaders located-vert frag located)
+        1u (dispatch-render-shaders mixed-vert frag mixed)
+        2u (dispatch-render-shaders placed-vert frag corners placed)
+        _ (close-window))
+      (= frame (+ frame 1u)))))

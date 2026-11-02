@@ -5,7 +5,7 @@ fn main() {}
 mod window_region {
   use easl::compiler::builtins::built_in_macros;
   use easl::compiler::program::{CompilerTarget, Program, ValidationOptions};
-  use easl::interpreter::{WindowEvent, derive_gpu_interface};
+  use easl::interpreter::{DrawGeometry, WindowEvent, derive_gpu_interface};
   use easl::parse::{EaslMultiDocument, parse_easl_without_comments};
   use easl::render_settings::RenderSettings;
   use easl::window::{GpuCore, WindowRegion, create_headless_gpu_core};
@@ -146,8 +146,7 @@ mod window_region {
     let events = [WindowEvent::RenderShaders {
       vert: entry("vert"),
       frag: entry(frag),
-      vert_count: 3,
-      instance_count: 1,
+      geometry: DrawGeometry::counts(3, 1),
       pre_upload: vec![],
       settings: RenderSettings::default(),
       render_target: None,

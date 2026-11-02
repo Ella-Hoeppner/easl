@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::slice;
 use std::sync::{Arc, RwLock};
 
 use crate::compiler::builtins::short_circuit_deciding_value;
@@ -18,6 +19,7 @@ use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
   ConcreteArraySize, Type, TypeDescription, TypeState,
 };
+use crate::compiler::vertex_inputs::{DrawArgs, is_draw_array};
 use crate::midi_out::MidiOutKind;
 use crate::render_settings::RenderSetting;
 use crate::thread_sync::AtomicOp;
@@ -4365,7 +4367,7 @@ impl TypedExp {
         );
         Some(None)
       }
-      "dispatch-render-shaders" => {
+      "dispatch-render-shaders" | "dispatch-indexed-render-shaders" => {
         let (vert_name, mut reads, mut writes) =
           state.resolve_dispatched_fn(&args[0]);
         let (frag_name, frag_reads, frag_writes) =
@@ -4380,6 +4382,57 @@ impl TypedExp {
             writes.push(w);
           }
         }
+        let draw = DrawArgs::of(f_name, args).unwrap();
+        // A data array is never read on the CPU (so it needs no readback):
+        // the draw reads its binding, uploaded first when the CPU wrote it,
+        // and its length is a count.
+        let mut binding = |arg: &TypedExp, state: &BytecodeCompilationState| {
+          let ExpKind::Name(name) = &arg.kind else {
+            panic!("a draw data array that isn't a global's name")
+          };
+          let binding = *state
+            .binding_indices
+            .get(name)
+            .expect("a draw data array without a host binding");
+          if !reads.contains(&binding) {
+            reads.push(binding);
+          }
+          binding
+        };
+        let count = |arg: &TypedExp, state: &mut BytecodeCompilationState| {
+          if is_draw_array(arg) {
+            self
+              .try_compile_dyn_array_builtin(
+                "array-length",
+                slice::from_ref(arg),
+                state,
+              )
+              .flatten()
+              .expect("a draw data array's length")
+          } else {
+            arg
+              .compile_to_bytecode(CompilePosition::Value, state)
+              .unwrap()
+          }
+        };
+        let counted = draw
+          .indices
+          .or(draw.vertices)
+          .expect("a draw without a vertex or index count");
+        let count_slot = count(counted, state);
+        let instance_count_slot = match draw.instances {
+          Some(arg) => count(arg, state),
+          None => state.emit_u32_constant(1),
+        };
+        let indices = draw.indices.map(|arg| binding(arg, state));
+        let mut data =
+          |arg: Option<&TypedExp>, state: &BytecodeCompilationState| {
+            arg
+              .filter(|arg| is_draw_array(arg))
+              .map(|arg| binding(arg, state))
+          };
+        let vertex_data = data(draw.vertices, state);
+        let instance_data = data(draw.instances, state);
         let vert = state.host_string_index(&vert_name);
         let frag = state.host_string_index(&frag_name);
         let sets = state.host_dispatches.len() as u16;
@@ -4387,22 +4440,16 @@ impl TypedExp {
           reads,
           writes: writes.clone(),
         });
-        let vert_count_slot = args[2]
-          .compile_to_bytecode(CompilePosition::Value, state)
-          .unwrap();
-        let instance_count_slot = match args.get(3) {
-          Some(count) => count
-            .compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap(),
-          None => state.emit_u32_constant(1),
-        };
         state.emit_dispatch(
           HostOp::DispatchRender {
             vert,
             frag,
             sets,
-            vert_count_slot,
+            count_slot,
             instance_count_slot,
+            indices,
+            vertex_data,
+            instance_data,
           },
           &writes,
         );

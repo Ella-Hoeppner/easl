@@ -1,0 +1,79 @@
+; Indexed draws. `points` holds two full-screen triangles, red then green,
+; and the indices pick which to draw: frame 0 the green one, frame 1 the red
+; one, frame 2 both (adding to yellow). Frame 3 pulls its vertices instead:
+; `vertex-index` is the index read, and two instances each add 0.25 blue.
+; Frame 4 draws a strip (whose index format the pipeline names) with a
+; restart index (`0xffffffff`) between two triangles, as two instances of
+; per-instance colors.
+(struct Point
+  position: vec2f
+  color: vec4f)
+
+(var points: [6: Point])
+(var picks: [u32])
+(var pulled: [3: u32])
+(var strip: [7: u32])
+(var tints: [vec4f])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+@vertex
+(defn point-vert [p: Point]: Varyings
+  (Varyings (vec4f p.position 0. 1.) p.color))
+
+@vertex
+(defn pulled-vert [@{builtin vertex-index} i: u32]: Varyings
+  (Varyings
+    (vec4f (match i
+             10u (vec2f -1. -1.)
+             11u (vec2f 3. -1.)
+             12u (vec2f -1. 3.)
+             _ (vec2f 0.))
+           0.
+           1.)
+    (vec4f 0. 0. 0.25 1.)))
+
+@vertex
+(defn tinted-vert [p: Point tint: vec4f]: Varyings
+  (Varyings (vec4f p.position 0. 1.) tint))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  in.color)
+
+(def corners: [3: vec2f]
+  [(vec2f -1. -1.) (vec2f 3. -1.) (vec2f -1. 3.)])
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (= points
+     [(Point (corners 0u) (vec4f 1. 0. 0. 1.))
+      (Point (corners 1u) (vec4f 1. 0. 0. 1.))
+      (Point (corners 2u) (vec4f 1. 0. 0. 1.))
+      (Point (corners 0u) (vec4f 0. 1. 0. 1.))
+      (Point (corners 1u) (vec4f 0. 1. 0. 1.))
+      (Point (corners 2u) (vec4f 0. 1. 0. 1.))])
+  (= pulled [10u 11u 12u])
+  (= strip [0u 1u 2u 4294967295u 3u 4u 5u])
+  (= tints (into-dynamic-array [(vec4f 0. 0. 0.25 1.) (vec4f 0.25 0. 0. 1.)]))
+  (set-blend BlendFactor/One BlendFactor/One BlendOperation/Add)
+  (spawn-window
+    (fn []
+      (match frame
+        0u (do (= picks (into-dynamic-array [3u 4u 5u]))
+               (dispatch-indexed-render-shaders point-vert frag picks points))
+        1u (do (= picks (into-dynamic-array [0u 1u 2u]))
+               (dispatch-indexed-render-shaders point-vert frag picks points))
+        2u (do (= picks (push (push (push picks 3u) 4u) 5u))
+               (dispatch-indexed-render-shaders point-vert frag picks points))
+        3u (dispatch-indexed-render-shaders pulled-vert frag pulled 2u)
+        4u (do (set-topology Topology/TriangleStrip)
+               (dispatch-indexed-render-shaders tinted-vert frag strip points
+                                                tints))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

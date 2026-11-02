@@ -20,5 +20,6 @@ pub mod structs;
 pub mod types;
 pub mod util;
 pub mod vars;
+pub mod vertex_inputs;
 pub mod wgsl;
 pub mod workgroups;

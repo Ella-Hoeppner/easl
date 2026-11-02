@@ -1,0 +1,19 @@
+(struct Wide
+  columns: [3: mat4x4f]
+  extra: [5: vec2f])
+
+(var wides: [Wide])
+
+@vertex
+(defn vert [wide: Wide]: vec4f
+  ((wide.columns 0u) 0u))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (dispatch-render-shaders vert frag wides))))

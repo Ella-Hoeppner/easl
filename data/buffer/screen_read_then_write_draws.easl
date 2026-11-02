@@ -1,0 +1,44 @@
+; Two draws in one frame into one target: the first reads `params` in its
+; vertex shader (through the var's read-only view), the second writes it in
+; its fragment shader (as read-write storage). WebGPU doesn't let one render
+; pass use a buffer both ways, so they go in separate passes; the second
+; draw's green covers the first's red.
+(var params: [2: f32])
+
+@vertex
+(defn reads-params [@{builtin vertex-index} i: u32]: vec4f
+  (* (params 0u)
+     (match i
+       0u (vec4f -1. -1. 0. 1.)
+       1u (vec4f 3. -1. 0. 1.)
+       _ (vec4f -1. 3. 0. 1.))))
+
+@vertex
+(defn plain [@{builtin vertex-index} i: u32]: vec4f
+  (match i
+    0u (vec4f -1. -1. 0. 1.)
+    1u (vec4f 3. -1. 0. 1.)
+    _ (vec4f -1. 3. 0. 1.)))
+
+@fragment
+(defn red []: vec4f
+  (vec4f 1. 0. 0. 1.))
+
+@fragment
+(defn writes-params []: vec4f
+  (= (params 1u) 0.5)
+  (vec4f 0. 1. 0. 1.))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        0u (do (= params [1. 1.])
+               (dispatch-render-shaders reads-params red 3u)
+               (dispatch-render-shaders plain writes-params 3u))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

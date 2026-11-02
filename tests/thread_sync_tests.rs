@@ -28,9 +28,9 @@ use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::external::{ExternalVarError, ExternalVars};
 use easl::interpreter::{
-  BufferUpload, CaptureIO, CpuRuntime, EvalError, EvalException, FrameDriver,
-  GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState, MidiState, Primitive,
-  StdoutIO, Value, WindowEvent,
+  BufferUpload, CaptureIO, CpuRuntime, DrawGeometry, EvalError, EvalException,
+  FrameDriver, GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState,
+  MidiState, Primitive, StdoutIO, Value, WindowEvent,
   run_program_entry_with_io_runtime_and_external_from_path,
 };
 use easl::render_settings::RenderSettings;
@@ -313,28 +313,18 @@ impl IOManager for ThreadSyncIO {
     frag: u16,
     vert_name: &str,
     frag_name: &str,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     settings: RenderSettings,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
-    self.trace.push(match instance_count {
-      1 => {
-        format!("dispatch-render-shaders {vert_name} {frag_name} {vert_count}")
-      }
-      _ => format!(
-        "dispatch-render-shaders {vert_name} {frag_name} {vert_count} \
-         {instance_count}"
-      ),
-    });
+    self.trace.push(geometry.log_line(vert_name, frag_name));
     self.inner.record_draw(
       vert,
       frag,
       vert_name,
       frag_name,
-      vert_count,
-      instance_count,
+      geometry,
       pre_upload,
       settings,
       render_target,

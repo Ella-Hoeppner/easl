@@ -1,0 +1,18 @@
+@local
+(var private-corners: [3: vec2f])
+
+@vertex
+(defn vert [corner: vec2f]: vec4f
+  (vec4f corner 0. 1.))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (let [corners [(vec2f 0.) (vec2f 1.) (vec2f 2.)]]
+    (spawn-window
+      (fn []
+        (dispatch-render-shaders vert frag corners)
+        (dispatch-render-shaders vert frag private-corners)))))

@@ -1,0 +1,4 @@
+upload: corners
+upload: tints
+upload: picks
+print: 1u

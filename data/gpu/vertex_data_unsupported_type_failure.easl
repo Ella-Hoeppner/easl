@@ -1,0 +1,9 @@
+(enum Shape
+  Circle
+  Square)
+
+@vertex
+(defn vert [shape: Shape]: vec4f
+  (match shape
+    Shape/Circle (vec4f 0.)
+    Shape/Square (vec4f 1.)))

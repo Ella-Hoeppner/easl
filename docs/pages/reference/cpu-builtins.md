@@ -91,11 +91,22 @@ Closes the window at the end of the current frame, ending the `spawn-window` loo
 ### `dispatch-render-shaders`
 
 ```easl
-(dispatch-render-shaders vert: V frag: F vert-count: u32): ()
-(dispatch-render-shaders vert: V frag: F vert-count: u32 instance-count: u32): ()
+(dispatch-render-shaders vert: V frag: F vertices: u32 | [T]): ()
+(dispatch-render-shaders vert: V frag: F vertices: u32 | [T] instances: u32 | [U]): ()
 ```
 
-Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `frag`, which can be named functions or inline `fn`s. With `instance-count`, it draws that many instances of them, and the vertex shader tells them apart with [`instance-index`](gpu-builtins.md#instance-index); the three-argument form draws one. The draw uses the [render settings](#render-settings) current when it's dispatched, and goes to the window unless `set-render-target` redirects it.
+Draws `vertices` vertices with the vertex shader `vert` and fragment shader `frag`, which can be named functions or inline `fn`s. With `instances`, it draws that many instances of them, and the vertex shader tells them apart with [`instance-index`](gpu-builtins.md#instance-index); the three-argument form draws one. Either count can be an array held by a GPU-bound variable (sized or runtime-sized): its length is the count, and its elements are vertex data for the vertex shader's data parameters, in order (see [drawing with vertex data](../cpu.md#drawing-with-vertex-data)).
+
+### `dispatch-indexed-render-shaders`
+
+```easl
+(dispatch-indexed-render-shaders vert: V frag: F indices: [u32]): ()
+(dispatch-indexed-render-shaders vert: V frag: F indices: [u32] instances: u32): ()
+(dispatch-indexed-render-shaders vert: V frag: F indices: [u32] vertices: [T]): ()
+(dispatch-indexed-render-shaders vert: V frag: F indices: [u32] vertices: [T] instances: u32 | [U]): ()
+```
+
+Draws the vertices `indices` picks, in its order, each as `(vertex-index)` (and vertex data from that element of `vertices`). `indices` and the data arrays are held by GPU-bound variables, sized or runtime-sized. An index of `4294967295u` (the largest `u32`) restarts a strip topology. The draw uses the [render settings](#render-settings) current when it's dispatched, and goes to the window unless `set-render-target` redirects it.
 
 ### `dispatch-compute-shader`
 

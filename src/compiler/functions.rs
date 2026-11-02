@@ -8,6 +8,7 @@ use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::expression::compile_typed_name;
 use crate::compiler::types::{AbstractArraySize, ConcreteArraySize};
+use crate::compiler::vertex_inputs::VertexInputLayout;
 use crate::vm::compile::{
   BytecodeCompilationState, CompilePosition, RefArgBinding,
 };
@@ -73,6 +74,12 @@ pub struct TopLevelFunction {
   /// compiled to WGSL for another host's pipelines.
   pub dispatched: bool,
   pub directly_user_written: bool,
+  /// A vertex entry's data parameters' layouts, in order, once
+  /// `Program::resolve_vertex_inputs` has run.
+  pub vertex_inputs: Vec<VertexInputLayout>,
+  /// Struct parameters this vertex entry flattens because another entry
+  /// infers different locations for the struct.
+  pub flattened_vertex_params: Vec<usize>,
   pub expression: TypedExp,
 }
 
@@ -720,6 +727,8 @@ impl AbstractFunctionSignature {
                       entry_point: parsed_annotation.entry,
                       dispatched: false,
                       directly_user_written: true,
+                      vertex_inputs: vec![],
+                      flattened_vertex_params: vec![],
                       expression,
                     })),
                   );
@@ -1594,6 +1603,21 @@ impl TopLevelFunction {
     valid: bool,
     target: CompilerTarget,
   ) -> CompileResult<String> {
+    // A flattened vertex input arrives as vertex attributes
+    // (`vertex_inputs`), rebuilt at the top of the body.
+    let flattened_params: HashMap<usize, VertexInputLayout> = if target
+      == CompilerTarget::WGSL
+      && self.entry_point == Some(EntryPoint::Vertex)
+    {
+      self
+        .vertex_data_params()
+        .into_iter()
+        .zip(self.vertex_inputs.iter().cloned())
+        .filter(|(param, _)| self.flattens_vertex_param(*param))
+        .collect()
+    } else {
+      HashMap::new()
+    };
     let TypedExp { data, kind, .. } = self.expression;
     let Type::Function(signature) = data.unwrap_known() else {
       panic!("attempted to compile function with invalid type data")
@@ -1608,11 +1632,39 @@ impl TopLevelFunction {
     };
 
     let fn_string = || {
+      let mut vertex_data_bindings = String::new();
       let args = arg_names
         .into_iter()
         .zip(args.into_iter())
         .zip(self.arg_annotations.into_iter())
-        .map(|(((name, _), (arg, _)), annotation)| match target {
+        .enumerate()
+        .map(|(i, (((name, _), (arg, _)), annotation))| match target {
+          CompilerTarget::WGSL
+            if let Some(layout) = flattened_params.get(&i) =>
+          {
+            let t = arg.var_type.unwrap_known();
+            vertex_data_bindings += &format!(
+              "\nlet {} = {};",
+              compile_word(name),
+              t.vertex_input_expression(
+                &mut layout.attributes.iter().map(|a| a.input_name()),
+                names
+              )
+            );
+            layout
+              .attributes
+              .iter()
+              .map(|attribute| {
+                format!(
+                  "@location({}) {}: {}",
+                  attribute.location,
+                  attribute.input_name(),
+                  attribute.wgsl_type()
+                )
+              })
+              .collect::<Vec<String>>()
+              .join(", ")
+          }
           CompilerTarget::WGSL => {
             format!(
               "{}{}",
@@ -1674,15 +1726,18 @@ impl TopLevelFunction {
           .unwrap_or_else(|| return_type.monomorphized_name(names, target))
       };
       let fn_name = compile_word(name.into());
-      let body = indent(body.compile(
-        if return_type.kind.unwrap_known() == Type::Unit {
-          ExpressionCompilationPosition::InnerLine
-        } else {
-          ExpressionCompilationPosition::Return
-        },
-        names,
-        target,
-      ));
+      let body = indent(
+        vertex_data_bindings
+          + &body.compile(
+            if return_type.kind.unwrap_known() == Type::Unit {
+              ExpressionCompilationPosition::InnerLine
+            } else {
+              ExpressionCompilationPosition::Return
+            },
+            names,
+            target,
+          ),
+      );
       match target {
         CompilerTarget::C => {
           format!("{return_type_name} {fn_name}({args}) {{{body}\n}}")

@@ -2696,37 +2696,95 @@ fn render_setting_functions() -> Vec<AbstractFunctionSignature> {
   signatures
 }
 
-/// `(dispatch-render-shaders vert frag vertex-count)`, and with
-/// `instanced` a trailing instance count.
-fn dispatch_render_shaders(instanced: bool) -> AbstractFunctionSignature {
+/// One of a draw builtin's count-or-data arguments: a `u32` count, or an
+/// array global whose length is the count and whose elements are vertex
+/// data (see `vertex_inputs`), sized or runtime-sized.
+#[derive(Clone, Copy)]
+enum DrawSlot {
+  Count,
+  SizedArray,
+  UnsizedArray,
+}
+
+impl DrawSlot {
+  const ALL: [Self; 3] = [Self::Count, Self::SizedArray, Self::UnsizedArray];
+  const ARRAYS: [Self; 2] = [Self::SizedArray, Self::UnsizedArray];
+
+  /// This slot's argument type, an array's elements of type `element` and
+  /// its size the constant generic `size`, adding the generics it uses to
+  /// `generics`.
+  fn arg_type(
+    self,
+    element: AbstractType,
+    size: &str,
+    generics: &mut Vec<(Arc<str>, GenericArgument, SourceTrace)>,
+  ) -> (AbstractType, Ownership) {
+    if let AbstractType::Generic(name) = &element
+      && !matches!(self, Self::Count)
+    {
+      generics.push((
+        name.clone(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      ));
+    }
+    let array = |size| {
+      AbstractType::AbstractArray {
+        size,
+        inner_type: element.into(),
+        source_trace: SourceTrace::empty(),
+      }
+      .reference()
+    };
+    match self {
+      Self::Count => AbstractType::Type(Type::U32).owned(),
+      Self::SizedArray => {
+        generics.push((
+          size.into(),
+          GenericArgument::Constant,
+          SourceTrace::empty(),
+        ));
+        array(AbstractArraySize::Generic(size.into()))
+      }
+      Self::UnsizedArray => array(AbstractArraySize::Unsized),
+    }
+  }
+}
+
+/// A draw builtin: `vert` and `frag`, then `slots` (the index array for
+/// `dispatch-indexed-render-shaders`, the vertices, the instances).
+fn draw_builtin(
+  name: &str,
+  slots: Vec<(DrawSlot, AbstractType, &str)>,
+) -> AbstractFunctionSignature {
+  let mut generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)> = vec![
+    (
+      "V".into(),
+      GenericArgument::Type(vec![TypeConstraint::function()]),
+      SourceTrace::empty(),
+    ),
+    (
+      "F".into(),
+      GenericArgument::Type(vec![TypeConstraint::function()]),
+      SourceTrace::empty(),
+    ),
+  ];
   let mut arg_types = vec![
     AbstractType::Generic("V".into()).owned(),
     AbstractType::Generic("F".into()).owned(),
-    AbstractType::Type(Type::U32).owned(),
   ];
-  if instanced {
-    arg_types.push(AbstractType::Type(Type::U32).owned());
+  for (slot, element, size) in slots {
+    arg_types.push(slot.arg_type(element, size, &mut generic_args));
   }
   AbstractFunctionSignature {
-    name: "dispatch-render-shaders".into(),
-    generic_args: vec![
-      (
-        "V".into(),
-        GenericArgument::Type(vec![TypeConstraint::function()]),
-        SourceTrace::empty(),
-      ),
-      (
-        "F".into(),
-        GenericArgument::Type(vec![TypeConstraint::function()]),
-        SourceTrace::empty(),
-      ),
-    ],
+    name: name.into(),
+    generic_args,
     arg_types,
     return_type: AbstractType::Unit,
     implementation: FunctionImplementationKind::Builtin {
       effect_type: vec![
         Effect::Window,
-        Effect::CPUExclusiveFunction("dispatch-render-shaders".into()),
+        Effect::CPUExclusiveFunction(name.into()),
       ]
       .into(),
       target_configuration: FunctionTargetConfiguration::Default,
@@ -2736,10 +2794,52 @@ fn dispatch_render_shaders(instanced: bool) -> AbstractFunctionSignature {
   }
 }
 
+/// Every overload of `dispatch-render-shaders` (vertices, then optionally
+/// instances, each a count or data) and `dispatch-indexed-render-shaders`
+/// (indices, then optionally vertex data, then optionally instances; an
+/// array after the indices is vertex data, so instance data comes with
+/// vertex data).
+fn draw_functions() -> Vec<AbstractFunctionSignature> {
+  let vertex = || AbstractType::Generic("T".into());
+  let instance = || AbstractType::Generic("U".into());
+  let index = || AbstractType::Type(Type::U32);
+  let mut signatures = vec![];
+  for vertices in DrawSlot::ALL {
+    signatures.push(draw_builtin(
+      "dispatch-render-shaders",
+      vec![(vertices, vertex(), "S")],
+    ));
+    for instances in DrawSlot::ALL {
+      signatures.push(draw_builtin(
+        "dispatch-render-shaders",
+        vec![(vertices, vertex(), "S"), (instances, instance(), "R")],
+      ));
+    }
+  }
+  for indices in DrawSlot::ARRAYS {
+    let indexed = |rest: Vec<(DrawSlot, AbstractType, &'static str)>| {
+      let mut slots = vec![(indices, index(), "I")];
+      slots.extend(rest);
+      draw_builtin("dispatch-indexed-render-shaders", slots)
+    };
+    signatures.push(indexed(vec![]));
+    signatures.push(indexed(vec![(DrawSlot::Count, instance(), "R")]));
+    for vertices in DrawSlot::ARRAYS {
+      signatures.push(indexed(vec![(vertices, vertex(), "S")]));
+      for instances in DrawSlot::ALL {
+        signatures.push(indexed(vec![
+          (vertices, vertex(), "S"),
+          (instances, instance(), "R"),
+        ]));
+      }
+    }
+  }
+  signatures
+}
+
 fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
-  vec![
-    dispatch_render_shaders(false),
-    dispatch_render_shaders(true),
+  let mut signatures = draw_functions();
+  signatures.extend([
     AbstractFunctionSignature {
       name: "dispatch-compute-shader".into(),
       generic_args: vec![(
@@ -3664,7 +3764,8 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
-  ]
+  ]);
+  signatures
 }
 
 fn unsized_array_of_t() -> AbstractType {

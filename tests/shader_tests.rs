@@ -135,6 +135,32 @@ macro_rules! error_test {
 
 // --- Success tests ---
 
+/// Hosts draw vertex inputs with their own vertex buffers, so everything
+/// WGSL can take as an entry input stays as written, and flattening honors
+/// written locations.
+#[test]
+fn vertex_inputs_keep_their_locations() {
+  let wgsl = compile_shader("vertex_input_locations").unwrap();
+  for expected in [
+    "fn written(@location(3) corner: vec2f, @location(1) @interpolate(flat, first) id: u32)",
+    "@location(5) position: vec2f",
+    "@location(2) color: vec4f",
+    "fn located(in: Located)",
+    "@builtin(vertex_index) index: u32",
+    "fn mixed(in: Mixed)",
+    "@location(1) easl_vertex_input_1: vec2<f32>",
+    "@location(2) easl_vertex_input_2: vec2<f32>",
+    "@location(9) easl_vertex_input_9: vec4<f32>",
+    "@location(12) easl_vertex_input_12: vec2<f32>",
+    "@location(13) easl_vertex_input_13: vec2<f32>",
+    "@location(0) corner: vec2f",
+    "fn shared_first(s: Shared)",
+    "fn shared_second(@location(0) c: vec2f, @location(1) easl_vertex_input_1: vec2<f32>, @location(2) easl_vertex_input_2: vec4<f32>)",
+  ] {
+    assert!(wgsl.contains(expected), "no `{expected}` in:\n{wgsl}");
+  }
+}
+
 /// Fragment positions are the raw builtin by default. Compiled for window
 /// regions, every fragment entry the program draws with offsets its
 /// position by the implicit uniform, whether it takes the position as an
@@ -190,6 +216,7 @@ success_test!(associative);
 success_test!(assignment);
 success_test!(simple_shader);
 success_test!(storage_read_views);
+success_test!(vertex_data);
 success_test!(variadic_vec);
 success_test!(let_binding);
 success_test!(block);
@@ -746,6 +773,46 @@ error_test!(
 error_test!(
   storage_read_in_vertex_written_in_fragment_failure,
   CompileErrorKind::StorageReadInVertexWrittenInFragment("counts".to_string())
+);
+error_test!(
+  vertex_data_unsupported_type_failure,
+  CompileErrorKind::EntryInputOrOutputMustBeScalarOrStruct(
+    InputOrOutput::Input
+  )
+);
+error_test!(
+  vertex_data_too_many_attributes_failure,
+  CompileErrorKind::TooManyVertexAttributes(17)
+);
+error_test!(
+  vertex_location_overlap_failure,
+  CompileErrorKind::OverlappingVertexLocations(0),
+  CompileErrorKind::OverlappingVertexLocations(2),
+  CompileErrorKind::OverlappingVertexLocations(4)
+);
+error_test!(
+  vertex_location_out_of_range_failure,
+  CompileErrorKind::VertexLocationOutOfRange(16)
+);
+error_test!(
+  draw_data_not_gpu_array_failure,
+  CompileErrorKind::DrawDataNotGpuArray
+);
+error_test!(
+  vertex_data_count_mismatch_failure,
+  CompileErrorKind::VertexDataCountMismatch("data-vert".to_string(), 1, 0),
+  CompileErrorKind::VertexDataCountMismatch("plain-vert".to_string(), 0, 1)
+);
+error_test!(
+  vertex_data_type_mismatch_failure,
+  CompileErrorKind::VertexDataTypeMismatch(
+    TypeDescription::Struct("vec2f".to_string()),
+    TypeDescription::Struct("vec4f".to_string())
+  )
+);
+error_test!(
+  draw_writes_its_data_failure,
+  CompileErrorKind::DrawWritesItsData("corners".to_string())
 );
 error_test!(
   print_in_audio_failure,

@@ -51,6 +51,36 @@ The runtime tracks which side last wrote each variable. CPU writes are uploaded 
 
 Easl has several functions to get input about the state of the window, and for gathering user input, such as: [`window-resolution`](reference/cpu-builtins.md#window-resolution), [`window-time`](reference/cpu-builtins.md#window-time), [`window-delta-time`](reference/cpu-builtins.md#window-delta-time), [`window-frame-index`](reference/cpu-builtins.md#window-frame-index), [`mouse-coords`](reference/cpu-builtins.md#mouse-coords), [`mouse-delta`](reference/cpu-builtins.md#mouse-delta), [`mouse-scroll-delta`](reference/cpu-builtins.md#mouse-scroll-delta), [`mouse-present?`](reference/cpu-builtins.md#mouse-present), [`mouse-down?`](reference/cpu-builtins.md#mouse-down), [`mouse-just-down?`](reference/cpu-builtins.md#mouse-just-down), [`mouse-right-down?`](reference/cpu-builtins.md#mouse-right-down), [`mouse-right-just-down?`](reference/cpu-builtins.md#mouse-right-down), [`mouse-captured?`](reference/cpu-builtins.md#mouse-captured), [`key-down?`](reference/cpu-builtins.md#key-down), and [`key-just-down?`](reference/cpu-builtins.md#key-just-down). [`capture-mouse`](reference/cpu-builtins.md#capture-mouse) and [`release-mouse`](reference/cpu-builtins.md#capture-mouse) hide and lock the cursor for first-person-style controls. These functions can be called either on the CPU or GPU and work the same in both cases. See the [reference](reference/cpu-builtins.md#window-and-input-queries) for more details on these functions.
 
+## Drawing with vertex data
+
+`dispatch-render-shaders` draws a number of vertices, and with a fourth argument, a number of instances of them (told apart by `(instance-index)`). In place of either count it can take an array, held by a GPU-bound variable: the array's length is the count, and its elements are *vertex data*, feeding the vertex shader's data parameters (the ones that aren't builtins) in order: the per-vertex array, then the per-instance array.
+
+```easl
+(struct Particle
+  position: vec2f
+  color: vec4f)
+
+(var quad: [6: vec2f])
+(var particles: [Particle])
+
+@vertex
+(defn particle-vertex [corner: vec2f p: Particle]: Varyings
+  (Varyings (vec4f (+ p.position (* 0.01 corner)) 0. 1.) p.color))
+
+@vertex
+(defn pulled-vertex [@{builtin vertex-index} i: u32 p: Particle]: Varyings
+  (Varyings (vec4f (+ p.position (* 0.01 (corner i))) 0. 1.) p.color))
+
+; in the frame loop: 6 vertices from `quad`, an instance per particle
+(dispatch-render-shaders particle-vertex shade quad particles)
+; 6 counted vertices: `p`, the only data parameter, gets the instance data
+(dispatch-render-shaders pulled-vertex shade 6u particles)
+```
+
+`dispatch-indexed-render-shaders` draws the vertices an index array (`[u32]` or `[N: u32]`) picks, in its order: `(vertex-index)` is the index read, and vertex data comes from that element. Its arguments are the shaders, the indices, then optionally vertex data, then optionally an instance count or instance data (instance data comes after vertex data). Indices let a mesh share vertices between triangles, which the GPU then transforms once.
+
+The arrays stay ordinary variables, so CPU writes are uploaded before the draw, and a compute shader can write vertex data the next draw uses, with nothing copied or read back. One draw can't write a variable in its fragment shader while reading it as vertex data or indices.
+
 ## Textures and Render targets
 
 Render dispatches draw to the window unless `set-render-target` points them at a texture. After you've set a target, you can call `reset-render-target` to send later draws back to the window. Textures come from `blank-texture` or `load-image`, later dispatches in the same frame can sample what was drawn, and [`save-png`](reference/cpu-builtins.md#save-png) saves any texture, including one just rendered. A texture keeps what's drawn into it until `clear-target` clears it; the window starts each frame black. How draws blend, depth-test, and cull is set with the [render settings](reference/cpu-builtins.md#render-settings).

@@ -899,8 +899,13 @@ pub enum HostOp {
     vert: u16,
     frag: u16,
     sets: u16,
-    vert_count_slot: u16,
+    /// The vertices, or the indices when `indices` is set.
+    count_slot: u16,
     instance_count_slot: u16,
+    /// Host bindings of the draw's index and data arrays.
+    indices: Option<u16>,
+    vertex_data: Option<u16>,
+    instance_data: Option<u16>,
   },
   WindowQuery {
     kind: WindowQueryKind,

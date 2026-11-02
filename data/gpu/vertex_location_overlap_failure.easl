@@ -1,0 +1,27 @@
+; Written locations that land on the same location: two fields nested in a
+; struct, a matrix counting up into another field, and two parameters.
+(struct A
+  @{location 0} x: vec2f)
+
+(struct B
+  @{location 0} y: vec4f)
+
+(struct C
+  a: A
+  b: B)
+
+(struct Columns
+  @{location 1} m: mat2x2f
+  @{location 2} v: vec2f)
+
+@vertex
+(defn nested [c: C]: vec4f
+  (+ c.b.y (vec4f c.a.x 0. 1.)))
+
+@vertex
+(defn columns [c: Columns]: vec4f
+  (vec4f (* c.m c.v) 0. 1.))
+
+@vertex
+(defn params [@{location 4} a: vec2f @{location 4} b: vec2f]: vec4f
+  (vec4f (+ a b) 0. 1.))

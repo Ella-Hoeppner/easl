@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use std::{
   collections::{HashMap, HashSet},
   future::Future,
+  num::NonZeroU64,
   pin::Pin,
   sync::{Arc, Mutex, Weak},
   task::{Context, Poll, Waker},
@@ -30,10 +31,11 @@ use winit::{
 #[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
+use crate::compiler::vertex_inputs::{VertexInputLayout, VertexScalar};
 use crate::interpreter::{
-  BufferUpload, EvalError, FrameDriver, GpuBindingInfo, GpuBufferKind,
-  GpuEntryInfo, SamplerAddress, SamplerFilter, SamplerSettings, TextureHandle,
-  TextureInfo, TextureInit, WindowEvent,
+  BufferUpload, DrawGeometry, EvalError, FrameDriver, GpuBindingInfo,
+  GpuBufferKind, GpuEntryInfo, SamplerAddress, SamplerFilter, SamplerSettings,
+  TextureHandle, TextureInfo, TextureInit, WindowEvent,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::interpreter::{EvalException, IOManager};
@@ -412,8 +414,83 @@ struct FrameScreen {
 }
 
 /// Identity of a cached render pipeline: (vert entry id, frag entry id,
-/// normalized render settings, target format).
-type RenderPipelineKey = (u16, u16, RenderSettings, wgpu::TextureFormat);
+/// normalized render settings, target format, vertex buffer shape).
+type RenderPipelineKey = (
+  u16,
+  u16,
+  RenderSettings,
+  wgpu::TextureFormat,
+  VertexBufferShape,
+);
+
+/// Which buffers a draw reads besides its bindings, deciding its pipeline's
+/// vertex buffer layouts and strip index format.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct VertexBufferShape {
+  vertex_data: bool,
+  instance_data: bool,
+  indexed: bool,
+}
+
+impl VertexBufferShape {
+  fn of(geometry: &DrawGeometry) -> Self {
+    Self {
+      vertex_data: geometry.vertex_data.is_some(),
+      instance_data: geometry.instance_data.is_some(),
+      indexed: geometry.indices.is_some(),
+    }
+  }
+
+  /// The step mode of each vertex buffer slot: the vertex data, then the
+  /// instance data, each when present.
+  fn step_modes(&self) -> Vec<wgpu::VertexStepMode> {
+    [
+      self.vertex_data.then_some(wgpu::VertexStepMode::Vertex),
+      self.instance_data.then_some(wgpu::VertexStepMode::Instance),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+  }
+}
+
+/// The wgpu format of a vertex attribute.
+fn vertex_format(scalar: VertexScalar, components: u8) -> wgpu::VertexFormat {
+  let formats = match scalar {
+    VertexScalar::F32 => [
+      wgpu::VertexFormat::Float32,
+      wgpu::VertexFormat::Float32x2,
+      wgpu::VertexFormat::Float32x3,
+      wgpu::VertexFormat::Float32x4,
+    ],
+    VertexScalar::U32 => [
+      wgpu::VertexFormat::Uint32,
+      wgpu::VertexFormat::Uint32x2,
+      wgpu::VertexFormat::Uint32x3,
+      wgpu::VertexFormat::Uint32x4,
+    ],
+    VertexScalar::I32 => [
+      wgpu::VertexFormat::Sint32,
+      wgpu::VertexFormat::Sint32x2,
+      wgpu::VertexFormat::Sint32x3,
+      wgpu::VertexFormat::Sint32x4,
+    ],
+  };
+  formats[components as usize - 1]
+}
+
+/// The wgpu attributes of a vertex input layout.
+fn vertex_attributes(layout: &VertexInputLayout) -> Vec<wgpu::VertexAttribute> {
+  layout
+    .attributes
+    .iter()
+    .map(|attribute| wgpu::VertexAttribute {
+      format: vertex_format(attribute.scalar, attribute.components),
+      offset: attribute.offset as u64,
+      shader_location: attribute.location,
+    })
+    .collect()
+}
 
 /// The format of every depth buffer: core in WebGPU, and exact for any
 /// depth a fragment shader writes.
@@ -425,8 +502,7 @@ enum RenderItem {
   Draw {
     vert: u16,
     frag: u16,
-    vert_count: u32,
-    instance_count: u32,
+    geometry: DrawGeometry,
     settings: RenderSettings,
     target: Option<(u8, u8)>,
   },
@@ -482,8 +558,7 @@ struct PlannedDraw {
   /// A bind-group set with a placeholder in place of the pass's target,
   /// when the pipeline also binds it as a texture.
   placeholder: Option<Vec<wgpu::BindGroup>>,
-  vert_count: u32,
-  instance_count: u32,
+  geometry: DrawGeometry,
   blend_constant: [f32; 4],
 }
 
@@ -497,6 +572,9 @@ struct PipelineBindings {
   /// One layout per group index (empty layouts for unused group indices).
   layouts: Vec<wgpu::BindGroupLayout>,
   bind_groups: Vec<wgpu::BindGroup>,
+  /// The buffers the bindings use, by buffer key, and whether each is
+  /// bound writable.
+  buffer_uses: Vec<((u8, u8), bool)>,
 }
 
 struct CachedComputePipeline {
@@ -651,7 +729,19 @@ impl GpuCore {
             GpuBufferKind::Sampler => {
               wgpu::BindingResource::Sampler(&self.samplers[&key].1)
             }
-            _ => self.binding_buffers[&slot.buffer_key()].as_entire_binding(),
+            // Bound at its exact size: WGSL's `arrayLength` derives from
+            // the bound size, and wgpu allocates a buffer that can be
+            // vertex data a word larger than asked.
+            _ => {
+              let buffer_key = slot.buffer_key();
+              wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &self.binding_buffers[&buffer_key],
+                offset: 0,
+                size: NonZeroU64::new(
+                  self.binding_buffer_sizes[&buffer_key].max(4),
+                ),
+              })
+            }
           },
         }
       })
@@ -787,10 +877,23 @@ impl GpuCore {
       })
       .collect();
     let bind_groups = self.create_bind_groups(&used, &layouts, None);
+    let buffer_uses = self
+      .binding_slots
+      .iter()
+      .filter(|slot| used.contains_key(&(slot.group, slot.binding)))
+      .filter_map(|slot| match slot.kind {
+        GpuBufferKind::StorageReadWrite => Some((slot.buffer_key(), true)),
+        GpuBufferKind::StorageReadOnly | GpuBufferKind::Uniform => {
+          Some((slot.buffer_key(), false))
+        }
+        GpuBufferKind::Texture2D | GpuBufferKind::Sampler => None,
+      })
+      .collect();
     PipelineBindings {
       used,
       layouts,
       bind_groups,
+      buffer_uses,
     }
   }
 
@@ -1349,6 +1452,10 @@ impl GpuCore {
     let mut passes: Vec<PlannedPass> = vec![];
     // The (target, uses depth) of the last pass while draws can join it.
     let mut open: Option<(Option<(u8, u8)>, bool)> = None;
+    // The buffers the open pass's draws use, and whether each is writable:
+    // a pass can't use a buffer both writable and read-only (bound as
+    // read-only storage or uniform, or read as vertex data or indices).
+    let mut open_uses: HashMap<(u8, u8), bool> = HashMap::new();
     let mut folded_clear: Option<(Option<[f32; 4]>, Option<f32>)> = None;
     for (i, item) in items.iter().enumerate() {
       match *item {
@@ -1378,8 +1485,7 @@ impl GpuCore {
         RenderItem::Draw {
           vert,
           frag,
-          vert_count,
-          instance_count,
+          geometry,
           settings,
           target,
         } => {
@@ -1387,23 +1493,45 @@ impl GpuCore {
             continue;
           }
           let uses_depth = self.draw_uses_depth(&settings, frag);
-          if folded_clear.is_some() || open != Some((target, uses_depth)) {
-            let (color, depth) = folded_clear.take().unwrap_or((None, None));
-            let pass = self.plan_pass(target, uses_depth, color, depth, screen);
-            passes.push(pass);
-            open = Some((target, uses_depth));
-          }
           let format = match (target, &*screen) {
             (Some(_), _) => GpuCore::OFFSCREEN_FORMAT,
             (None, ScreenOutput::View { format, .. }) => *format,
             (None, ScreenOutput::Frame) => self.screen_format(),
           };
-          let key = (vert, frag, settings.normalized(), format);
+          let key = (
+            vert,
+            frag,
+            settings.normalized(),
+            format,
+            VertexBufferShape::of(&geometry),
+          );
           let index = self
             .render_pipelines
             .iter()
             .position(|(k, _)| *k == key)
             .expect("render pipeline missing from cache");
+          let uses: Vec<((u8, u8), bool)> = self.render_pipelines[index]
+            .1
+            .bindings
+            .buffer_uses
+            .iter()
+            .copied()
+            .chain(geometry.buffers().map(|key| (key, false)))
+            .collect();
+          let conflicts = uses.iter().any(|(key, writable)| {
+            open_uses.get(key).is_some_and(|open| open != writable)
+          });
+          if folded_clear.is_some()
+            || open != Some((target, uses_depth))
+            || conflicts
+          {
+            let (color, depth) = folded_clear.take().unwrap_or((None, None));
+            let pass = self.plan_pass(target, uses_depth, color, depth, screen);
+            passes.push(pass);
+            open = Some((target, uses_depth));
+            open_uses.clear();
+          }
+          open_uses.extend(uses);
           // A pipeline that binds the pass's render target as a texture
           // gets a bind-group set with a placeholder in that slot (wgpu
           // forbids a texture as both COLOR_TARGET and RESOURCE).
@@ -1420,8 +1548,7 @@ impl GpuCore {
           passes.last_mut().unwrap().draws.push(PlannedDraw {
             pipeline: index,
             placeholder,
-            vert_count,
-            instance_count,
+            geometry,
             blend_constant: settings.blend_constant(),
           });
         }
@@ -1495,7 +1622,28 @@ impl GpuCore {
           let [r, g, b, a] = blend_constant.map(f64::from);
           render_pass.set_blend_constant(wgpu::Color { r, g, b, a });
         }
-        render_pass.draw(0..draw.vert_count, 0..draw.instance_count);
+        let geometry = &draw.geometry;
+        for (slot, key) in [geometry.vertex_data, geometry.instance_data]
+          .into_iter()
+          .flatten()
+          .enumerate()
+        {
+          render_pass.set_vertex_buffer(
+            slot as u32,
+            self.binding_buffers[&key].slice(..),
+          );
+        }
+        let instances = 0..geometry.instance_count;
+        match geometry.indices {
+          Some(key) => {
+            render_pass.set_index_buffer(
+              self.binding_buffers[&key].slice(..),
+              wgpu::IndexFormat::Uint32,
+            );
+            render_pass.draw_indexed(0..geometry.count, 0, instances);
+          }
+          None => render_pass.draw(0..geometry.count, instances),
+        }
       }
     }
     self.queue.submit(std::iter::once(encoder.finish()));
@@ -1705,6 +1853,7 @@ impl GpuCore {
         WindowEvent::RenderShaders {
           vert,
           frag,
+          geometry,
           settings,
           render_target,
           ..
@@ -1714,7 +1863,9 @@ impl GpuCore {
           } else {
             GpuCore::OFFSCREEN_FORMAT
           };
-          self.get_or_create_render_pipeline(*vert, *frag, *settings, format);
+          self.get_or_create_render_pipeline(
+            *vert, *frag, *settings, format, geometry,
+          );
         }
         WindowEvent::ComputeShader { entry, .. } => {
           self.get_or_create_compute_pipeline(*entry);
@@ -1767,8 +1918,7 @@ impl GpuCore {
         WindowEvent::RenderShaders {
           vert,
           frag,
-          vert_count,
-          instance_count,
+          geometry,
           pre_upload,
           settings,
           render_target,
@@ -1782,8 +1932,7 @@ impl GpuCore {
           pending_renders.push(RenderItem::Draw {
             vert: *vert,
             frag: *frag,
-            vert_count: *vert_count,
-            instance_count: *instance_count,
+            geometry: *geometry,
             settings: *settings,
             target: *render_target,
           });
@@ -2058,9 +2207,11 @@ impl GpuCore {
     frag_entry: u16,
     settings: RenderSettings,
     format: wgpu::TextureFormat,
+    geometry: &DrawGeometry,
   ) {
     let settings = settings.normalized();
-    let key = (vert_entry, frag_entry, settings, format);
+    let shape = VertexBufferShape::of(geometry);
+    let key = (vert_entry, frag_entry, settings, format, shape);
     if self.render_pipelines.iter().any(|(k, _)| *k == key) {
       return;
     }
@@ -2105,6 +2256,39 @@ impl GpuCore {
       DepthTest::Equal => Some(wgpu::CompareFunction::Equal),
       DepthTest::Always => Some(wgpu::CompareFunction::Always),
     };
+    // The vertex shader's data parameters, in order, each read from the
+    // next vertex buffer slot.
+    let vertex_inputs = &self.gpu_entries[vert_entry as usize].vertex_inputs;
+    let step_modes = shape.step_modes();
+    if vertex_inputs.len() != step_modes.len() {
+      panic!(
+        "easl internal error: {label} draws {} vertex data arrays for {} \
+         data parameters",
+        step_modes.len(),
+        vertex_inputs.len()
+      );
+    }
+    let attributes: Vec<Vec<wgpu::VertexAttribute>> =
+      vertex_inputs.iter().map(vertex_attributes).collect();
+    let vertex_buffers: Vec<wgpu::VertexBufferLayout> = vertex_inputs
+      .iter()
+      .zip(step_modes)
+      .zip(attributes.iter())
+      .map(
+        |((layout, step_mode), attributes)| wgpu::VertexBufferLayout {
+          array_stride: layout.stride as u64,
+          step_mode,
+          attributes,
+        },
+      )
+      .collect();
+    let topology = match settings.topology {
+      Topology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
+      Topology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
+      Topology::LineList => wgpu::PrimitiveTopology::LineList,
+      Topology::LineStrip => wgpu::PrimitiveTopology::LineStrip,
+      Topology::PointList => wgpu::PrimitiveTopology::PointList,
+    };
     let pipeline =
       self
         .device
@@ -2114,7 +2298,7 @@ impl GpuCore {
           vertex: wgpu::VertexState {
             module: &self.shader,
             entry_point: Some(&vert_name),
-            buffers: &[],
+            buffers: &vertex_buffers,
             compilation_options: Default::default(),
           },
           fragment: Some(wgpu::FragmentState {
@@ -2128,14 +2312,11 @@ impl GpuCore {
             compilation_options: Default::default(),
           }),
           primitive: wgpu::PrimitiveState {
-            topology: match settings.topology {
-              Topology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
-              Topology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
-              Topology::LineList => wgpu::PrimitiveTopology::LineList,
-              Topology::LineStrip => wgpu::PrimitiveTopology::LineStrip,
-              Topology::PointList => wgpu::PrimitiveTopology::PointList,
-            },
-            strip_index_format: None,
+            topology,
+            // An indexed strip names its index format (WebGPU's strips
+            // restart at the format's maximum index).
+            strip_index_format: (shape.indexed && topology.is_strip())
+              .then_some(wgpu::IndexFormat::Uint32),
             front_face: match settings.front_face {
               FrontFace::CounterClockwise => wgpu::FrontFace::Ccw,
               FrontFace::Clockwise => wgpu::FrontFace::Cw,
@@ -2366,8 +2547,7 @@ impl GpuCore {
         WindowEvent::RenderShaders {
           vert,
           frag,
-          vert_count,
-          instance_count,
+          geometry,
           pre_upload,
           settings,
           render_target,
@@ -2378,12 +2558,13 @@ impl GpuCore {
           } else {
             Self::OFFSCREEN_FORMAT
           };
-          self.get_or_create_render_pipeline(*vert, *frag, *settings, format);
+          self.get_or_create_render_pipeline(
+            *vert, *frag, *settings, format, geometry,
+          );
           items.push(RenderItem::Draw {
             vert: *vert,
             frag: *frag,
-            vert_count: *vert_count,
-            instance_count: *instance_count,
+            geometry: *geometry,
             settings: *settings,
             target: *render_target,
           });
@@ -3349,14 +3530,20 @@ fn named_key_names(key: NamedKey) -> &'static [&'static str] {
 
 fn gpu_buffer_usage(kind: GpuBufferKind) -> wgpu::BufferUsages {
   match kind {
+    // Every buffer can also be a draw's vertex data or indices.
     GpuBufferKind::Uniform => {
-      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST
+      wgpu::BufferUsages::UNIFORM
+        | wgpu::BufferUsages::COPY_DST
+        | wgpu::BufferUsages::VERTEX
+        | wgpu::BufferUsages::INDEX
     }
     // Include COPY_SRC so we can stage GPU→CPU readbacks.
     GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite => {
       wgpu::BufferUsages::STORAGE
         | wgpu::BufferUsages::COPY_DST
         | wgpu::BufferUsages::COPY_SRC
+        | wgpu::BufferUsages::VERTEX
+        | wgpu::BufferUsages::INDEX
     }
     GpuBufferKind::Texture2D | GpuBufferKind::Sampler => {
       unreachable!("gpu_buffer_usage called for a {kind:?} binding")

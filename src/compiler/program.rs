@@ -76,6 +76,9 @@ use super::{
   storage_views::{StorageReadViews, ViewFunctions},
   structs::AbstractStruct,
   vars::TopLevelVar,
+  vertex_inputs::{
+    DrawArgs, InferredFieldLocation, flatten_conflicting_vertex_inputs,
+  },
 };
 
 pub type EaslDocument = Document<EaslSyntax>;
@@ -1793,7 +1796,8 @@ impl Program {
                       );
                     }
                   }
-                  "dispatch-render-shaders" => {
+                  "dispatch-render-shaders"
+                  | "dispatch-indexed-render-shaders" => {
                     if let Type::Function(vertex_fn) =
                       args[0].data.unwrap_known()
                       && let Some(abstract_vertex_fn) =
@@ -1877,13 +1881,19 @@ impl Program {
                           exp.source_trace.clone(),
                         ));
                       }
+                      let abstract_vertex_fn =
+                        abstract_vertex_fn.read().unwrap();
                       if let FunctionImplementationKind::Composite(
                         vertex_implementation,
-                      ) = &abstract_vertex_fn.read().unwrap().implementation
+                      ) = &abstract_vertex_fn.implementation
                       {
+                        let vertex_implementation =
+                          vertex_implementation.read().unwrap();
+                        let frag_implementation =
+                          frag_implementation.read().unwrap();
                         for var in self.vertex_reads_of_fragment_writes(
-                          &vertex_implementation.read().unwrap(),
-                          &frag_implementation.read().unwrap(),
+                          &vertex_implementation,
+                          &frag_implementation,
                         ) {
                           errors.log(CompileError::new(
                             StorageReadInVertexWrittenInFragment(
@@ -1892,6 +1902,14 @@ impl Program {
                             exp.source_trace.clone(),
                           ));
                         }
+                        self.validate_draw_data(
+                          exp,
+                          &DrawArgs::of(f_name, args).unwrap(),
+                          &abstract_vertex_fn.name,
+                          &vertex_implementation,
+                          &frag_implementation,
+                          errors,
+                        );
                       }
                     }
                   }
@@ -1951,7 +1969,9 @@ impl Program {
           {
             let dispatched_fn_count = match &**applied_f_name {
               "dispatch-compute-shader" => 1,
-              "dispatch-render-shaders" => 2,
+              "dispatch-render-shaders" | "dispatch-indexed-render-shaders" => {
+                2
+              }
               _ => 0,
             };
             for arg in args.iter().take(dispatched_fn_count) {
@@ -3308,7 +3328,9 @@ impl Program {
           {
             let dispatched_fn_count = match &**applied_f_name {
               "dispatch-compute-shader" => 1,
-              "dispatch-render-shaders" => 2,
+              "dispatch-render-shaders" | "dispatch-indexed-render-shaders" => {
+                2
+              }
               _ => 0,
             };
             for arg in args.iter().take(dispatched_fn_count) {
@@ -4713,6 +4735,8 @@ impl Program {
                           entry_point: None,
                           dispatched: false,
                           directly_user_written: false,
+                          vertex_inputs: vec![],
+                          flattened_vertex_params: vec![],
                           expression: {
                             let mut new_exp = exp.clone();
                             if !unitlike_fn_substitutions.is_empty() {
@@ -6499,16 +6523,15 @@ impl Program {
     }
   }
   pub fn validate_entry_points(&mut self, errors: &mut ErrorLog) {
-    let mut inferred_struct_field_locations: Vec<(
-      Arc<AbstractStruct>,
-      Arc<str>,
-      usize,
-    )> = vec![];
+    let mut inferred_struct_field_locations: Vec<InferredFieldLocation> =
+      vec![];
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
+      let function_name = signature.name.clone();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
+        let implementation = f.clone();
         let mut f = f.write().unwrap();
         let f_source = f.expression.source_trace.clone();
         if let Some(entry) = f.entry_point {
@@ -6791,11 +6814,18 @@ impl Program {
                         untaken_location,
                         io_value_type(&t, Some((&s, &field_name))),
                       );
-                      inferred_struct_field_locations.push((
-                        s,
-                        field_name,
-                        untaken_location,
-                      ));
+                      inferred_struct_field_locations.push(
+                        InferredFieldLocation {
+                          definition: s,
+                          field_name,
+                          location: untaken_location,
+                          vertex_entry: (entry == EntryPoint::Vertex
+                            && input_or_output == InputOrOutput::Input)
+                            .then(|| {
+                              (function_name.clone(), implementation.clone())
+                            }),
+                        },
+                      );
                     }
                   }
                 }
@@ -6803,6 +6833,16 @@ impl Program {
               (used_locations, used_builtins)
             };
 
+          // Flattened vertex inputs take their locations once these are
+          // assigned (`resolve_vertex_inputs`).
+          let flattened_params: Vec<usize> = if entry == EntryPoint::Vertex {
+            f.validate_vertex_input_locations(errors);
+            (0..f.arg_annotations.len())
+              .filter(|i| f.flattens_vertex_param(*i))
+              .collect()
+          } else {
+            vec![]
+          };
           let input_attributables: Vec<(
             Type,
             Result<
@@ -6813,6 +6853,7 @@ impl Program {
             .arg_annotations
             .iter_mut()
             .enumerate()
+            .filter(|(i, _)| !flattened_params.contains(i))
             .flat_map(|(i, annotation)| {
               let arg = &signature.args[i];
               let arg_type = arg.0.var_type.unwrap_known();
@@ -6952,6 +6993,13 @@ impl Program {
         }
       }
     }
+    let mut inferred_struct_field_locations =
+      flatten_conflicting_vertex_inputs(inferred_struct_field_locations)
+        .into_iter()
+        .map(|inferred| {
+          (inferred.definition, inferred.field_name, inferred.location)
+        })
+        .collect::<Vec<_>>();
     while let Some((s, field_name, location)) =
       inferred_struct_field_locations.pop()
     {
@@ -7588,6 +7636,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.resolve_vertex_inputs();
     self.catch_bind_group_collisions(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -8171,6 +8220,7 @@ impl Program {
       )
       .then(|| v.name.clone())
     }));
+    used.extend(self.draw_data_vars());
     used
   }
   /// The functions actually emitted to `target`: the transitive call-graph

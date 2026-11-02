@@ -1,0 +1,66 @@
+; Vertex data in several shapes: a padded, nested struct with a matrix and a
+; fixed-size array, a bare vector, and a builtin and a struct of builtins
+; beside data parameters. `points` is read as vertex data and by a fragment
+; shader, which reads it through its read-only view.
+(struct Tag
+  id: u32
+  offset: i32)
+
+(struct Corner
+  position: vec2f
+  color: vec3f
+  weights: [2: f32]
+  basis: mat3x3f
+  tag: Tag)
+
+(struct Instance
+  offset: vec2f
+  transform: mat2x2f)
+
+(struct Indices
+  @{builtin vertex-index} vertex: u32
+  @{builtin instance-index} instance: u32)
+
+(var corners: [Corner])
+(var instances: [3: Instance])
+(var points: [vec4f])
+(var indices: [u32])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+@vertex
+(defn corner-vert [c: Corner
+                   @{builtin instance-index} i: u32
+                   inst: Instance]: Varyings
+  (Varyings
+    (vec4f (+ (* inst.transform (.xy (* c.basis (vec3f c.position 1.))))
+              inst.offset)
+           (f32 i)
+           1.)
+    (vec4f (* c.color (c.weights 0u)) (f32 c.tag.offset))))
+
+@vertex
+(defn point-vert [ids: Indices p: vec4f]: Varyings
+  (Varyings p (vec4f (f32 ids.vertex) (f32 ids.instance) 0. 1.)))
+
+@fragment
+(defn shade [in: Varyings]: vec4f
+  in.color)
+
+@fragment
+(defn shade-from-points [in: Varyings]: vec4f
+  (+ in.color (points 0u)))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (dispatch-render-shaders corner-vert shade corners instances)
+      (dispatch-indexed-render-shaders corner-vert shade indices corners
+                                       instances)
+      (dispatch-render-shaders point-vert shade-from-points points)
+      (dispatch-render-shaders point-vert shade 4u points)
+      (dispatch-indexed-render-shaders point-vert shade indices points 2u)
+      (close-window))))
