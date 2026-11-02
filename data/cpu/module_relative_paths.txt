@@ -2,6 +2,9 @@
 8u
 44100.
 8u
+"saved beside this file"
+true
+false
 8u
 "/sounds/tone.wav"
 "/elsewhere/tone.wav"

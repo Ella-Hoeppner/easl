@@ -1,0 +1,4 @@
+; A file that isn't UTF-8 text.
+@cpu
+(defn main []
+  (print (load-text "../buffer/red_pixel.png")))

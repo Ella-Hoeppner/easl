@@ -3499,6 +3499,52 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // `load-text` reads a UTF-8 file into a `String`.
+    AbstractFunctionSignature {
+      name: "load-text".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::Type(Type::String),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("load-text".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // `file-exists?` is true for a file, and false for a directory or
+    // nothing.
+    AbstractFunctionSignature {
+      name: "file-exists?".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("file-exists?".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // `save-text` writes its first argument to the path in its second,
+    // replacing any file there. Carries `FileWrite` so statement-position
+    // calls aren't pruned as dead code.
+    AbstractFunctionSignature {
+      name: "save-text".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::String).owned(),
+        AbstractType::Type(Type::String).owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::FileWrite,
+          Effect::CPUExclusiveFunction("save-text".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "save-png".into(),
       arg_types: vec![
@@ -4201,6 +4247,9 @@ lazy_static! {
     ("get-wav-sample-rate", 0),
     ("save-wav", 0),
     ("load-video", 0),
+    ("load-text", 0),
+    ("save-text", 1),
+    ("file-exists?", 0),
   ]
   .into_iter()
   .collect();

@@ -10,6 +10,10 @@
   (print (named-length "tone"))
   (print (tone-rate))
   (print (save-and-reload))
+  (print (save-and-reload-text))
+  ; `tone.wav` is beside the library, not this file
+  (print (tone-exists))
+  (print (file-exists? "tone.wav"))
   ; a path resolved in the library names its file from here too
   (print (array-length (load-wav (tone-path))))
   ; the two-argument form resolves against any directory, and leaves an

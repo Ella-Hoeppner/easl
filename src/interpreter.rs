@@ -624,6 +624,73 @@ fn primitive_arithmetic(
   }
 }
 
+/// Handles `load-text`, `save-text`, and `file-exists?`, split out of
+/// `apply_builtin_fn` for the same reason as `apply_wav_builtin` below.
+fn apply_text_builtin(
+  f_name: &str,
+  args: &mut Vec<(Value, Type)>,
+) -> Result<Value, EvalException> {
+  let mut string_arg = || match args.remove(0).0 {
+    Value::String(s) => s,
+    _ => panic!("{f_name}: expected a string argument"),
+  };
+  if f_name == "load-text" {
+    return Ok(Value::String(load_text_file(&string_arg())?));
+  }
+  if f_name == "file-exists?" {
+    return Ok(Value::Prim(Primitive::Bool(file_exists(&string_arg()))));
+  }
+  let text = string_arg();
+  save_text_file(&text, &string_arg())?;
+  Ok(Value::Unit)
+}
+
+/// Whether `path` is a file: a directory, or anything unreachable, isn't.
+/// Shared by the `file-exists?` builtin's tree-walker arm and the VM
+/// runtime's `FileExists` host op.
+fn file_exists(path: &str) -> bool {
+  PathBuf::from(path).is_file()
+}
+
+/// The UTF-8 text of the file at `path`. Shared by the `load-text`
+/// builtin's tree-walker arm and the VM runtime's `LoadText` host op.
+fn load_text_file(path: &str) -> Result<String, EvalError> {
+  let bytes = std::fs::read(path).map_err(|e| {
+    UserspaceEvalError::RuntimeError(format!(
+      "load-text: failed to read \"{path}\": {e}"
+    ))
+  })?;
+  String::from_utf8(bytes).map_err(|_| {
+    UserspaceEvalError::RuntimeError(format!(
+      "load-text: \"{path}\" isn't UTF-8 text"
+    ))
+    .into()
+  })
+}
+
+/// Writes `text` to the file at `path`, replacing any file there and
+/// creating missing parent directories, like `save_wav_file`. Shared by the
+/// `save-text` builtin's tree-walker arm and the VM runtime's `SaveText`
+/// host op.
+fn save_text_file(text: &str, path: &str) -> Result<(), EvalError> {
+  let resolved = PathBuf::from(path);
+  if let Some(parent) = resolved.parent()
+    && !parent.as_os_str().is_empty()
+  {
+    std::fs::create_dir_all(parent).map_err(|e| {
+      UserspaceEvalError::RuntimeError(format!(
+        "save-text: failed to create directory for \"{path}\": {e}"
+      ))
+    })?;
+  }
+  std::fs::write(&resolved, text).map_err(|e| {
+    UserspaceEvalError::RuntimeError(format!(
+      "save-text: failed to write \"{path}\": {e}"
+    ))
+    .into()
+  })
+}
+
 /// Handles the file-I/O wav builtins (`load-wav-raw`, `get-wav-sample-rate`,
 /// `save-wav`). Split out of `apply_builtin_fn` so their `Value` locals don't
 /// enlarge that function's already-large debug stack frame — deeply-recursive
@@ -2387,6 +2454,9 @@ fn apply_builtin_fn<IO: IOManager>(
     }
     "load-wav-raw" | "get-wav-sample-rate" | "save-wav" => {
       apply_wav_builtin(&f_name, &mut args)
+    }
+    "load-text" | "save-text" | "file-exists?" => {
+      apply_text_builtin(&f_name, &mut args)
     }
     "load-image" => {
       let Value::String(path) = args.remove(0).0 else {
@@ -9788,6 +9858,31 @@ fn vm_host_call<IO: IOManager>(
       });
       release_heap_id(heap, heap_free, stack[*dest as usize]);
       stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
+    }
+    HostOp::LoadText { path_slot, dest } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      let cell = Arc::new(HeapCell {
+        memory: DynMemory::Words(string_to_words(&load_text_file(&path)?)),
+        stride: 1,
+      });
+      release_heap_id(heap, heap_free, stack[*dest as usize]);
+      stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
+    }
+    HostOp::FileExists { path_slot, dest } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      stack[*dest as usize] = file_exists(&path) as u32;
+    }
+    HostOp::SaveText {
+      text_slot,
+      path_slot,
+    } => {
+      let text =
+        words_to_string(heap_string_words(heap, stack[*text_slot as usize]));
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      save_text_file(&text, &path)?;
     }
     HostOp::LoadWavRaw { path_slot, dest } => {
       let path =

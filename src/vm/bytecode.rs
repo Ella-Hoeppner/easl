@@ -978,6 +978,23 @@ pub enum HostOp {
     path_slot: u16,
     dest: u16,
   },
+  /// `(load-text path)`: reads the file at the runtime string in `path_slot`
+  /// (a heap-id slot) into a fresh string at `dest`.
+  LoadText {
+    path_slot: u16,
+    dest: u16,
+  },
+  /// `(file-exists? path)`: whether the path in `path_slot` is a file.
+  FileExists {
+    path_slot: u16,
+    dest: u16,
+  },
+  /// `(save-text text path)`: writes the runtime string in `text_slot` to
+  /// the path in `path_slot`.
+  SaveText {
+    text_slot: u16,
+    path_slot: u16,
+  },
   /// `(load-wav-raw path)`: like `LoadWav`, but stores the file's raw integer
   /// samples (as `i32` bits) instead of normalized f32s.
   LoadWavRaw {

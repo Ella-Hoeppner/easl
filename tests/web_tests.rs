@@ -190,6 +190,10 @@ mod harness {
     ("cpu/module_relative_paths", "reads and writes files"),
     ("cpu/wav_sample_rate", "reads a file"),
     ("cpu/save_wav_roundtrip", "writes a file"),
+    ("cpu/text_file_roundtrip", "reads and writes files"),
+    ("cpu/file_exists", "reads and writes files"),
+    ("cpu/obj_parsing", "reads a file"),
+    ("buffer/screen_obj_mesh", "reads a file"),
     (
       "cpu/audio_closure_entry",
       "its window never closes (the native suite stops it after its \

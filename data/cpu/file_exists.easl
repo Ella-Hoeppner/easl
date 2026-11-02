@@ -1,0 +1,19 @@
+; `file-exists?` is true for a file, and false for a directory or nothing.
+; It's how a program handles a file that isn't there yet: `load-text` would
+; fail on it.
+(defn load-or [path: String fallback: String]: String
+  (if (file-exists? path)
+    (load-text path)
+    fallback))
+
+@cpu
+(defn main []
+  (let [written "../../out/text_files/exists.txt"
+        missing "../../out/text_files/never-written.txt"]
+    (save-text "saved" written)
+    (print (file-exists? written))
+    (print (file-exists? missing))
+    (print (file-exists? "modules"))
+    (print (file-exists? (concat "modules/" "tricky.obj")))
+    (print (load-or written "default"))
+    (print (load-or missing "default"))))

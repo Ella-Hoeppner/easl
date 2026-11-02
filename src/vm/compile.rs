@@ -4166,6 +4166,35 @@ impl TypedExp {
         state.emit_host_op(HostOp::LoadWav { path_slot, dest });
         Some(Some(dest))
       }
+      "load-text" => {
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("load-text path produced no value");
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::LoadText { path_slot, dest });
+        Some(Some(dest))
+      }
+      "file-exists?" => {
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("file-exists? path produced no value");
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::FileExists { path_slot, dest });
+        Some(Some(dest))
+      }
+      "save-text" => {
+        let text_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("save-text text produced no value");
+        let path_slot = args[1]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("save-text path produced no value");
+        state.emit_host_op(HostOp::SaveText {
+          text_slot,
+          path_slot,
+        });
+        Some(None)
+      }
       "start-listening" => {
         state.emit_host_op(HostOp::StartListening { device_slot: None });
         Some(None)

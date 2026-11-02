@@ -1,0 +1,13 @@
+; Reads an OBJ file with `load-text` and the `obj` library: mixed number
+; formats, skipped lines, a quad fanned into two triangles, every face-corner
+; form, negative indices, and smooth normals.
+(import "modules/obj.easl")
+
+@cpu
+(defn main []
+  (let [mesh (parse-obj (load-text "modules/tricky.obj"))]
+    (print (array-length mesh.positions))
+    (print (array-length mesh.indices))
+    (print mesh.positions)
+    (print mesh.indices)
+    (print (mesh.normals 0u))))

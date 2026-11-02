@@ -16,6 +16,15 @@
     (save-wav path (load-wav "tone.wav") 44100.)
     (array-length (load-wav path))))
 
+(defn tone-exists []: bool
+  (file-exists? "tone.wav"))
+
+; `save-text`'s path is its second argument.
+(defn save-and-reload-text []: String
+  (let [path "../../../out/cpu/module_relative_paths.txt"]
+    (save-text "saved beside this file" path)
+    (load-text path)))
+
 ; `tone.wav` next to this file, as an absolute path a caller in another
 ; directory can use
 (defn tone-path []: String

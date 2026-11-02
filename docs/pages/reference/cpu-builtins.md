@@ -45,7 +45,7 @@ The characters from `start` up to (not including) `end`. Out-of-range indices cl
 
 ## Files
 
-The builtins that read or write files (`load-image`, `save-png`, `load-wav`, `load-wav-raw`, `get-wav-sample-rate`, `save-wav`, `load-video`) take a path that, when relative, is relative to the file the call is written in, so a library loads its assets from its own directory wherever it's imported from.
+The builtins that read or write files (`load-image`, `save-png`, `load-wav`, `load-wav-raw`, `get-wav-sample-rate`, `save-wav`, `load-video`, `load-text`, `save-text`, `file-exists?`) take a path that, when relative, is relative to the file the call is written in, so a library loads its assets from its own directory wherever it's imported from.
 
 ### `resolve-path`
 
@@ -492,6 +492,39 @@ A `.wav` file's sample rate, without loading its samples.
 ```
 
 Writes mono samples to a 16-bit PCM `.wav` file; values outside `[-1, 1]` clip.
+
+## Text files
+
+### `load-text`
+
+```easl
+(load-text path: String): String
+```
+
+The contents of a UTF-8 text file. A file that's missing, unreadable, or not UTF-8 is a runtime error (see [`file-exists?`](#file-exists)). A relative path is relative to the file the call is written in. Not available in the browser.
+
+### `save-text`
+
+```easl
+(save-text text: String path: String): ()
+```
+
+Writes `text` to the file at `path`, replacing any file there and creating any missing directories. A relative path is relative to the file the call is written in. Not available in the browser.
+
+### `file-exists?`
+
+```easl
+(file-exists? path: String): bool
+```
+
+Whether `path` is a file; a directory isn't one. A relative path is relative to the file the call is written in. Not available in the browser.
+
+```easl
+(let [settings (if (file-exists? "settings.txt")
+                 (load-text "settings.txt")
+                 "defaults")]
+  (save-text settings "settings.txt"))
+```
 
 ## MIDI
 

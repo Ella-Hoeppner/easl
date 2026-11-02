@@ -1,0 +1,36 @@
+; An OBJ file's mesh on screen: `load-text`, then the `obj` library, then an
+; indexed draw of the parsed vertices. The file's quad covers the pixel and
+; its normals point along z, shown as blue. Its other triangle is past the
+; far plane.
+(import "../cpu/modules/obj.easl")
+
+(var vertices: [Vertex])
+(var indices: [u32])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+@vertex
+(defn vert [v: Vertex]: Varyings
+  (Varyings (vec4f v.position 1.) (vec4f (abs v.normal) 1.)))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  in.color)
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (let [mesh (parse-obj (load-text "../cpu/modules/tricky.obj"))]
+    (= vertices (mesh-vertices mesh))
+    (= indices mesh.indices))
+  (spawn-window
+    (fn []
+      (when (== frame 0u)
+        (dispatch-indexed-render-shaders vert frag indices vertices))
+      (when (> frame 0u)
+        (close-window))
+      (= frame (+ frame 1u)))))

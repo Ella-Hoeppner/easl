@@ -179,6 +179,7 @@ screen_test!(screen_located_vertex_data);
 screen_test!(screen_instance_data);
 screen_test!(screen_indexed_draw);
 screen_test!(screen_gpu_written_vertex_data);
+screen_test!(screen_obj_mesh);
 screen_test!(screen_read_then_write_draws);
 
 macro_rules! buffer_test {

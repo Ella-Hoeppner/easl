@@ -1,0 +1,24 @@
+; `save-text` writes a String to a file, making any missing directories and
+; replacing what's there, and `load-text` reads it back exactly: newlines,
+; quotes, non-ASCII text, and the empty string. Both take computed paths.
+(defn path-of [name: String]: String
+  (concat "../../out/text_files/" name))
+
+(defn roundtrip [text: String]
+  (save-text text (path-of "roundtrip.txt"))
+  (let [loaded (load-text (path-of "roundtrip.txt"))]
+    (print (== loaded text))
+    (print (length loaded))))
+
+@cpu
+(defn main []
+  (roundtrip "one line")
+  (roundtrip "two\nlines\n")
+  (roundtrip "tabs\tand \"quotes\" and \\ slashes")
+  (roundtrip "héllo wörld ✨")
+  (roundtrip "")
+  (save-text "first, longer contents" (path-of "replaced.txt"))
+  (save-text "second" (path-of "replaced.txt"))
+  (print (load-text (path-of "replaced.txt")))
+  (save-text (concat "score: " (string 12u)) (path-of "save.txt"))
+  (print (substr (load-text (path-of "save.txt")) 7u 10u)))
