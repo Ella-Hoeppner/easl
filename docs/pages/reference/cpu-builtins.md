@@ -14,7 +14,7 @@ Prints any value. `u32`s print as `1u`, `i32`s bare (`1`), whole `f32`s with a t
 
 ## Strings
 
-`String` values exist only in CPU code. Indices count characters. String literals take the escapes `\n`, `\t`, `\r`, `\"`, `\\`, and `\` at the end of a line (see [strings](../cpu.md#runtime-sized-arrays-and-strings)).
+`String` values exist only in CPU code. Lengths and indices count characters, each one a Unicode codepoint, so `(length "é✨")` is `2u` however many bytes those take, and an accented letter written as a letter plus a combining mark counts as two. String literals take the escapes `\n`, `\t`, `\r`, `\"`, `\\`, and `\` at the end of a line (see [strings](../cpu.md#runtime-sized-arrays-and-strings)).
 
 ### `string`
 
@@ -40,6 +40,24 @@ Joins strings, or runtime-sized arrays. **Associative.**
 ```
 
 The characters from `start` up to (not including) `end`. Out-of-range indices clamp, so this never fails.
+
+### `get-char`
+
+```easl
+(get-char s: String index: u32): String
+```
+
+The one-character string at `index`. An index past the end is a runtime error, like indexing an array.
+
+### `string->codepoints`
+
+```easl
+(string->codepoints s: String): [u32]
+(codepoints->string codepoints: [u32]): String
+```
+
+Convert between a string and its characters' Unicode codepoints, over the whole string at once, which makes them the fast way to work through long text. A value that isn't a codepoint, like a surrogate or anything past `U+10FFFF`, becomes the replacement character `U+FFFD`. [`~`](conversions.md#into) does the same conversions: `(let [codes: [u32] ~s] ...)`.
+<!-- index: codepoints->string -->
 
 `(length s)` gives a string's character count, and `==` / `!=` compare contents.
 
@@ -681,4 +699,4 @@ Decodes the current frame, with [linear colors](textures.md#color-space) like `l
 
 ## See also
 
-- [Arrays](arrays.md): `zeroed-array` and `into-dynamic-array` size and fill runtime-sized storage buffers; `push`, `insert`, `remove`, and `reverse` build new arrays.
+- [Arrays](arrays.md): `zeroed-array` and `into-dynamic-array` size and fill runtime-sized storage buffers; `push`, `insert`, `remove`, `reverse`, and `subarray` build new arrays.

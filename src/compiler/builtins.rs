@@ -2491,6 +2491,27 @@ fn into_conversion_functions() -> Vec<AbstractFunctionSignature> {
 fn string_functions() -> Vec<AbstractFunctionSignature> {
   let string = AbstractType::Type(Type::String);
   let u32 = AbstractType::Type(Type::U32);
+  let codepoints = AbstractType::AbstractArray {
+    size: AbstractArraySize::Unsized,
+    inner_type: AbstractType::Type(Type::U32).into(),
+    source_trace: SourceTrace::empty(),
+  };
+  let string_alias =
+    |arg: AbstractType, return_type: AbstractType, alias: &'static str| {
+      AbstractFunctionSignature {
+        name: "into".into(),
+        arg_types: vec![arg.owned()],
+        return_type,
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+            alias,
+          ),
+          target_specific_emulations: HashSet::new(),
+        },
+        ..Default::default()
+      }
+    };
   vec![
     // `(string x)` — convert any value to its print representation.
     AbstractFunctionSignature {
@@ -2523,10 +2544,39 @@ fn string_functions() -> Vec<AbstractFunctionSignature> {
     // the empty string.
     AbstractFunctionSignature {
       name: "substr".into(),
-      arg_types: vec![string.clone().owned(), u32.clone().owned(), u32.owned()],
+      arg_types: vec![
+        string.clone().owned(),
+        u32.clone().owned(),
+        u32.clone().owned(),
+      ],
       return_type: string.clone(),
       ..Default::default()
     },
+    // `(get-char s i)` — the one-character string at character index `i`;
+    // an index past the end is a fatal error, like indexing an array.
+    AbstractFunctionSignature {
+      name: "get-char".into(),
+      arg_types: vec![string.clone().owned(), u32.clone().owned()],
+      return_type: string.clone(),
+      ..Default::default()
+    },
+    // A string's characters as Unicode codepoints, and back. A word that
+    // isn't a codepoint (a surrogate, or past U+10FFFF) becomes U+FFFD.
+    AbstractFunctionSignature {
+      name: "string->codepoints".into(),
+      arg_types: vec![string.clone().owned()],
+      return_type: codepoints.clone(),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "codepoints->string".into(),
+      arg_types: vec![codepoints.clone().owned()],
+      return_type: string.clone(),
+      ..Default::default()
+    },
+    // `~s` / `~codepoints` as terse aliases of the two conversions.
+    string_alias(string.clone(), codepoints.clone(), "string->codepoints"),
+    string_alias(codepoints, string.clone(), "codepoints->string"),
     AbstractFunctionSignature {
       name: "==".into(),
       arg_types: vec![string.clone().owned(), string.clone().owned()],
@@ -3894,6 +3944,20 @@ fn dynamic_array_utility_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![unsized_array_of_t().owned()],
       return_type: unsized_array_of_t(),
       implementation: implementation("reverse"),
+      ..Default::default()
+    },
+    // `(subarray arr start end)` — like `substr`: an exclusive end,
+    // out-of-range indices clamp, and start >= end gives an empty array.
+    AbstractFunctionSignature {
+      name: "subarray".into(),
+      generic_args: generic_t(),
+      arg_types: vec![
+        unsized_array_of_t().owned(),
+        AbstractType::Type(Type::U32).owned(),
+        AbstractType::Type(Type::U32).owned(),
+      ],
+      return_type: unsized_array_of_t(),
+      implementation: implementation("subarray"),
       ..Default::default()
     },
   ]

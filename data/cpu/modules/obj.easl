@@ -1,4 +1,4 @@
-; A small Wavefront OBJ reader, written with the string builtins: it keeps
+; A small Wavefront OBJ reader, working over the text's codepoints: it keeps
 ; `v` positions and `f` faces, fanning polygons into triangles, and gives
 ; every vertex a smooth normal. Other lines are skipped. A face's corners can
 ; be `1`, `1/2`, `1/2/3`, or `1//3` (only the position index is used), and
@@ -14,65 +14,74 @@
   position: vec3f
   normal: vec3f)
 
-(defn char-at [@ref text: String at: u32]: String
-  (substr text at (+ at 1u)))
+; The character codes this reader looks for.
+(def SPACE: u32 32u)
+(def TAB: u32 9u)
+(def NEWLINE: u32 10u)
+(def RETURN: u32 13u)
+(def PLUS: u32 43u)
+(def MINUS: u32 45u)
+(def DOT: u32 46u)
+(def ZERO: u32 48u)
+(def NINE: u32 57u)
+(def UPPER-E: u32 69u)
+(def LOWER-E: u32 101u)
+(def LOWER-F: u32 102u)
+(def LOWER-V: u32 118u)
 
-(defn digit-value [c: String]: i32
-  (if (== c "0") 0i
-    (if (== c "1") 1i
-      (if (== c "2") 2i
-        (if (== c "3") 3i
-          (if (== c "4") 4i
-            (if (== c "5") 5i
-              (if (== c "6") 6i
-                (if (== c "7") 7i
-                  (if (== c "8") 8i
-                    (if (== c "9") 9i -1i))))))))))) 
+; The codepoint at `at`, or 0 past the end of the text.
+(defn code-at [@ref text: [u32] at: u32]: u32
+  (if (< at (array-length text))
+    (text at)
+    0u))
 
-(defn space? [c: String]: bool
-  (|| (== c " ") (== c "\t")))
+(defn digit? [c: u32]: bool
+  (&& (>= c ZERO) (<= c NINE)))
 
-; The end of a line, or of the text (where `char-at` gives "").
-(defn line-end? [c: String]: bool
-  (|| (== c "\n") (|| (== c "\r") (== c ""))))
+(defn space? [c: u32]: bool
+  (|| (== c SPACE) (== c TAB)))
 
-(defn skip-spaces [@ref text: String @var @ref at: u32]
-  (while (space? (char-at text at))
+; The end of a line, or of the text.
+(defn line-end? [c: u32]: bool
+  (|| (== c NEWLINE) (|| (== c RETURN) (== c 0u))))
+
+(defn skip-spaces [@ref text: [u32] @var @ref at: u32]
+  (while (space? (code-at text at))
     (+= at 1u)))
 
-(defn skip-line [@ref text: String @var @ref at: u32]
-  (while (&& (< at (length text)) (!= (char-at text at) "\n"))
+(defn skip-line [@ref text: [u32] @var @ref at: u32]
+  (while (&& (< at (array-length text)) (!= (text at) NEWLINE))
     (+= at 1u))
   (+= at 1u))
 
 ; Reads optional `-`/`+`, returning the sign.
-(defn read-sign [@ref text: String @var @ref at: u32]: f32
-  (let [c (char-at text at)]
-    (when (|| (== c "-") (== c "+"))
+(defn read-sign [@ref text: [u32] @var @ref at: u32]: f32
+  (let [c (code-at text at)]
+    (when (|| (== c MINUS) (== c PLUS))
       (+= at 1u))
-    (if (== c "-") -1. 1.)))
+    (if (== c MINUS) -1. 1.)))
 
-(defn read-digits [@ref text: String @var @ref at: u32]: f32
+(defn read-digits [@ref text: [u32] @var @ref at: u32]: f32
   (let [@var value 0.
-        @var digit (digit-value (char-at text at))]
-    (while (>= digit 0i)
-      (= value (+ (* value 10.) (f32 digit)))
+        @var c (code-at text at)]
+    (while (digit? c)
+      (= value (+ (* value 10.) (f32 (- c ZERO))))
       (+= at 1u)
-      (= digit (digit-value (char-at text at))))
+      (= c (code-at text at)))
     value))
 
 ; Reads a number like `12`, `-0.5`, `.25`, or `1.5e-3`.
-(defn read-f32 [@ref text: String @var @ref at: u32]: f32
+(defn read-f32 [@ref text: [u32] @var @ref at: u32]: f32
   (skip-spaces text at)
   (let [polarity (read-sign text at)
         @var value (read-digits text at)]
-    (when (== (char-at text at) ".")
+    (when (== (code-at text at) DOT)
       (+= at 1u)
       (let [start at
             fraction (read-digits text at)]
         (+= value (/ fraction (pow 10. (f32 (- at start)))))))
-    (let [c (char-at text at)]
-      (when (|| (== c "e") (== c "E"))
+    (let [c (code-at text at)]
+      (when (|| (== c LOWER-E) (== c UPPER-E))
         (+= at 1u)
         (let [exponent-sign (read-sign text at)
               exponent (read-digits text at)]
@@ -81,10 +90,10 @@
 
 ; Reads a face corner, skipping anything after its position index, and gives
 ; the position's index into a mesh of `count` positions.
-(defn read-corner [@ref text: String @var @ref at: u32 count: u32]: u32
+(defn read-corner [@ref text: [u32] @var @ref at: u32 count: u32]: u32
   (let [polarity (read-sign text at)
         index (u32 (read-digits text at))]
-    (while (let [c (char-at text at)]
+    (while (let [c (code-at text at)]
              (! (|| (space? c) (line-end? c))))
       (+= at 1u))
     (if (< polarity 0.)
@@ -92,9 +101,17 @@
       (- index 1u))))
 
 ; Whether a face line has another corner at `at`, moving past any spaces.
-(defn more-corners? [@ref text: String @var @ref at: u32]: bool
+(defn more-corners? [@ref text: [u32] @var @ref at: u32]: bool
   (skip-spaces text at)
-  (! (line-end? (char-at text at))))
+  (! (line-end? (code-at text at))))
+
+; Sets the next of `items`' first `count` elements, doubling the array when
+; it's full. `push` copies the array, which is slow for a whole mesh.
+(defn (append T) [@var @ref items: [T] @var @ref count: u32 item: T]
+  (when (>= count (array-length items))
+    (= items (concat items (zeroed-array (array-length items)))))
+  (= (items count) item)
+  (+= count 1u))
 
 ; The area-weighted normals of `indices`' triangles, summed at each vertex.
 (defn smooth-normals [positions: [vec3f] indices: [u32]]: [vec3f]
@@ -113,36 +130,42 @@
         (= (normals i) (normalize (normals i)))))
     normals))
 
-(defn parse-obj [text: String]: Mesh
-  (let [@var positions: [vec3f] (zeroed-array 0u)
-        @var indices: [u32] (zeroed-array 0u)
+(defn parse-obj [source: String]: Mesh
+  (let [text (string->codepoints source)
+        @var positions: [vec3f] (zeroed-array 1024u)
+        @var position-count 0u
+        @var indices: [u32] (zeroed-array 1024u)
+        @var index-count 0u
         @var at 0u]
-    (while (< at (length text))
+    (while (< at (array-length text))
       (skip-spaces text at)
-      (let [keyword (char-at text at)
-            next (char-at text (+ at 1u))]
-        (if (&& (== keyword "v") (space? next))
+      (let [keyword (code-at text at)
+            next (code-at text (+ at 1u))]
+        (if (&& (== keyword LOWER-V) (space? next))
           (do (+= at 1u)
               (let [x (read-f32 text at)
                     y (read-f32 text at)
                     z (read-f32 text at)]
-                (= positions (push positions (vec3f x y z)))))
-          (when (&& (== keyword "f") (space? next))
+                (append positions position-count (vec3f x y z))))
+          (when (&& (== keyword LOWER-F) (space? next))
             (+= at 1u)
             (skip-spaces text at)
-            (let [count (array-length positions)
-                  first (read-corner text at count)
+            (let [first (read-corner text at position-count)
                   @var previous first]
               (skip-spaces text at)
-              (= previous (read-corner text at count))
+              (= previous (read-corner text at position-count))
               (while (more-corners? text at)
-                (let [corner (read-corner text at count)]
-                  (= indices (push indices first))
-                  (= indices (push indices previous))
-                  (= indices (push indices corner))
+                (let [corner (read-corner text at position-count)]
+                  (append indices index-count first)
+                  (append indices index-count previous)
+                  (append indices index-count corner)
                   (= previous corner))))))
         (skip-line text at)))
-    (Mesh positions (smooth-normals positions indices) indices)))
+    (let [mesh-positions (subarray positions 0u position-count)
+          mesh-indices (subarray indices 0u index-count)]
+      (Mesh mesh-positions
+            (smooth-normals mesh-positions mesh-indices)
+            mesh-indices))))
 
 (defn mesh-vertices [mesh: Mesh]: [Vertex]
   (let [@var vertices: [Vertex]

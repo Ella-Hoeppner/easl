@@ -2348,6 +2348,45 @@ impl BytecodeCompilationState {
         }
         Some(dest)
       }
+      "subarray" => {
+        let Type::Array(_, element_type) = return_type else {
+          panic!("subarray return type wasn't an array")
+        };
+        let element_type = element_type.unwrap_known();
+        let dest = self.take_stack_slot(1);
+        let heap_element = is_heap_value_type(&element_type);
+        let stride_marker = if heap_element {
+          0
+        } else {
+          vm_stack_size(&element_type)
+        };
+        let fixups = if heap_element {
+          None
+        } else {
+          Self::embedding_element_fixups(&element_type)
+        };
+        if fixups.is_some() {
+          self.emit_container_dest_hygiene(dest, return_type);
+        }
+        let range = self.take_stack_slot(2);
+        self.emit_word_move(arg_positions[1], range);
+        self.emit_word_move(arg_positions[2], range + 1);
+        self.push_instruction(Instruction {
+          op: Op::HeapSubarray,
+          arg_positions: [arg_positions[0], range, stride_marker],
+          return_position: dest,
+        });
+        // The new cell's flat words borrow their embedded ids from the
+        // source cell; give it owned shares, as after `HeapFromSlots`.
+        if let Some(fixups) = fixups {
+          self.emit_reown_container_elements(
+            EmbeddingContainer::Cell(dest),
+            stride_marker,
+            &fixups,
+          );
+        }
+        Some(dest)
+      }
       "reverse" => {
         let Type::Array(_, element_type) = return_type else {
           panic!("reverse return type wasn't an array")
@@ -2381,6 +2420,19 @@ impl BytecodeCompilationState {
           );
         }
         Some(dest)
+      }
+      "get-char" => Some(self.emit_binary(
+        Op::StrGetChar,
+        arg_positions[0],
+        arg_positions[1],
+      )),
+      // A string's cell is already a flat `[u32]`: a share, copied on the
+      // first write like any array copy.
+      "string->codepoints" => {
+        Some(self.emit_unary(Op::HeapCopy, arg_positions[0]))
+      }
+      "codepoints->string" => {
+        Some(self.emit_unary(Op::StrFromCodepoints, arg_positions[0]))
       }
       "substr" => {
         let result = self.take_stack_slot(1);

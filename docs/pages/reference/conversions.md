@@ -21,7 +21,7 @@ Each scalar type name doubles as a conversion function, converting the *value* (
 (into x: T): S
 ```
 
-Converts `x` to whatever type the context expects: scalar casts, same-size vector conversions, scalar-to-vector splats, and fixed-size to runtime-sized arrays. `~x` is shorthand. Pin the target with an ascription when context doesn't: `~5u: f32`. You can define `into` for your own types; it's an ordinary overloadable function.
+Converts `x` to whatever type the context expects: scalar casts, same-size vector conversions, scalar-to-vector splats, fixed-size to runtime-sized arrays, and strings to and from their codepoints (`String` and `[u32]`). `~x` is shorthand. Pin the target with an ascription when context doesn't: `~5u: f32`. You can define `into` for your own types; it's an ordinary overloadable function.
 
 ## Bit reinterpretation
 

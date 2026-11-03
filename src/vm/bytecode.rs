@@ -259,6 +259,11 @@ pub enum Op {
   /// `Zeroed` source stays lazily zeroed (reversal of zeros is a no-op):
   /// args [arr_id_slot, _, stride] → dest id slot
   HeapReverse,
+  /// A fresh array of the elements from `start` up to `end`, each clamped
+  /// to the array's length: args [array_id_slot, range_slot, stride, with
+  /// 0 meaning heap elements] → dest id slot, `range_slot` holding `start`
+  /// and the slot after it `end`.
+  HeapSubarray,
   /// Fresh id sharing `src`'s payload (value-semantics copy; O(1)):
   /// args [src_id_slot, _, _] → dest id slot
   HeapCopy,
@@ -296,6 +301,14 @@ pub enum Op {
   /// indices clamp to the string (start >= end yields the empty
   /// string): args [s_id_slot, start_slot, end_slot] → dest id slot
   StrSubstr,
+  /// The one-character string at a character index, trapping past the end:
+  /// args [id_slot, index_slot, _] → dest id slot
+  StrGetChar,
+  /// A string of an array's codepoints, each word that isn't a Unicode
+  /// scalar value becoming U+FFFD: args [array_id_slot, _, _] → dest id
+  /// slot. The other direction is `HeapCopy`: a string's cell already is a
+  /// flat `[u32]`.
+  StrFromCodepoints,
   /// Content equality: args [a_id_slot, b_id_slot, _] → dest (bool)
   StrEq,
 
@@ -636,6 +649,11 @@ impl Instruction {
         .max(self.arg_positions[0])
         .max(self.arg_positions[1]),
       Op::HeapReverse => self.return_position.max(self.arg_positions[0]),
+      // arg 2 is a stride, and the range spans two slots
+      Op::HeapSubarray => self
+        .return_position
+        .max(self.arg_positions[0])
+        .max(self.arg_positions[1] + 1),
       Op::HeapZeroed | Op::HeapZeroedCells => {
         self.return_position.max(self.arg_positions[0])
       }
@@ -1455,6 +1473,11 @@ pub fn alloc_heap_cell(
 /// codepoint per word, stride 1.
 pub fn string_to_words(s: &str) -> Vec<u32> {
   s.chars().map(|c| c as u32).collect()
+}
+
+/// `word` when it's a Unicode scalar value, otherwise U+FFFD.
+pub fn codepoint_word(word: u32) -> u32 {
+  char::from_u32(word).unwrap_or(char::REPLACEMENT_CHARACTER) as u32
 }
 
 /// Decodes string-cell payload words back into a Rust string.
@@ -2710,6 +2733,45 @@ impl BytecodeProgram {
           release_cell!(instruction.return_position);
           stack[instruction.return_position as usize] = alloc_cell!(cell);
         }
+        Op::HeapSubarray => {
+          let [arr_slot, range_slot, stride] = instruction.arg_positions;
+          let cells_element = stride == 0;
+          let flat_stride = (stride as usize).max(1);
+          let start = stack[range_slot as usize] as usize;
+          let end = stack[range_slot as usize + 1] as usize;
+          let range = |length: usize| {
+            let (start, end) = (start.min(length), end.min(length));
+            start..end.max(start)
+          };
+          let memory = match deref_cell!(arr_slot).map(|cell| &cell.memory) {
+            None => {
+              if cells_element {
+                DynMemory::Cells(vec![])
+              } else {
+                DynMemory::Words(vec![])
+              }
+            }
+            Some(DynMemory::Cells(cells)) => {
+              DynMemory::Cells(cells[range(cells.len())].to_vec())
+            }
+            Some(DynMemory::Zeroed { elements }) => DynMemory::Zeroed {
+              elements: range(*elements as usize).len() as u32,
+            },
+            Some(DynMemory::Words(words)) => {
+              let elements = range(words.len() / flat_stride);
+              DynMemory::Words(
+                words[elements.start * flat_stride..elements.end * flat_stride]
+                  .to_vec(),
+              )
+            }
+          };
+          let cell = Arc::new(HeapCell {
+            memory,
+            stride: if cells_element { 1 } else { stride },
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
         Op::HeapCopy => {
           let src = deref_cell!(instruction.arg_positions[0])
             .map(std::sync::Arc::clone);
@@ -2782,6 +2844,43 @@ impl BytecodeProgram {
             Vec::new()
           } else {
             words[start..end].to_vec()
+          };
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Words(words),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::StrGetChar => {
+          let [s_slot, index_slot, _] = instruction.arg_positions;
+          let words = heap_string_words(heap, stack[s_slot as usize]);
+          let index = stack[index_slot as usize];
+          let Some(&word) = words.get(index as usize) else {
+            let length = words.len() as u32;
+            trap!(Trap::IndexOutOfBounds { index, length });
+          };
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Words(vec![word]),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::StrFromCodepoints => {
+          let words = match deref_cell!(instruction.arg_positions[0])
+            .map(|cell| &cell.memory)
+          {
+            None => vec![],
+            Some(DynMemory::Words(words)) => {
+              words.iter().map(|word| codepoint_word(*word)).collect()
+            }
+            Some(DynMemory::Zeroed { elements }) => {
+              vec![0; *elements as usize]
+            }
+            Some(DynMemory::Cells(_)) => {
+              unreachable!("a [u32] is never stored as cells")
+            }
           };
           let cell = Arc::new(HeapCell {
             memory: DynMemory::Words(words),

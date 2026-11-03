@@ -1,0 +1,16 @@
+; Audio code calling `subarray` (audio-callable, like `push`): each sample
+; keeps the last two values pushed so far, and outputs a sixteenth of their
+; sum.
+(var recent: [f32])
+
+(defn voice []: f32
+  (= recent (push recent (+ 1. (* 8. (audio-time)))))
+  (let [count (array-length recent)]
+    (= recent (subarray recent (if (> count 2u) (- count 2u) 0u) count))
+    (/ (+ (recent 0u) (recent (- (array-length recent) 1u))) 16.)))
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn []
+                  (print recent))))

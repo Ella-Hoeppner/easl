@@ -2648,6 +2648,7 @@ impl Program {
                             | "remove"
                             | "concat"
                             | "reverse"
+                            | "subarray"
                         ))
                         || &**fn_name == "audio-time";
                       // The dynamic-array constructors are VM-native, so

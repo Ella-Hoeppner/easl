@@ -255,6 +255,7 @@ impl EffectType {
         | "remove"
         | "concat"
         | "reverse"
+        | "subarray"
         | "audio-time"
         | "reset-audio-time"
     ) || MidiOutKind::BUILTIN_NAMES.contains(&name)

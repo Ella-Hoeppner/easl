@@ -624,6 +624,77 @@ fn primitive_arithmetic(
   }
 }
 
+/// Handles `get-char`, the string/codepoint conversions, and `subarray`,
+/// split out of `apply_builtin_fn` for the same reason as
+/// `apply_wav_builtin` below.
+fn apply_sequence_builtin(
+  f_name: &str,
+  args: &mut Vec<(Value, Type)>,
+) -> Result<Value, EvalException> {
+  let number = |value: &Value| value.clone().unwrap_primitive().as_num();
+  match f_name {
+    "get-char" => {
+      let (Value::String(s), index) = (&args[0].0, number(&args[1].0) as u32)
+      else {
+        panic!("get-char: expected a string")
+      };
+      match s.chars().nth(index as usize) {
+        Some(c) => Ok(Value::String(c.to_string())),
+        None => {
+          let length = s.chars().count() as u32;
+          Err(
+            EvalError::from(UserspaceEvalError::Trap(Trap::IndexOutOfBounds {
+              index,
+              length,
+            }))
+            .into(),
+          )
+        }
+      }
+    }
+    "string->codepoints" => {
+      let Value::String(s) = &args[0].0 else {
+        panic!("string->codepoints: expected a string")
+      };
+      Ok(Value::Array(
+        string_to_words(s)
+          .into_iter()
+          .map(|word| Value::Prim(Primitive::U32(word)))
+          .collect(),
+      ))
+    }
+    "codepoints->string" => {
+      let words: Vec<u32> = match &args[0].0 {
+        Value::Array(elements) => {
+          elements.iter().map(|e| number(e) as u32).collect()
+        }
+        Value::ZeroedArray { length } => vec![0; *length],
+        Value::Uninitialized => vec![],
+        _ => panic!("codepoints->string: expected an array"),
+      };
+      Ok(Value::String(words_to_string(&words)))
+    }
+    "subarray" => {
+      let length = match &args[0].0 {
+        Value::Array(elements) => elements.len(),
+        Value::ZeroedArray { length } => *length,
+        Value::Uninitialized => 0,
+        _ => panic!("subarray: expected an array"),
+      };
+      let start = (number(&args[1].0) as usize).min(length);
+      let end = (number(&args[2].0) as usize).min(length).max(start);
+      Ok(match &args[0].0 {
+        Value::Array(elements) => Value::Array(elements[start..end].to_vec()),
+        Value::ZeroedArray { .. } => Value::ZeroedArray {
+          length: end - start,
+        },
+        _ => Value::Array(vec![]),
+      })
+    }
+    _ => panic!(),
+  }
+}
+
 /// Handles `load-text`, `save-text`, and `file-exists?`, split out of
 /// `apply_builtin_fn` for the same reason as `apply_wav_builtin` below.
 fn apply_text_builtin(
@@ -2186,6 +2257,9 @@ fn apply_builtin_fn<IO: IOManager>(
       };
       elements.reverse();
       Ok(Value::Array(elements))
+    }
+    "get-char" | "string->codepoints" | "codepoints->string" | "subarray" => {
+      apply_sequence_builtin(&f_name, &mut args)
     }
     "substr" => {
       let Value::String(s) = &args[0].0 else {

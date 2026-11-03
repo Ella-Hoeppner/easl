@@ -1,0 +1,31 @@
+; `length`, `substr`, and `get-char` count characters, not bytes, on both
+; runtimes: `s` has 2-, 3-, and 4-byte characters in UTF-8, and `combined` is
+; two characters that display as one. Out-of-range `substr` indices clamp.
+(defn reversed [text: String]: String
+  (let [@var result ""]
+    (for [i 0u (< i (length text)) (+= i 1u)]
+      (= result (concat (get-char text i) result)))
+    result))
+
+@cpu
+(defn main []
+  (let [s "héllo ✨🐰"
+        combined "é"]
+    (print (length s))
+    (print (length combined))
+    (print (length ""))
+    (print (substr s 0u 1u))
+    (print (substr s 1u 2u))
+    (print (substr s 6u 8u))
+    (print (length (substr s 5u 8u)))
+    (print (substr s 6u 100u))
+    (print (substr s 100u 200u))
+    (print (substr s 5u 2u))
+    (print (substr s 3u 3u))
+    (print (get-char s 0u))
+    (print (get-char s 1u))
+    (print (get-char s 6u))
+    (print (get-char s (- (length s) 1u)))
+    (print (length (get-char s 7u)))
+    (print (== (get-char s 1u) (substr s 1u 2u)))
+    (print (reversed s))))

@@ -1,0 +1,12 @@
+main-publish: recent
+start-audio: voice
+spawn-window
+frame 0
+print: []
+audio-batch 0 x4
+audio-adopt: recent
+samples: 0.125 0.1875 0.3125 0.4375
+audio-publish: recent
+frame 1
+main-adopt: recent
+print: [3. 4.]

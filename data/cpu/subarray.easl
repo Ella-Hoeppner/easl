@@ -1,0 +1,55 @@
+; `subarray` copies the elements from `start` up to an exclusive `end`, like
+; `substr`: out-of-range indices clamp, and start >= end gives an empty
+; array. It covers every way the VM stores array elements: flat scalars,
+; multi-word structs, heap elements, structs embedding heap values, and lazy
+; zeros, plus GPU-bound globals.
+(struct Point
+  position: vec3f
+  id: u32)
+
+(struct Packet
+  id: u32
+  samples: [f32])
+
+(var global-values: [f32])
+
+@cpu
+(defn main []
+  (let [values ~[10u 20u 30u 40u 50u]]
+    (print (subarray values 1u 3u))
+    (print (subarray values 0u 5u))
+    (print (subarray values 3u 100u))
+    (print (subarray values 100u 200u))
+    (print (subarray values 3u 1u))
+    (print (subarray values 2u 2u))
+    ; the slice is its own value
+    (let [@var slice (subarray values 1u 3u)]
+      (= (slice 0u) 99u)
+      (print slice)
+      (print values))
+    ; a slice taken again and again releases what it replaces
+    (let [@var total 0u]
+      (for [i 0u (< i 1000u) (+= i 1u)]
+        (let [slice (subarray values (% i 3u) 5u)]
+          (+= total (array-length slice))))
+      (print total)))
+  (let [points ~[(Point (vec3f 1.) 1u) (Point (vec3f 2.) 2u) (Point (vec3f 3.) 3u)]]
+    (print (.id ((subarray points 1u 3u) 1u)))
+    (print (array-length (subarray points 1u 3u))))
+  (let [nested ~[~[1. 2.] ~[3.] ~[4. 5. 6.]]
+        @var inner (subarray nested 1u 3u)]
+    (print inner)
+    (= (inner 0u) (push (inner 0u) 7.))
+    (print inner)
+    (print nested))
+  (let [packets ~[(Packet 1u ~[1.]) (Packet 2u ~[2. 3.]) (Packet 3u ~[4.])]
+        @var slice (subarray packets 1u 2u)]
+    (print (.samples (slice 0u)))
+    (= (.samples (slice 0u)) (push (.samples (slice 0u)) 9.))
+    (print (.samples (slice 0u)))
+    (print (.samples (packets 1u))))
+  (let [zeros: [u32] (zeroed-array 5u)]
+    (print (subarray zeros 1u 4u))
+    (print (subarray zeros 4u 9u)))
+  (= global-values ~[1. 2. 3. 4.])
+  (print (subarray global-values 2u 4u)))

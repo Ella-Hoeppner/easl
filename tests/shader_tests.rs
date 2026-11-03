@@ -372,6 +372,10 @@ error_test!(
   CompileErrorKind::RuntimeSizedLocalInGpuCode
 );
 error_test!(
+  subarray_gpu_failure,
+  CompileErrorKind::RuntimeSizedLocalInGpuCode
+);
+error_test!(
   unused_generic_const_failure,
   CompileErrorKind::UnusedGeneric("C".into())
 );

@@ -1,0 +1,36 @@
+; `string->codepoints` and `codepoints->string` convert between a string and
+; its Unicode codepoints, and `into` does the same. A word that isn't a
+; codepoint (a surrogate, or anything past U+10FFFF) becomes U+FFFD, never
+; an error. The array is an ordinary value: changing it leaves the string
+; alone.
+(defn roundtrips? [s: String]: bool
+  (== (codepoints->string (string->codepoints s)) s))
+
+@cpu
+(defn main []
+  (let [s "hé ✨🐰"]
+    (print (string->codepoints s))
+    (print (roundtrips? s))
+    (print (roundtrips? ""))
+    (print (array-length (string->codepoints "")))
+    (print (codepoints->string (zeroed-array 0u)))
+    (print (length (codepoints->string (zeroed-array 3u))))
+    (print (codepoints->string ~[104u 105u]))
+    ; the largest codepoint, then a surrogate, then the first past the end,
+    ; then the largest u32
+    (print (string->codepoints
+             (codepoints->string
+               ~[1114111u 55357u 1114112u 4294967295u 65u])))
+    (print (codepoints->string (reverse (string->codepoints "abc"))))
+    (print (codepoints->string (push (string->codepoints "ab") 99u)))
+    (let [text "abc"
+          @var codes (string->codepoints text)]
+      (= (codes 0u) 90u)
+      (print (codepoints->string codes))
+      (print text))
+    (let [codes: [u32] ~s
+          back: String ~codes]
+      (print (array-length codes))
+      (print (== back s)))
+    (let [shout: String ~(subarray ~[72u 73u 33u] 0u 2u)]
+      (print shout))))

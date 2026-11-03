@@ -1,0 +1,15 @@
+[104u 233u 32u 10024u 128048u]
+true
+true
+0u
+""
+3u
+"hi"
+[1114111u 65533u 65533u 65533u 65u]
+"cba"
+"abc"
+"Zbc"
+"abc"
+5u
+true
+"HI"

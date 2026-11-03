@@ -1,0 +1,4 @@
+; Two characters, so index 2 is past the end, in bytes or not.
+@cpu
+(defn main []
+  (print (get-char "é✨" 2u)))

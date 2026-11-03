@@ -268,6 +268,10 @@ cpu_test!(wav_sample_rate);
 cpu_test!(save_wav_roundtrip);
 cpu_test!(text_file_roundtrip);
 cpu_test!(file_exists);
+cpu_test!(string_characters);
+cpu_test!(string_codepoints);
+cpu_error_test!(get_char_out_of_bounds_error);
+cpu_test!(subarray);
 cpu_test!(obj_parsing);
 cpu_error_test!(load_text_missing_file_error);
 

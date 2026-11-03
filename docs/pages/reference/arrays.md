@@ -58,3 +58,11 @@ Converts a fixed-size array to a runtime-sized one, e.g. to fill a runtime-sized
 
 Return a new array with `value` appended, inserted at `index`, the element at `index` removed, or the order reversed; `arr` itself is unchanged, so growing an array is `(= arr (push arr x))`. An `index` past the end (for `insert`, past `(array-length arr)`, which appends) is a runtime error. [`concat`](cpu-builtins.md#concat) joins arrays. CPU and audio code only.
 <!-- index: insert remove reverse -->
+
+### `subarray`
+
+```easl
+(subarray arr: [T] start: u32 end: u32): [T]
+```
+
+A new array of the elements from `start` up to (not including) `end`, like [`substr`](cpu-builtins.md#substr): out-of-range indices clamp, so this never fails, and `start` at or past `end` gives an empty array. `arr` itself is unchanged. CPU and audio code only.
