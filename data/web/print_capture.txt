@@ -1,0 +1,3 @@
+onPrint: "first"
+onPrint: 2u
+onPrint: (vec2f 1. 2.)

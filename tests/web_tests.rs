@@ -58,6 +58,12 @@ mod harness {
     MouseWheel(f64, f64, f64, f64),
     /// Sends a raw MIDI message through the runtime's `sendMidiMessage`.
     Midi(&'static [u8]),
+    /// Pauses or resumes the program from the page.
+    Pause,
+    Resume,
+    /// Waits this many milliseconds, failing if the program prints
+    /// meanwhile.
+    ExpectQuiet(u64),
   }
   use Step::*;
 
@@ -153,6 +159,28 @@ mod harness {
       ],
     ),
     (
+      "pause_resume",
+      &[
+        AwaitPrint("\"running\""),
+        Pause,
+        // Paused, the program runs no frames, so holding "p" prints
+        // nothing, and a press that ends before it's resumed is dropped.
+        // Pausing again changes nothing.
+        KeyDown("p"),
+        Pause,
+        ExpectQuiet(1500),
+        KeyUp("p"),
+        KeyDown("a"),
+        KeyUp("a"),
+        Resume,
+        KeyDown("a"),
+        KeyUp("a"),
+        AwaitPrint("\"a pressed\""),
+        KeyDown("q"),
+        KeyUp("q"),
+      ],
+    ),
+    (
       "input_held",
       &[
         AwaitPrint("(vec4u 0u 0u 0u 0u)"),
@@ -232,6 +260,10 @@ mod harness {
   const ISOLATION_HEADERS: &str = "Cross-Origin-Opener-Policy: same-origin\r\n\
     Cross-Origin-Embedder-Policy: require-corp\r\n";
 
+  /// Tests whose page passes the program an `onPrint` callback, which logs
+  /// each line it's called with prefixed `onPrint: `.
+  const CAPTURED_PRINTS: &[&str] = &["web/print_capture"];
+
   /// How long one test may run.
   const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -247,9 +279,13 @@ mod harness {
   <body>
     <canvas id="easl-canvas"></canvas>
     <script type="module">
-      window.runProgram = async () => {
+      window.runProgram = async (options) => {
         const { startEaslProgram } = await import("./easl-program.js");
-        await startEaslProgram(document.getElementById("easl-canvas"));
+        window.program = startEaslProgram(
+          document.getElementById("easl-canvas"),
+          options,
+        );
+        await window.program.finished;
       };
     </script>
   </body>
@@ -264,6 +300,8 @@ mod harness {
     script: &'static [Step],
     /// Whether its page is cross-origin isolated (see `NOT_ISOLATED`).
     isolated: bool,
+    /// Whether its page captures its prints (see `CAPTURED_PRINTS`).
+    captures_prints: bool,
   }
 
   enum Expected {
@@ -389,6 +427,7 @@ mod harness {
           .map_or(&[][..], |(_, script)| *script);
         cases.push(Case {
           isolated: !NOT_ISOLATED.contains(&&*name),
+          captures_prints: CAPTURED_PRINTS.contains(&&*name),
           name,
           source,
           expected,
@@ -927,7 +966,8 @@ mod harness {
       .program_js;
     let (id, url) = server.add_program(program_js, case.isolated);
     let mut tab = Tab::open(chrome, &url);
-    let result = run_program(&mut tab.session, case.script);
+    let result =
+      run_program(&mut tab.session, case.script, case.captures_prints);
     let pixel = match &case.expected {
       Expected::Screen { .. } => Some(canvas_pixel(&mut tab.session)),
       _ => None,
@@ -1045,11 +1085,21 @@ mod harness {
     Ok(bytes)
   }
 
-  /// Runs the page's program to completion, performing `script` meanwhile.
-  fn run_program(session: &mut Session, script: &[Step]) -> Result<(), String> {
+  /// Runs the page's program to completion, performing `script` meanwhile,
+  /// with an `onPrint` callback if `captures_prints`.
+  fn run_program(
+    session: &mut Session,
+    script: &[Step],
+    captures_prints: bool,
+  ) -> Result<(), String> {
+    let expression = if captures_prints {
+      "runProgram({ onPrint: (line) => console.log(`onPrint: ${line}`) })"
+    } else {
+      "runProgram()"
+    };
     let run = session.send(
       "Runtime.evaluate",
-      json!({ "expression": "runProgram()", "awaitPromise": true }),
+      json!({ "expression": expression, "awaitPromise": true }),
     );
     let deadline = Instant::now() + TEST_TIMEOUT;
     let mut matched = 0;
@@ -1091,6 +1141,22 @@ mod harness {
             "import(\"./easl-program.js\").then((program) => \
              program.sendMidiMessage(new Uint8Array({bytes:?})))"
           ))?;
+        }
+        Pause => {
+          session.evaluate("window.program.pause()")?;
+        }
+        Resume => {
+          session.evaluate("window.program.resume()")?;
+        }
+        ExpectQuiet(milliseconds) => {
+          let printed = session.prints.len();
+          let until = Instant::now() + Duration::from_millis(milliseconds);
+          while Instant::now() < until {
+            session.pump();
+          }
+          if let Some(print) = session.prints.get(printed) {
+            return Err(format!("printed {print:?} while it should be quiet"));
+          }
         }
       }
     }

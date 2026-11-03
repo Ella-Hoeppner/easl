@@ -14,10 +14,13 @@ use pulldown_cmark::{
 };
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use live_preview::LivePreview;
 
 mod highlight;
 mod landing;
+mod live_preview;
 
 /// One page of the site, in nav order.
 struct PageSpec {
@@ -62,6 +65,7 @@ struct RenderedPage {
   title: String,  // from the h1
   body: String,
   headings: Vec<Heading>,
+  previews: Vec<LivePreview>,
 }
 
 /// One entry in the all-functions index.
@@ -87,7 +91,14 @@ fn main() {
     let output = spec.source.replace(".md", ".html");
     let is_reference_page = spec.source.starts_with("reference/")
       && spec.source != "reference/overview.md";
-    let page = render_page(&source, &output, is_reference_page, &mut fn_entries);
+    let page_dir = Path::new(spec.source).parent().unwrap();
+    let page = render_page(
+      &source,
+      &output,
+      page_dir,
+      is_reference_page,
+      &mut fn_entries,
+    );
     rendered.push(page);
   }
 
@@ -101,16 +112,27 @@ fn main() {
   fs::write(site_dir.join("style.css"), include_str!("../assets/style.css"))
     .unwrap();
 
+  let runtime_dir = site_dir.join(landing::RUNTIME_DIR);
+  fs::create_dir_all(&runtime_dir).unwrap();
   for page in &rendered {
+    for preview in &page.previews {
+      preview.package(&pages_dir, &runtime_dir);
+    }
     let html = wrap_in_template(
       &page.title,
       &page.output,
       &page.body,
       &rendered,
       &page.headings,
+      !page.previews.is_empty(),
     );
     fs::write(site_dir.join(&page.output), html).unwrap();
   }
+  fs::write(
+    site_dir.join("live-previews.js"),
+    include_str!("../assets/live-previews.js"),
+  )
+  .unwrap();
 
   let index_body = function_index_body(&fn_entries);
   let index_html = wrap_in_template(
@@ -119,6 +141,7 @@ fn main() {
     &index_body,
     &rendered,
     &[],
+    false,
   );
   fs::write(site_dir.join(FUNCTION_INDEX_OUTPUT), index_html).unwrap();
 
@@ -139,10 +162,12 @@ fn main() {
 }
 
 /// Convert one markdown page into HTML, collecting headings (for the sidebar
-/// table of contents) and reference-function entries along the way.
+/// table of contents), reference-function entries, and live previews along
+/// the way. `page_dir` is the page's directory relative to `pages/`.
 fn render_page(
   source: &str,
   output: &str,
+  page_dir: &Path,
   collect_fn_entries: bool,
   fn_entries: &mut Vec<FnEntry>,
 ) -> RenderedPage {
@@ -156,6 +181,8 @@ fn render_page(
   // `<!-- index: ... -->` comment doesn't duplicate the heading's code spans
   let mut last_h3_indexed: HashSet<String> = HashSet::new();
   let mut last_h3_slug = String::new();
+  let mut previews: Vec<LivePreview> = Vec::new();
+  let prefix = page_prefix(output);
 
   let mut iter = parser.into_iter();
   while let Some(event) = iter.next() {
@@ -286,6 +313,13 @@ fn render_page(
         }
         // the comment itself is dropped from the output
       }
+      Event::Html(html) => match LivePreview::from_marker(&html, page_dir) {
+        Some(preview) => {
+          events.push(Event::Html(CowStr::from(preview.html(prefix))));
+          previews.push(preview);
+        }
+        None => events.push(Event::Html(html)),
+      },
       other => events.push(other),
     }
   }
@@ -298,6 +332,7 @@ fn render_page(
     title: if title.is_empty() { output.to_string() } else { title },
     body,
     headings,
+    previews,
   };
   for entry in fn_entries.iter_mut() {
     if entry.page_output == page.output && entry.page_title.is_empty() {
@@ -437,8 +472,14 @@ fn wrap_in_template(
   body: &str,
   all_pages: &[RenderedPage],
   headings: &[Heading],
+  has_previews: bool,
 ) -> String {
-  let prefix = if output.contains('/') { "../" } else { "" };
+  let prefix = page_prefix(output);
+  let scripts = if has_previews {
+    format!("<script type=\"module\" src=\"{prefix}live-previews.js\"></script>\n")
+  } else {
+    String::new()
+  };
 
   let mut nav = String::new();
   let mut current_section = "";
@@ -511,10 +552,16 @@ fn wrap_in_template(
      {nav}\
      </nav>\n\
      <main><article>\n{body}</article></main>\n\
+     {scripts}\
      </body>\n\
      </html>\n",
     title = escape_html(&full_title),
   )
+}
+
+/// The relative path from the page at `output` back to the site root.
+fn page_prefix(output: &str) -> &'static str {
+  if output.contains('/') { "../" } else { "" }
 }
 
 pub fn escape_html(text: &str) -> String {

@@ -32,9 +32,9 @@ const HERO_PROGRAM_PATH: &str = "../pages/main_page_example.easl";
 /// directory.
 const WEB_RUNTIME_PATH: &str = "../../web";
 
-/// Where the background program and the web runtime go, relative to the site
-/// root.
-const HERO_RUNTIME_DIR: &str = "easl-web";
+/// Where the web runtime and the programs it runs (the background program
+/// and every page's live previews) go, relative to the site root.
+pub const RUNTIME_DIR: &str = "easl-web";
 
 fn naga_validate(label: &str, wgsl: &str) {
   let module = naga::front::wgsl::parse_str(wgsl).unwrap_or_else(|e| {
@@ -154,7 +154,7 @@ pub fn generate(site_dir: &Path) {
   package_hero_program(
     &hero_path,
     &manifest_dir.join(WEB_RUNTIME_PATH),
-    &site_dir.join(HERO_RUNTIME_DIR),
+    &site_dir.join(RUNTIME_DIR),
   );
 
   let hero = prose("hero.md");
@@ -175,7 +175,7 @@ pub fn generate(site_dir: &Path) {
     program = highlight::highlight_easl(hero_source),
     program_note = render_markdown(&prose("program-note.md")),
     no_webgpu = render_markdown(&prose("no-webgpu.md")),
-    runtime_dir = HERO_RUNTIME_DIR,
+    runtime_dir = RUNTIME_DIR,
   );
   fs::write(site_dir.join("index.html"), html).unwrap();
   fs::write(

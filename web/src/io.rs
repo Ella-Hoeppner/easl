@@ -5,31 +5,37 @@ use easl::{
   audio::AudioSource,
   interpreter::{
     BufferUpload, DrawGeometry, EvalError, FrameDriver, IOManager, MidiState,
-    StdoutIO,
-    TextureHandle, UserspaceEvalError, WindowEvent,
+    StdoutIO, TextureHandle, UserspaceEvalError, WindowEvent,
   },
   thread_sync::AtomicWords,
   window::GpuCore,
 };
+
+use js_sys::Function;
+use wasm_bindgen::JsValue;
 
 use crate::atomics::SharedArrayWords;
 
 /// The web runtime's IO manager. GPU work and window/input queries go
 /// through a `StdoutIO` holding the canvas's `GpuCore` (the page's event
 /// listeners write input state into the same core the native window loop
-/// does); printing goes to the browser console.
+/// does); printing goes to the page's `onPrint` callback, or else to the
+/// browser console.
 ///
 /// A browser can't block on the GPU, so CPU reads of GPU-written data
 /// suspend the VM instead, and the runtime reads them back asynchronously
 /// (see `VmRunState::AwaitingReadback`).
 pub struct WebIO {
   inner: StdoutIO,
+  /// Called with each printed line in place of the console.
+  on_print: Option<Function>,
 }
 
 impl WebIO {
-  pub fn new() -> Self {
+  pub fn new(on_print: Option<Function>) -> Self {
     Self {
       inner: StdoutIO::new(),
+      on_print,
     }
   }
 
@@ -52,7 +58,14 @@ fn blocking_readback() -> ! {
 
 impl IOManager for WebIO {
   fn println(&mut self, s: &str) {
-    web_sys::console::log_1(&s.into());
+    match &self.on_print {
+      Some(on_print) => {
+        if let Err(error) = on_print.call1(&JsValue::NULL, &s.into()) {
+          web_sys::console::error_2(&"easl: onPrint threw:".into(), &error);
+        }
+      }
+      None => web_sys::console::log_1(&s.into()),
+    }
   }
 
   fn record_draw(

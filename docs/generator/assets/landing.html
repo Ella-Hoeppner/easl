@@ -34,7 +34,7 @@
 <script type="module">
 import {{ startEaslProgram }} from "./{runtime_dir}/easl-program.js";
 if (navigator.gpu) {{
-  startEaslProgram(document.getElementById("hero-canvas")).catch((error) => {{
+  startEaslProgram(document.getElementById("hero-canvas")).finished.catch((error) => {{
     console.error(error);
     document.body.classList.add("no-webgpu");
   }});

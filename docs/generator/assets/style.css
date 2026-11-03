@@ -235,7 +235,8 @@ pre.code {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.85rem 1rem;
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 34rem;
   line-height: 1.5;
   margin: 0.8rem 0 1rem;
 }
@@ -255,6 +256,56 @@ pre.code code {
 :is(.easl, .glsl) .f { color: var(--hl-call); font-weight: 550; }
 :is(.easl, .glsl) .p { color: var(--hl-paren); }
 :is(.easl, .glsl) .a { color: var(--hl-annotation); }
+
+/* ---- live previews ---- */
+
+.live-preview {
+  margin: 1rem 0 1.4rem;
+}
+
+.live-preview canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
+.live-console {
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.8rem;
+  height: 7.5rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.live-console:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-dim);
+}
+
+.live-preview-note {
+  display: none;
+  margin: 0.5rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.live-preview.no-webgpu canvas,
+.live-preview.failed canvas {
+  display: none;
+}
+
+.live-preview.no-webgpu .no-webgpu-note,
+.live-preview.failed .failed-note {
+  display: block;
+}
 
 /* ---- tables ---- */
 

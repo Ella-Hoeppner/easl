@@ -9,7 +9,7 @@ mod audio_engine;
 mod io;
 
 use std::{
-  cell::RefCell,
+  cell::{Cell, RefCell},
   collections::HashMap,
   path::{Path, PathBuf},
   rc::Rc,
@@ -22,8 +22,7 @@ use easl::{
   audio::AudioSource,
   compiler::{entry::EntryPoint, program::Program},
   interpreter::{
-    EvalError, IOManager, VmCpuRuntime,
-    VmRunState, pick_entry_point_name,
+    EvalError, IOManager, VmCpuRuntime, VmRunState, pick_entry_point_name,
   },
   load_easl_program_from_sources,
   window::{
@@ -34,28 +33,125 @@ use easl::{
 use io::WebIO;
 use js_sys::{Function, Promise, Reflect};
 use wasm_bindgen::{JsCast, prelude::*};
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 
-/// Compiles and runs an easl program, rendering into `canvas`. The program
-/// is given as parallel lists of file paths and sources, with `main_path`
-/// naming the file holding the `@cpu` entry point. `host` carries what the
-/// page provides: `module` (this runtime's compiled wasm module) and
-/// `workletUrl` (the audio worklet script) for programs that play audio,
-/// and `startMidi`, called if the program reads MIDI. Resolves once the
-/// program finishes; compile and runtime errors reject with their
-/// description, prefixed `easl: ` so it's clear where they come from.
-#[wasm_bindgen(js_name = runEaslProgram)]
-pub async fn run_easl_program(
+/// Starts compiling and running an easl program, rendering into `canvas`,
+/// and returns it at once, for the page to pause, resume, and wait on. The
+/// program is given as parallel lists of file paths and sources, with
+/// `main_path` naming the file holding the `@cpu` entry point. `host`
+/// carries what the page provides: `module` (this runtime's compiled wasm
+/// module) and `workletUrl` (the audio worklet script) for programs that
+/// play audio, `startMidi`, called if the program reads MIDI, and
+/// optionally `onPrint`, called with each line the program prints in place
+/// of the browser console.
+#[wasm_bindgen(js_name = startProgram)]
+pub fn start_program(
   canvas: HtmlCanvasElement,
   main_path: String,
   paths: Vec<String>,
   sources: Vec<String>,
   host: JsValue,
-) -> Result<(), JsError> {
-  run_program(canvas, main_path, paths, sources, host)
-    .await
-    .map_err(|message| JsError::new(&format!("easl: {message}")))
+) -> EaslProgram {
+  let control = Rc::new(ProgramControl::default());
+  let run_control = Rc::clone(&control);
+  let finished = Promise::new(&mut |resolve, reject| {
+    let control = Rc::clone(&run_control);
+    let (canvas, main_path, paths, sources, host) = (
+      canvas.clone(),
+      main_path.clone(),
+      paths.clone(),
+      sources.clone(),
+      host.clone(),
+    );
+    spawn_local(async move {
+      match run_program(canvas, main_path, paths, sources, host, &control)
+        .await
+      {
+        Ok(()) => resolve.call0(&JsValue::NULL),
+        Err(message) => reject.call1(
+          &JsValue::NULL,
+          &JsError::new(&format!("easl: {message}")).into(),
+        ),
+      }
+      .unwrap();
+    });
+  });
+  EaslProgram { control, finished }
+}
+
+/// A running easl program, as its page sees it (see `startProgram`).
+#[wasm_bindgen]
+pub struct EaslProgram {
+  control: Rc<ProgramControl>,
+  finished: Promise,
+}
+
+#[wasm_bindgen]
+impl EaslProgram {
+  /// Pauses the program: it runs no more frames until resumed, its canvas
+  /// keeps showing the last one, and its audio is suspended. Its clock is
+  /// paused too, so `window-time` and `audio-time` continue where they
+  /// left off when it's resumed.
+  pub fn pause(&self) {
+    self.control.set_paused(true);
+  }
+
+  /// Resumes a paused program.
+  pub fn resume(&self) {
+    self.control.set_paused(false);
+  }
+
+  /// Whether the program is paused.
+  #[wasm_bindgen(getter)]
+  pub fn paused(&self) -> bool {
+    self.control.paused.get()
+  }
+
+  /// Settles when the program ends: resolves when it finishes (a program
+  /// with a window runs until it calls `close-window`), and rejects with
+  /// the description of a compile or runtime error, prefixed `easl: ` so
+  /// it's clear where it comes from.
+  #[wasm_bindgen(getter)]
+  pub fn finished(&self) -> Promise {
+    self.finished.clone()
+  }
+}
+
+/// What the page controls about a running program.
+#[derive(Default)]
+struct ProgramControl {
+  paused: Cell<bool>,
+  /// Whether the program plays audio, which pausing suspends.
+  plays_audio: Cell<bool>,
+  /// Resolves what a paused run is waiting on (see `unpaused`).
+  resume: RefCell<Option<Function>>,
+}
+
+impl ProgramControl {
+  fn set_paused(&self, paused: bool) {
+    self.paused.set(paused);
+    if self.plays_audio.get() {
+      audio::set_paused(paused);
+    }
+    if paused {
+      return;
+    }
+    let resume = self.resume.borrow_mut().take();
+    if let Some(resume) = resume {
+      resume.call0(&JsValue::NULL).unwrap();
+    }
+  }
+
+  /// Waits until the program isn't paused.
+  async fn unpaused(&self) {
+    while self.paused.get() {
+      let resumed = Promise::new(&mut |resolve, _| {
+        *self.resume.borrow_mut() = Some(resolve);
+      });
+      JsFuture::from(resumed).await.unwrap();
+    }
+  }
 }
 
 async fn run_program(
@@ -64,6 +160,7 @@ async fn run_program(
   paths: Vec<String>,
   sources: Vec<String>,
   host: JsValue,
+  control: &ProgramControl,
 ) -> Result<(), String> {
   console_error_panic_hook::set_once();
   let source_map: HashMap<PathBuf, String> =
@@ -84,6 +181,7 @@ async fn run_program(
   let entry_name =
     pick_entry_point_name(&program, None).map_err(describe_error)?;
   if audio_source.is_some() {
+    control.plays_audio.set(true);
     audio::configure(AudioHost {
       module: Reflect::get(&host, &"module".into()).unwrap_or_default(),
       worklet_url: Reflect::get(&host, &"workletUrl".into())
@@ -92,6 +190,9 @@ async fn run_program(
         .unwrap_or_default(),
     })
     .map_err(describe_error)?;
+    if control.paused.get() {
+      audio::set_paused(true);
+    }
   }
   if program
     .top_level_vars
@@ -113,8 +214,12 @@ async fn run_program(
   let (surface, device, queue, surface_config) =
     create_surface_and_device(&canvas).await?;
 
-  let mut runtime = VmCpuRuntime::new(program, WebIO::new(), audio_source)
-    .map_err(describe_error)?;
+  let on_print = Reflect::get(&host, &"onPrint".into())
+    .ok()
+    .and_then(|on_print| on_print.dyn_into::<Function>().ok());
+  let mut runtime =
+    VmCpuRuntime::new(program, WebIO::new(on_print), audio_source)
+      .map_err(describe_error)?;
   install_gpu_error_handler(&device);
   let gpu = GpuCore::new_from_parts(
     device,
@@ -137,11 +242,18 @@ async fn run_program(
     canvas,
     window_start_time: None,
     last_frame_time: None,
+    last_frame_delta: 0.,
+    resuming: false,
   };
   let started = app.runtime.start(&entry_name);
   let mut state = app.complete_readbacks(started).await?;
   while state == VmRunState::WindowOpen {
     let timestamp = next_animation_frame().await;
+    if control.paused.get() {
+      control.unpaused().await;
+      app.resume();
+      continue;
+    }
     let begun = app.begin_frame(timestamp);
     state = app.complete_readbacks(begun).await?;
     app.end_frame();
@@ -294,19 +406,45 @@ struct WebApp {
   runtime: VmCpuRuntime<WebIO>,
   gpu: Arc<RwLock<GpuCore>>,
   canvas: HtmlCanvasElement,
-  /// `requestAnimationFrame` timestamps, in milliseconds.
+  /// `requestAnimationFrame` timestamps, in milliseconds, with the window's
+  /// start moved later by the time the program has spent paused.
   window_start_time: Option<f64>,
   last_frame_time: Option<f64>,
+  /// The time between the last two frames, in milliseconds.
+  last_frame_delta: f64,
+  /// Whether the next frame is the first since the program was resumed.
+  resuming: bool,
 }
 
 impl WebApp {
+  /// Prepares for the first frame after a pause: input that only lasts a
+  /// frame and arrived while paused is dropped, and the clock skips the
+  /// paused time (see `begin_frame`).
+  fn resume(&mut self) {
+    self.resuming = true;
+    clear_frame_input(&mut self.gpu.write().unwrap());
+  }
+
   /// Starts a frame at `timestamp` (milliseconds), mirroring the native
   /// window loop's per-frame bookkeeping.
   fn begin_frame(&mut self, timestamp: f64) -> Result<VmRunState, EvalError> {
     self.fit_surface_to_canvas();
+    if std::mem::take(&mut self.resuming)
+      && let (Some(start), Some(last)) = (
+        self.window_start_time.as_mut(),
+        self.last_frame_time.as_mut(),
+      )
+    {
+      // The paused time passes for neither: the first frame back comes one
+      // frame after the last one before the pause, at the pace before it.
+      let paused_time = timestamp - *last - self.last_frame_delta;
+      *start += paused_time;
+      *last += paused_time;
+    }
     let start = *self.window_start_time.get_or_insert(timestamp);
     let delta = self.last_frame_time.map_or(0., |last| timestamp - last);
     self.last_frame_time = Some(timestamp);
+    self.last_frame_delta = delta;
     let mut gpu = self.gpu.write().unwrap();
     gpu.window_time = ((timestamp - start) / 1000.) as f32;
     gpu.window_delta_time = (delta / 1000.) as f32;
@@ -320,11 +458,7 @@ impl WebApp {
     {
       let mut gpu = self.gpu.write().unwrap();
       gpu.window_frame_index += 1;
-      gpu.keys_just_down.clear();
-      gpu.mouse_just_down = false;
-      gpu.mouse_right_just_down = false;
-      gpu.mouse_delta = (0., 0.);
-      gpu.mouse_scroll_delta = (0., 0.);
+      clear_frame_input(&mut gpu);
       match gpu.mouse_capture_request.take() {
         // Browsers only grant pointer lock shortly after a user gesture,
         // which is how programs normally request it (on a click).
@@ -393,6 +527,16 @@ impl WebApp {
     self.canvas.set_height(height);
     gpu.resize_surface(width, height);
   }
+}
+
+/// Clears the input that only lasts a frame: presses and movement since the
+/// frame before.
+fn clear_frame_input(gpu: &mut GpuCore) {
+  gpu.keys_just_down.clear();
+  gpu.mouse_just_down = false;
+  gpu.mouse_right_just_down = false;
+  gpu.mouse_delta = (0., 0.);
+  gpu.mouse_scroll_delta = (0., 0.);
 }
 
 /// Waits for the browser's next animation frame, returning its timestamp in

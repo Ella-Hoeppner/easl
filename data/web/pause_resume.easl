@@ -1,0 +1,20 @@
+; The page pauses the program and resumes it. Paused, it runs no frames;
+; resumed, `window-time` continues where it left off, `window-delta-time`
+; doesn't count the paused time, and a press made while paused is dropped.
+@local (var frames: u32 0u)
+@local (var previous-time: f32 0.)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (+= frames 1u)
+      (when (== frames 5u) (print "running"))
+      (when (> (- (window-time) previous-time) 1.)
+        (print "the clock counted the paused time"))
+      (when (> (window-delta-time) 1.)
+        (print "the frame delta counted the paused time"))
+      (= previous-time (window-time))
+      (when (key-down? "p") (print "a frame ran while paused"))
+      (when (key-just-down? "a") (print "a pressed"))
+      (when (key-just-down? "q") (close-window)))))

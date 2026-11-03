@@ -15,7 +15,10 @@
 //! both sides operate on directly (see `atomics`), handed to the worklet
 //! when it's created.
 
-use std::{cell::RefCell, sync::Arc};
+use std::{
+  cell::{Cell, RefCell},
+  sync::Arc,
+};
 
 use easl::{audio::AudioSource, thread_sync::ThreadSharedTable};
 use js_sys::{
@@ -59,6 +62,26 @@ thread_local! {
   /// variable index, for the worklet to operate on too.
   static ATOMIC_BUFFERS: RefCell<Vec<(u32, SharedArrayBuffer)>> =
     const { RefCell::new(vec![]) };
+  /// Whether the page has paused the program playing the audio (see
+  /// `set_paused`).
+  static PAUSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Suspends the audio while the page has paused the program, and resumes
+/// it when the page resumes the program. Suspending the audio context
+/// stops the worklet, so `(audio-time)` stops too.
+pub fn set_paused(paused: bool) {
+  PAUSED.with(|p| p.set(paused));
+  let Some(context) =
+    OUTPUT.with(|o| o.borrow().as_ref().map(|o| o.context.clone()))
+  else {
+    return;
+  };
+  let _ = if paused {
+    context.suspend()
+  } else {
+    context.resume()
+  };
 }
 
 /// Records the buffer holding the words of the shared atomic at `index`,
@@ -225,7 +248,9 @@ fn message(fields: &[(&str, JsValue)]) -> JsValue {
 /// `start-audio`, there's no clock to reset.
 pub fn reset_time() {
   let started = OUTPUT.with(|o| {
-    o.borrow().as_ref().is_some_and(|output| output.entry.is_some())
+    o.borrow()
+      .as_ref()
+      .is_some_and(|output| output.entry.is_some())
   });
   if started {
     post(message(&[("type", "reset-time".into())]));
@@ -336,7 +361,8 @@ fn receive(event: MessageEvent) {
 }
 
 /// Browsers start audio contexts suspended until the page gets a user
-/// gesture; resume on the first one.
+/// gesture; resume on the first one, unless the page has paused the
+/// program.
 fn resume_on_gesture() {
   let Some(context) =
     OUTPUT.with(|o| o.borrow().as_ref().map(|o| o.context.clone()))
@@ -351,7 +377,9 @@ fn resume_on_gesture() {
   );
   let window = web_sys::window().unwrap();
   let resume = Closure::<dyn FnMut()>::new(move || {
-    let _ = context.resume();
+    if !PAUSED.with(Cell::get) {
+      let _ = context.resume();
+    }
   });
   for event in ["pointerdown", "keydown"] {
     let _ = window

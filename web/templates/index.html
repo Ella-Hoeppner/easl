@@ -23,7 +23,7 @@
     <canvas id="easl-canvas"></canvas>
     <script type="module">
       import { startEaslProgram } from "./easl-program.js";
-      startEaslProgram(document.getElementById("easl-canvas")).catch(
+      startEaslProgram(document.getElementById("easl-canvas")).finished.catch(
         (error) => console.error(error),
       );
     </script>

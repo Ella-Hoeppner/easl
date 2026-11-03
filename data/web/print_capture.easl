@@ -1,0 +1,11 @@
+; The page passes an `onPrint` callback, which gets each printed line in
+; place of the console (it logs them prefixed, so the console holds only
+; the lines the callback got).
+@cpu
+(defn main []
+  (print "first")
+  (print 2u)
+  (spawn-window
+    (fn []
+      (print (vec2f 1. 2.))
+      (close-window))))

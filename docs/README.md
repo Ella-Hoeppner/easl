@@ -30,10 +30,23 @@ Everything on the landing page (`generator/src/landing.rs`) comes from `pages/`,
 
 The page's markup is `generator/assets/landing.html`, a `format!` template, so literal braces in it are doubled. The code panel's text scales with the window so that every line fits on screen, down to a readable minimum, and the panel's transparency is set by `--code-panel-opacity` and `--code-panel-opacity-hover` at the top of `generator/assets/landing.css`.
 
+## Live previews
+
+A page can run an easl program on a canvas inline with an HTML comment, which GitHub and other Markdown viewers hide:
+
+```
+<!-- live-preview: raymarch/sphere.easl -->
+<!-- live-preview: raymarch/cpu-raymarch.easl console -->
+```
+
+The path is relative to the page's own Markdown file, and `console` adds a box under the canvas showing the program's `print` output. The build fails if a program doesn't compile, and packages each one into `site/easl-web/` the way `easl compile --web` does; `generator/assets/live-previews.js` starts each preview the first time it nears the screen, so a page's previews don't all start at once, and pauses it whenever it's off screen.
+
+The ray marching walkthrough's programs live in `pages/raymarch/`, each one the walkthrough's program as it stands at its preview. They're separate copies of the code shown in the page, so a change to the walkthrough's code blocks needs the matching change there.
+
 ## Layout
 
 - `pages/guide.md`, `pages/language.md`, `pages/shaders.md`, `pages/cpu.md` — the guide pages
-- `pages/raymarch.md` — the ray marching walkthrough
+- `pages/raymarch.md` — the ray marching walkthrough, and `pages/raymarch/` the programs its live previews run
 - `pages/landing/`, `pages/main_page_example.easl` — the landing page's text and program
 - `pages/reference/*.md` — the builtin function reference, one page per category
 - `generator/` — the site generator: parses the Markdown with pulldown-cmark, applies a hand-rolled easl syntax highlighter to ```` ```easl ```` code fences, and wraps everything in a template with sidebar navigation and per-page tables of contents; `generator/src/landing.rs` builds the landing page

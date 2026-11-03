@@ -1,0 +1,126 @@
+(defn raymarch [sdf: (Fn [vec3f] f32)
+                ray-origin: vec3f
+                ray-direction: vec3f]: (Option vec3f)
+  (let [@var offset 0.]
+    (for [256u]
+      (let [pos (+ ray-origin
+                   (* ray-direction offset))
+            dist (sdf pos)]
+        (+= offset dist)
+        (when (> dist 100.)
+          (break))
+        (when (< dist 0.001)
+          (return (Some (+ ray-origin
+                           (* ray-direction offset))))))))
+  None)
+
+(defn gradient [f: (Fn [vec3f] f32)
+                pos: vec3f]: vec3f
+  (let [eps 0.001]
+    (normalize (- (vec3f (f (+ pos (vec3f eps 0. 0.)))
+                         (f (+ pos (vec3f 0. eps 0.)))
+                         (f (+ pos (vec3f 0. 0. eps))))
+                  (f pos)))))
+
+(defn sphere [pos: vec3f
+              radius: f32]: f32
+  (- (length pos) radius))
+
+(defn sphere [radius: f32]: (Fn [vec3f] f32)
+  (fn [pos] (sphere pos radius)))
+
+(defn sphere [pos: vec3f]: f32
+  (sphere pos 1.))
+
+(defn raymarch-vertex []: vec4f
+  (vec4f (match (vertex-index)
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+(defn raymarch-fragment [sdf: (Fn [vec3f] f32)]: vec4f
+  (let [camera-direction (camera-direction-from-pixel-coords (.xy (position)))
+        raymarch-result (raymarch sdf
+                                  camera-origin
+                                  camera-direction)]
+    (vec4f (match raymarch-result
+             (Some surface-pos) (let [grad (gradient sdf surface-pos)]
+                                  (* 0.5 (+ 1. grad)))
+             None (vec3f 0.))
+           1.)))
+
+(defn render-sdf [sdf: (Fn [vec3f] f32)]
+  (dispatch-render-shaders
+    raymarch-vertex
+    (fn [] (raymarch-fragment sdf))
+    3))
+
+(def camera-origin: vec3f
+     (vec3f 0. 0. -2.))
+
+(defn camera-direction-from-pixel-coords [pixel-coords: vec2f]: vec3f
+  (let [resolution (vec2f (window-resolution))
+        pos (-> pixel-coords
+                (/ resolution)
+                (* 2.)
+                (- 1.)
+                (* (/ resolution
+                      (f32 (min resolution.x resolution.y)))))]
+    (normalize (vec3f pos 1.))))
+
+(defn translate [sdf: (Fn [vec3f] f32)
+                 translation: vec3f]: (Fn [vec3f] f32)
+  (fn [pos]
+    (sdf (- pos translation))))
+
+(defn box [pos: vec3f
+           size: vec3f]: f32
+  (let [q (- (abs pos) size)]
+    (+ (length (max q (vec3f 0.)))
+       (min (max q.x (max q.y q.z)) 0.))))
+
+(defn box [size: vec3f]: (Fn [vec3f] f32)
+  (fn [pos] (box pos size)))
+
+(defn union [sdf-a: (Fn [vec3f] f32)
+             sdf-b: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
+  (fn [pos]
+    (min (sdf-a pos) (sdf-b pos))))
+
+(defn axis-angle-rotation [axis: vec3f
+                           angle: f32]: mat3x3f
+  (let [a (normalize axis)
+        c (cos angle)
+        s (sin angle)
+        t (- 1. c)]
+    (mat3x3f (+ (* t a.x a.x) c)
+             (+ (* t a.x a.y) (* s a.z))
+             (- (* t a.x a.z) (* s a.y))
+             (- (* t a.x a.y) (* s a.z))
+             (+ (* t a.y a.y) c)
+             (+ (* t a.y a.z) (* s a.x))
+             (+ (* t a.x a.z) (* s a.y))
+             (- (* t a.y a.z) (* s a.x))
+             (+ (* t a.z a.z) c))))
+
+(defn rotate [sdf: (Fn [vec3f] f32)
+              rotation: mat3x3f]: (Fn [vec3f] f32)
+  (fn [pos]
+    (sdf (* pos rotation))))
+
+(defn rotate [sdf: (Fn [vec3f] f32)
+              axis: vec3f
+              angle: f32]: (Fn [vec3f] f32)
+  (let [rotation (axis-angle-rotation axis angle)]
+    (fn [pos]
+      (sdf (* pos rotation)))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (render-sdf (rotate (union (sphere 0.9)
+                                             (box (vec3f 0.7)))
+                                      (vec3f 1.)
+                                      (window-time))))))

@@ -217,6 +217,10 @@ Here's the full current program, which clocks in around 60 lines.
                     3))))
 ```
 
+Here's the live running program, compiled to WASM and WebAssembly with the easl compiler:
+
+<!-- live-preview: raymarch/sphere.easl -->
+
 ## Abstraction
 
 Right now our `raymarch` and `gradient` functions have both been expressed as higher-order functions, so that they can avoid hard-coding in any particular SDF. Our `raymarch-fragment` function, however, still just uses `sphere` directly, so if we ever wanted to change which sdf we're using we'd have to reach into its internals. Let's fix that, by letting `raymarch-fragment` abstract over the SDF that it uses, too:
@@ -314,6 +318,8 @@ Here we've moved `camera-origin` into a global constant, and extracted the logic
 ```
 
 Here we've modified our `main` function to print out the result of raymarching in the direction of the mouse whenever the user clicks (as measured by the `mouse-just-down?` built-in function). The results of the `raymarch` function called on the CPU like this will be exactly the same as if you called them on the GPU (up to hardware-level differences in the floating point logic, at least). This ability to share code across the CPU/GPU boundary can make it easy to debug shader programs in ways that would be challenging in any traditional shader language.
+
+<!-- live-preview: raymarch/cpu-raymarch.easl console -->
 
 ## Higher-order helpers for SDFs
 
@@ -524,6 +530,8 @@ Now we have a base `sphere` overload that accepts an explicit radius argument, a
                                       (vec3f 1.)
                                       (window-time))))))
 ```
+
+<!-- live-preview: raymarch/rotating-union.easl -->
 
 ## Lighting and materials
 
@@ -874,5 +882,7 @@ There are countless additions we could make to our raymarcher, but this tutorial
                        view-direction
                        surface-normal)))))))
 ```
+
+<!-- live-preview: raymarch/materials.easl -->
 
 Feel free to copy this code and compile it locally, and start experimenting with your own variations. If you haven't already, you might want to check out the [guide](language.md), which gives a more thorough account of all the various language features.
