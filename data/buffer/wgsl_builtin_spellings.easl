@@ -1,0 +1,31 @@
+; Definitions and locals spelled like WGSL's own builtins (which easl spells
+; differently) don't take over easl's builtins on the GPU: `inverse-sqrt`
+; emits as `inverseSqrt` and `array-length` as `arrayLength`.
+(defn inverseSqrt [x: f32]: f32
+  (* x 100.))
+
+(struct sampler
+  x: f32)
+
+@storage-write
+(var values: [f32])
+
+@storage-write
+(var out: [5: f32])
+
+(defn shadowing-local [x: f32]: f32
+  (let [arrayLength (* x 1000.)]
+    (+ arrayLength (f32 (array-length values)))))
+
+@cpu
+(defn main []
+  (= values (zeroed-array 3))
+  (dispatch-compute-shader
+    (fn []
+      (= (out 0u) (inverseSqrt 4.))
+      (= (out 1u) (inverse-sqrt 4.))
+      (= (out 2u) (shadowing-local 1.))
+      (= (out 3u) (.x (sampler 7.)))
+      (= (out 4u) (f32 (array-length values))))
+    (vec3u 1u))
+  (print out))

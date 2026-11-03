@@ -46,6 +46,7 @@ use crate::{
     },
     util::{compile_word, indent},
     vars::{TopLevelVariableKind, VariableAddressSpace},
+    wgsl::WGSL_PREDECLARED_NAMES,
   },
   parse::{EaslTree, unescape_string_literal},
 };
@@ -325,14 +326,22 @@ impl Accessor {
       .map(|indeces| Self::Swizzle(indeces))
       .unwrap_or(Accessor::Field(name))
   }
+  /// Compiles this accessor applied to a value of type `accessed`.
   pub fn compile(
     self,
+    accessed: &TypeState,
     names: &mut NameContext,
     target: CompilerTarget,
   ) -> Arc<str> {
     match self {
       Accessor::Field(field_name) => {
-        format!(".{}", compile_word(field_name)).into()
+        let field = match accessed {
+          TypeState::Known(Type::Struct(s)) => {
+            s.compiled_field_name(&field_name)
+          }
+          _ => compile_word(field_name),
+        };
+        format!(".{field}").into()
       }
       Accessor::Swizzle(field_indeces) => std::iter::once(".")
         .chain(
@@ -2265,7 +2274,7 @@ impl TypedExp {
     let mut inner = self;
     let mut accessors = vec![];
     while let ExpKind::Access(accessor, subexp) = inner.kind {
-      accessors.push(accessor);
+      accessors.push(accessor.compile(&subexp.data, names, target));
       inner = *subexp;
     }
     let compiled_inner = inner.compile(
@@ -2277,7 +2286,7 @@ impl TypedExp {
       .into_iter()
       .rev()
       .fold(format!("(*{compiled_inner})"), |acc, accessor| {
-        acc + &accessor.compile(names, target)
+        acc + &accessor
       })
   }
 
@@ -2399,7 +2408,11 @@ impl TypedExp {
                 while let ExpKind::Access(accessor, inner_value) =
                   arg_inner_value.kind
                 {
-                  surrounding_accessors.push(accessor);
+                  surrounding_accessors.push(accessor.compile(
+                    &inner_value.data,
+                    names,
+                    target,
+                  ));
                   arg_inner_value = *inner_value;
                 }
                 let mut compiled_inner_value =
@@ -2410,7 +2423,7 @@ impl TypedExp {
                 let compiled_full_value =
                   surrounding_accessors.into_iter().rev().fold(
                     format!("{compiled_inner_value}"),
-                    |acc, accessor| acc + &accessor.compile(names, target),
+                    |acc, accessor| acc + &accessor,
                   );
                 if needs_ref {
                   format!("&{compiled_full_value}")
@@ -2635,10 +2648,10 @@ impl TypedExp {
             .join(", ");
           wrap(format!("({result_type_name}){{{components}}}"))
         } else {
+          let compiled_accessor = accessor.compile(&subexp.data, names, target);
           wrap(format!(
-            "{}{}",
-            compile_subexp(*subexp, names),
-            accessor.compile(names, target)
+            "{}{compiled_accessor}",
+            compile_subexp(*subexp, names)
           ))
         }
       }
@@ -5179,115 +5192,40 @@ impl TypedExp {
   }
   pub fn deshadow(
     &mut self,
-    globally_bound_names: &Vec<Arc<str>>,
+    globals: &GlobalNames,
     errors: &mut ErrorLog,
     names: &mut NameContext,
   ) {
-    self.deshadow_inner(
-      globally_bound_names,
-      &mut HashMap::new(),
-      &mut HashMap::new(),
-      errors,
-      true,
-      names,
-    );
+    self.deshadow_inner(globals, &mut DeshadowScope::default(), errors, names);
   }
   fn deshadow_inner(
     &mut self,
-    globally_bound_names: &Vec<Arc<str>>,
-    bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
-    reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>,
+    globals: &GlobalNames,
+    locals: &mut DeshadowScope,
     errors: &mut ErrorLog,
-    first_in_walk: bool,
     names: &mut NameContext,
   ) {
-    let bind = |name: &mut Arc<str>,
-                source_trace: &SourceTrace,
-                bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
-                reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>,
-                names: &mut NameContext,
-                errors: &mut ErrorLog| {
-      if globally_bound_names.contains(&name) {
-        errors.log(CompileError::new(
-          CompileErrorKind::CantShadowTopLevelBinding(
-            display_name(&name).to_string(),
-          ),
-          source_trace.clone(),
-        ));
-      }
-      if let Some(renames) = bindings.get_mut(name) {
-        let gensym_name = names.gensym(&(name.to_string() + "_deshadowed"));
-        reverse_bindings.insert(gensym_name.clone(), name.clone());
-        std::mem::swap(name, &mut gensym_name.clone());
-        renames.push(gensym_name);
-      } else {
-        bindings.insert(name.clone(), vec![]);
-      }
-    };
-    let unbind =
-      |name: &mut Arc<str>,
-       bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
-       reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>| {
-        if let Some(original_name) = reverse_bindings.get(name) {
-          bindings.get_mut(original_name).unwrap().pop();
-        }
-      };
     self
       .walk_mut(&mut |exp| {
         Ok::<bool, Never>(match &mut exp.kind {
           Function(arg_names, body) => {
             for (name, name_source_trace) in arg_names.iter_mut() {
-              bind(
-                name,
-                name_source_trace,
-                bindings,
-                reverse_bindings,
-                names,
-                errors,
-              );
+              locals.bind(name, name_source_trace, globals, names, errors);
             }
-            body.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              first_in_walk,
-              names,
-            );
+            body.deshadow_inner(globals, locals, errors, names);
             for (name, _) in arg_names.iter_mut().rev() {
-              unbind(name, bindings, reverse_bindings);
+              locals.unbind(name);
             }
             false
           }
           Let(let_bindings, body) => {
             for (name, source_trace, _, value) in let_bindings.iter_mut() {
-              value.deshadow_inner(
-                globally_bound_names,
-                bindings,
-                reverse_bindings,
-                errors,
-                true,
-                names,
-              );
-              bind(
-                name,
-                &source_trace,
-                bindings,
-                reverse_bindings,
-                names,
-                errors,
-              );
+              value.deshadow_inner(globals, locals, errors, names);
+              locals.bind(name, &source_trace, globals, names, errors);
             }
-            body.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              true,
-              names,
-            );
+            body.deshadow_inner(globals, locals, errors, names);
             for (name, _, _, _) in let_bindings.iter_mut().rev() {
-              unbind(name, bindings, reverse_bindings);
+              locals.unbind(name);
             }
             false
           }
@@ -5301,60 +5239,26 @@ impl TypedExp {
           } => {
             // The initializer is evaluated outside the loop's scope: it sees
             // the enclosing bindings, not the loop variable.
-            increment_variable_initial_value_expression.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              true,
-              names,
-            );
-            bind(
+            increment_variable_initial_value_expression
+              .deshadow_inner(globals, locals, errors, names);
+            locals.bind(
               &mut increment_variable_name.0,
               &exp.source_trace,
-              bindings,
-              reverse_bindings,
+              globals,
               names,
               errors,
             );
-            continue_condition_expression.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              true,
-              names,
-            );
+            continue_condition_expression
+              .deshadow_inner(globals, locals, errors, names);
             if let Some(update_expression) = update_expression {
-              update_expression.deshadow_inner(
-                globally_bound_names,
-                bindings,
-                reverse_bindings,
-                errors,
-                true,
-                names,
-              );
+              update_expression.deshadow_inner(globals, locals, errors, names);
             }
-            body_expression.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              true,
-              names,
-            );
-            unbind(&mut increment_variable_name.0, bindings, reverse_bindings);
+            body_expression.deshadow_inner(globals, locals, errors, names);
+            locals.unbind(&increment_variable_name.0);
             false
           }
           Match(scrutinee, arms) => {
-            scrutinee.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              first_in_walk,
-              names,
-            );
+            scrutinee.deshadow_inner(globals, locals, errors, names);
             for (pattern, value) in arms.iter_mut() {
               if let Application(f, args) = &mut pattern.kind
                 && let Some(arg) =
@@ -5364,53 +5268,29 @@ impl TypedExp {
                   let ExpKind::Name(arg_name) = &mut arg.kind else {
                     unreachable!()
                   };
-                  bind(
+                  locals.bind(
                     arg_name,
                     &arg.source_trace,
-                    bindings,
-                    reverse_bindings,
+                    globals,
                     names,
                     errors,
                   );
-                  arg.deshadow_inner(
-                    globally_bound_names,
-                    bindings,
-                    reverse_bindings,
-                    errors,
-                    first_in_walk,
-                    names,
-                  );
+                  arg.deshadow_inner(globals, locals, errors, names);
                 }
-                value.deshadow_inner(
-                  globally_bound_names,
-                  bindings,
-                  reverse_bindings,
-                  errors,
-                  first_in_walk,
-                  names,
-                );
+                value.deshadow_inner(globals, locals, errors, names);
                 let ExpKind::Name(arg_name) = &mut arg.kind else {
                   unreachable!()
                 };
-                unbind(arg_name, bindings, reverse_bindings);
+                locals.unbind(arg_name);
               } else {
-                value.deshadow_inner(
-                  globally_bound_names,
-                  bindings,
-                  reverse_bindings,
-                  errors,
-                  first_in_walk,
-                  names,
-                );
+                value.deshadow_inner(globals, locals, errors, names);
               }
             }
             false
           }
           Name(name) => {
-            if let Some(renames) = bindings.get(name) {
-              if let Some(rename) = renames.last() {
-                std::mem::swap(name, &mut Arc::clone(rename));
-              }
+            if let Some(rename) = locals.current_name(name) {
+              *name = rename;
             }
             false
           }
@@ -7182,5 +7062,92 @@ impl TypedExp {
       },
       _ => false,
     }
+  }
+}
+
+/// The top-level names a function body can refer to, and the identifiers
+/// every top-level definition (these, types, and enum variants) compiles to,
+/// along with WGSL's predeclared names.
+pub struct GlobalNames {
+  names: HashSet<Arc<str>>,
+  compiled: HashSet<String>,
+}
+
+impl GlobalNames {
+  pub fn new(
+    names: impl IntoIterator<Item = Arc<str>>,
+    type_names: impl IntoIterator<Item = Arc<str>>,
+  ) -> Self {
+    let names: HashSet<Arc<str>> = names.into_iter().collect();
+    let compiled = names
+      .iter()
+      .cloned()
+      .chain(type_names)
+      .map(compile_word)
+      .chain(WGSL_PREDECLARED_NAMES.iter().map(|name| name.to_string()))
+      .collect();
+    Self { names, compiled }
+  }
+}
+
+/// The local bindings deshadowing has seen in one function body. Every local
+/// name ends up bound at most once per function, and compiles to an
+/// identifier no other local or global name compiles to.
+#[derive(Default)]
+struct DeshadowScope {
+  /// For each name written at a binding, the names its bindings in scope
+  /// were given (the innermost last); empty when the binding in scope kept
+  /// its name.
+  renames: HashMap<Arc<str>, Vec<Arc<str>>>,
+  /// The name each renamed binding was written with.
+  originals: HashMap<Arc<str>, Arc<str>>,
+  /// The identifiers the function's local names compile to.
+  compiled: HashSet<String>,
+}
+
+impl DeshadowScope {
+  fn bind(
+    &mut self,
+    name: &mut Arc<str>,
+    source_trace: &SourceTrace,
+    globals: &GlobalNames,
+    names: &mut NameContext,
+    errors: &mut ErrorLog,
+  ) {
+    if globals.names.contains(name) {
+      errors.log(CompileError::new(
+        CompileErrorKind::CantShadowTopLevelBinding(
+          display_name(name).to_string(),
+        ),
+        source_trace.clone(),
+      ));
+    }
+    let compiled = compile_word(name.clone());
+    if self.renames.contains_key(name)
+      || self.compiled.contains(&compiled)
+      || globals.compiled.contains(&compiled)
+    {
+      let rename = names.gensym(&(name.to_string() + "_deshadowed"));
+      self.originals.insert(rename.clone(), name.clone());
+      self.compiled.insert(compile_word(rename.clone()));
+      self
+        .renames
+        .entry(name.clone())
+        .or_default()
+        .push(rename.clone());
+      *name = rename;
+    } else {
+      self.renames.insert(name.clone(), vec![]);
+      self.compiled.insert(compiled);
+    }
+  }
+  fn unbind(&mut self, name: &Arc<str>) {
+    if let Some(original) = self.originals.get(name) {
+      self.renames.get_mut(original).unwrap().pop();
+    }
+  }
+  /// The name the binding in scope for `name` was given, if it was renamed.
+  fn current_name(&self, name: &Arc<str>) -> Option<Arc<str>> {
+    self.renames.get(name)?.last().cloned()
   }
 }

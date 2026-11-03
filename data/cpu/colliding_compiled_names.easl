@@ -1,0 +1,76 @@
+; Distinct easl names that compile to the same identifier (`-` and `_`
+; both become `_`; a WGSL reserved word gains a trailing `_`) stay distinct.
+
+(import sp "modules/spelled.easl")
+
+(defn spelled-value []: f32 50.)
+(struct spelled_Point x: f32)
+
+(defn my-fn [x: f32]: f32 (* x 2.))
+(defn my_fn [x: f32]: f32 (* x 3.))
+
+(def scale-factor: f32 10.)
+(def scale_factor: f32 100.)
+
+(struct Point-A x: f32)
+(struct Point_A x: f32)
+
+(struct Mixed a-b: f32 a_b: f32 a_b_1: f32)
+
+(enum Shape Circle Square)
+(defn Shape_Circle []: f32 7.)
+
+(defn twice [x: f32]: f32 (* x 2.))
+(defn twice [x: u32]: u32 (* x 2u))
+(defn twice_f32 [x: f32]: f32 (* x 20.))
+
+(defn override [x: f32]: f32 (+ x 1.))
+(defn override_ [x: f32]: f32 (+ x 2.))
+
+(defn locals [x: f32]: f32
+  (let [my-x (* x 2.)
+        my_x (* x 3.)
+        scale_factor_local 1.]
+    (+ (+ my-x my_x) scale_factor_local)))
+
+(defn local-shadows-global-spelling [x: f32]: f32
+  (let [my-fn-result (my-fn x)
+        twice_f32_value (twice_f32 x)]
+    (+ my-fn-result twice_f32_value)))
+
+(struct Vec-Pair x: f32)
+
+; Locals whose compiled spellings match a struct's and a variant's.
+(defn local-shadows-type-spelling [x: f32]: f32
+  (let [Vec_Pair (* x 4.)
+        Shape_Square 10.]
+    (+ (+ (.x (Vec-Pair Vec_Pair)) Shape_Square)
+       (shape-value Shape/Square))))
+
+(defn shape-value [s: Shape]: f32
+  (match s
+    Shape/Circle (Shape_Circle)
+    Shape/Square 0.))
+
+(defn mixed-sum [m: Mixed]: f32
+  (+ (+ m.a-b (* 10. m.a_b)) (* 100. m.a_b_1)))
+
+@cpu
+(defn main []
+  (print (my-fn 1.))
+  (print (my_fn 1.))
+  (print (+ scale-factor scale_factor))
+  (print (+ (.x (Point-A 1.)) (.x (Point_A 2.))))
+  (print (mixed-sum (Mixed 1. 2. 3.)))
+  (print (shape-value Shape/Circle))
+  (print (twice 1.))
+  (print (twice 1u))
+  (print (twice_f32 1.))
+  (print (override 1.))
+  (print (override_ 1.))
+  (print (locals 1.))
+  (print (local-shadows-global-spelling 1.))
+  (print (local-shadows-type-spelling 1.))
+  (print (+ (sp/value) (spelled-value)))
+  (print (+ (.x (sp/Point 1.)) (.x (spelled_Point 2.))))
+  (print (sp/Point 1.)))

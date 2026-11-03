@@ -745,7 +745,7 @@ error_test!(
 );
 error_test!(
   easl_reserved_local_failure,
-  CompileErrorKind::EaslReservedName("easl-sample-rate".to_string())
+  CompileErrorKind::EaslReservedName("easl-sample_rate".to_string())
 );
 // The audio-closure emission pins: functions whose compilation would
 // reference CPU-only closure-scope types — HoF specializations over

@@ -1,0 +1,4 @@
+; Imported as `spelled`, so its `value` is internally `spelled/value`, which
+; compiles to the same identifier as the importer's `spelled-value`.
+(defn value []: f32 5.)
+(struct Point x: f32)

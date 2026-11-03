@@ -1655,22 +1655,27 @@ impl TopLevelFunction {
             if let Some(layout) = flattened_params.get(&i) =>
           {
             let t = arg.var_type.unwrap_known();
+            let input_names: Vec<String> = layout
+              .attributes
+              .iter()
+              .map(|attribute| attribute.input_name(names))
+              .collect();
             vertex_data_bindings += &format!(
               "\nlet {} = {};",
               compile_word(name),
               t.vertex_input_expression(
-                &mut layout.attributes.iter().map(|a| a.input_name()),
+                &mut input_names.iter().cloned(),
                 names
               )
             );
             layout
               .attributes
               .iter()
-              .map(|attribute| {
+              .zip(input_names)
+              .map(|(attribute, input_name)| {
                 format!(
-                  "@location({}) {}: {}",
+                  "@location({}) {input_name}: {}",
                   attribute.location,
-                  attribute.input_name(),
                   attribute.wgsl_type()
                 )
               })

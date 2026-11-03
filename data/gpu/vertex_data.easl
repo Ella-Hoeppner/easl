@@ -1,7 +1,8 @@
 ; Vertex data in several shapes: a padded, nested struct with a matrix and a
 ; fixed-size array, a bare vector, and a builtin and a struct of builtins
 ; beside data parameters. `points` is read as vertex data and by a fragment
-; shader, which reads it through its read-only view.
+; shader, which reads it through its read-only view. `easl-vertex-input-0`
+; is spelled like a flattened input's name, which mustn't hide it.
 (struct Tag
   id: u32
   offset: i32)
@@ -25,6 +26,7 @@
 (var instances: [3: Instance])
 (var points: [vec4f])
 (var indices: [u32])
+@uniform (var easl-vertex-input-0: f32)
 
 (struct Varyings
   @{builtin position} position: vec4f
@@ -37,7 +39,7 @@
   (Varyings
     (vec4f (+ (* inst.transform (.xy (* c.basis (vec3f c.position 1.))))
               inst.offset)
-           (f32 i)
+           (+ (f32 i) easl-vertex-input-0)
            1.)
     (vec4f (* c.color (c.weights 0u)) (f32 c.tag.offset))))
 

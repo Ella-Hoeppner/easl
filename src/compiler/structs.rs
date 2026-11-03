@@ -283,6 +283,7 @@ impl AbstractStructField {
   }
   pub fn compile(
     self,
+    name: String,
     typedefs: &TypeDefs,
     names: &mut NameContext,
     target: CompilerTarget,
@@ -293,7 +294,6 @@ impl AbstractStructField {
         .concretize(&vec![], typedefs, self.source_trace.clone())
         .expect("an emitted struct's fields are concrete"),
     );
-    let name = compile_word(self.name);
     let field_type =
       self
         .field_type
@@ -385,12 +385,15 @@ impl AbstractStruct {
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name =
           compile_word(self.monomorphized_name(&field_types, names, target));
+        let field_names =
+          compile_field_names(self.fields.iter().map(|field| &field.name));
         Ok(match target {
           CompilerTarget::WGSL => {
             let fields = self
               .fields
               .into_iter()
-              .map(|field| field.compile(typedefs, names, target))
+              .zip(field_names)
+              .map(|(field, name)| field.compile(name, typedefs, names, target))
               .collect::<CompileResult<Vec<String>>>()?
               .join(",\n");
             format!("struct {monomorphized_name} {{\n{fields}\n}}")
@@ -399,7 +402,8 @@ impl AbstractStruct {
             let fields = self
               .fields
               .into_iter()
-              .map(|field| field.compile(typedefs, names, target))
+              .zip(field_names)
+              .map(|(field, name)| field.compile(name, typedefs, names, target))
               .collect::<CompileResult<Vec<String>>>()?
               .join("\n");
             format!("typedef struct {{\n{fields}\n}} {monomorphized_name};")
@@ -725,6 +729,34 @@ impl AbstractStruct {
   }
 }
 
+/// The identifiers the fields named `field_names` compile to, in order: each
+/// one's `compile_word` form, except that a field whose form an earlier field
+/// already has (`a-b` after `a_b`) gets a suffix no field's form has.
+fn compile_field_names<'a>(
+  field_names: impl Iterator<Item = &'a Arc<str>>,
+) -> Vec<String> {
+  let natural: Vec<String> =
+    field_names.map(|name| compile_word(name.clone())).collect();
+  let mut taken: HashSet<String> = natural.iter().cloned().collect();
+  let mut emitted = HashSet::new();
+  natural
+    .into_iter()
+    .map(|name| {
+      if emitted.insert(name.clone()) {
+        return name;
+      }
+      let mut i = 1;
+      loop {
+        let candidate = format!("{name}_{i}");
+        if taken.insert(candidate.clone()) {
+          return candidate;
+        }
+        i += 1;
+      }
+    })
+    .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
   pub attributes: IOAttributes,
@@ -751,6 +783,16 @@ impl PartialEq for Struct {
 }
 
 impl Struct {
+  /// The identifier the field named `name` compiles to.
+  pub fn compiled_field_name(&self, name: &Arc<str>) -> String {
+    let index = self
+      .fields
+      .iter()
+      .position(|field| &field.name == name)
+      .expect("an accessed field belongs to its struct");
+    compile_field_names(self.fields.iter().map(|field| &field.name))
+      .swap_remove(index)
+  }
   pub fn check_type_constraints(
     &self,
     source_trace: &SourceTrace,

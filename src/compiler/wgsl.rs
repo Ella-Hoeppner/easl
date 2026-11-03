@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 use std::collections::HashSet;
 
+use crate::compiler::util::compile_word;
+
 pub const WGSL_RESERVED_WORDS: &[&'static str] = &[
   // Keywords (16.1)
   "alias",
@@ -187,38 +189,245 @@ pub fn is_wgsl_reserved_word(word: &str) -> bool {
   WGSL_RESERVED_WORDS_SET.contains(word)
 }
 
+/// WGSL's predeclared types and functions. A declaration may shadow one, so
+/// no user definition or local may compile to one: easl's own builtins emit
+/// as these (`inverse-sqrt` as `inverseSqrt`), and a user `inverseSqrt`
+/// would take over their calls.
+pub const WGSL_PREDECLARED_NAMES: &[&'static str] = &[
+  // Types (6)
+  "array",
+  "bool",
+  "f16",
+  "f32",
+  "i32",
+  "u32",
+  "vec2",
+  "vec3",
+  "vec4",
+  "vec2f",
+  "vec3f",
+  "vec4f",
+  "vec2i",
+  "vec3i",
+  "vec4i",
+  "vec2u",
+  "vec3u",
+  "vec4u",
+  "vec2h",
+  "vec3h",
+  "vec4h",
+  "mat2x2",
+  "mat2x3",
+  "mat2x4",
+  "mat3x2",
+  "mat3x3",
+  "mat3x4",
+  "mat4x2",
+  "mat4x3",
+  "mat4x4",
+  "mat2x2f",
+  "mat2x3f",
+  "mat2x4f",
+  "mat3x2f",
+  "mat3x3f",
+  "mat3x4f",
+  "mat4x2f",
+  "mat4x3f",
+  "mat4x4f",
+  "mat2x2h",
+  "mat2x3h",
+  "mat2x4h",
+  "mat3x2h",
+  "mat3x3h",
+  "mat3x4h",
+  "mat4x2h",
+  "mat4x3h",
+  "mat4x4h",
+  "atomic",
+  "ptr",
+  "sampler",
+  "sampler_comparison",
+  "texture_1d",
+  "texture_2d",
+  "texture_2d_array",
+  "texture_3d",
+  "texture_cube",
+  "texture_cube_array",
+  "texture_multisampled_2d",
+  "texture_depth_multisampled_2d",
+  "texture_external",
+  "texture_storage_1d",
+  "texture_storage_2d",
+  "texture_storage_2d_array",
+  "texture_storage_3d",
+  "texture_depth_2d",
+  "texture_depth_2d_array",
+  "texture_depth_cube",
+  "texture_depth_cube_array",
+  // Builtin functions (17)
+  "bitcast",
+  "all",
+  "any",
+  "select",
+  "arrayLength",
+  "abs",
+  "acos",
+  "acosh",
+  "asin",
+  "asinh",
+  "atan",
+  "atanh",
+  "atan2",
+  "ceil",
+  "clamp",
+  "cos",
+  "cosh",
+  "countLeadingZeros",
+  "countOneBits",
+  "countTrailingZeros",
+  "cross",
+  "degrees",
+  "determinant",
+  "distance",
+  "dot",
+  "dot4U8Packed",
+  "dot4I8Packed",
+  "exp",
+  "exp2",
+  "extractBits",
+  "faceForward",
+  "firstLeadingBit",
+  "firstTrailingBit",
+  "floor",
+  "fma",
+  "fract",
+  "frexp",
+  "insertBits",
+  "inverseSqrt",
+  "ldexp",
+  "length",
+  "log",
+  "log2",
+  "max",
+  "min",
+  "mix",
+  "modf",
+  "normalize",
+  "pow",
+  "quantizeToF16",
+  "radians",
+  "reflect",
+  "refract",
+  "reverseBits",
+  "round",
+  "saturate",
+  "sign",
+  "sin",
+  "sinh",
+  "smoothstep",
+  "sqrt",
+  "step",
+  "tan",
+  "tanh",
+  "transpose",
+  "trunc",
+  "dpdx",
+  "dpdxCoarse",
+  "dpdxFine",
+  "dpdy",
+  "dpdyCoarse",
+  "dpdyFine",
+  "fwidth",
+  "fwidthCoarse",
+  "fwidthFine",
+  "textureDimensions",
+  "textureGather",
+  "textureGatherCompare",
+  "textureLoad",
+  "textureNumLayers",
+  "textureNumLevels",
+  "textureNumSamples",
+  "textureSample",
+  "textureSampleBias",
+  "textureSampleCompare",
+  "textureSampleCompareLevel",
+  "textureSampleGrad",
+  "textureSampleLevel",
+  "textureSampleBaseClampToEdge",
+  "textureStore",
+  "atomicLoad",
+  "atomicStore",
+  "atomicAdd",
+  "atomicSub",
+  "atomicMax",
+  "atomicMin",
+  "atomicAnd",
+  "atomicOr",
+  "atomicXor",
+  "atomicExchange",
+  "atomicCompareExchangeWeak",
+  "pack4x8snorm",
+  "pack4x8unorm",
+  "pack4xI8",
+  "pack4xU8",
+  "pack4xI8Clamp",
+  "pack4xU8Clamp",
+  "pack2x16snorm",
+  "pack2x16unorm",
+  "pack2x16float",
+  "unpack4x8snorm",
+  "unpack4x8unorm",
+  "unpack4xI8",
+  "unpack4xU8",
+  "unpack2x16snorm",
+  "unpack2x16unorm",
+  "unpack2x16float",
+  "storageBarrier",
+  "textureBarrier",
+  "workgroupBarrier",
+  "workgroupUniformLoad",
+];
+
 /// The implicit uniform fragment entries offset their `position` by (see
 /// `Program::offset_fragment_positions`).
 pub const FRAGMENT_POSITION_OFFSET_VAR: &str = "easl_fragment_position_offset";
 
-/// Names reserved for the compiler's own implicit globals (see
-/// `Program::extract_audio_info` and `Program::offset_fragment_positions`). User declarations of these are rejected
-/// in `validate_names` — they'd collide with the fixed-name vars in every
-/// name-keyed runtime path (VM global slots, env bindings, the C audio
-/// wrapper's references). Both spellings are listed because the kebab form
-/// emits to the same WGSL/C identifier as the snake form.
-pub const EASL_RESERVED_WORDS: &[&'static str] = &[
-  "easl_audio_time",
-  "easl_sample_rate",
+/// The implicit vars the MIDI builtins read (see `Program::extract_audio_info`),
+/// which every thread refreshes for itself.
+pub const MIDI_VARS: &[&'static str] = &[
   "easl_midi_cc",
   "easl_midi_aftertouch",
   "easl_midi_pitch_bend",
   "easl_midi_down_notes",
+  "easl_midi_notes",
+];
+
+/// The names of the compiler's own implicit globals that runtimes find by
+/// name (see `Program::extract_audio_info`,
+/// `Program::offset_fragment_positions`, and `extract_workgroup_size`), so
+/// they can't come from `NameContext::gensym`. A user name compiling to one
+/// of them is rejected in `validate_names`: it would collide with the
+/// fixed-name var in every name-keyed runtime path (VM global slots, env
+/// bindings, the C audio wrapper's references).
+const EASL_RESERVED_WORDS: &[&'static str] = &[
+  "easl_audio_time",
+  "easl_sample_rate",
+  "easl_audio_input",
   "easl_fragment_position_offset",
-  "easl-audio-time",
-  "easl-sample-rate",
-  "easl-midi-cc",
-  "easl-midi-aftertouch",
-  "easl-midi-pitch-bend",
-  "easl-midi-down-notes",
-  "easl-fragment-position-offset",
+  "easl_workgroup_size",
 ];
 
 lazy_static! {
   static ref EASL_RESERVED_WORDS_SET: HashSet<&'static str> =
-    EASL_RESERVED_WORDS.iter().copied().collect();
+    EASL_RESERVED_WORDS
+      .iter()
+      .chain(MIDI_VARS)
+      .copied()
+      .collect();
 }
 
+/// Whether `word` compiles to the name of one of the compiler's implicit
+/// globals.
 pub fn is_easl_reserved_word(word: &str) -> bool {
-  EASL_RESERVED_WORDS_SET.contains(word)
+  EASL_RESERVED_WORDS_SET.contains(&*compile_word(word.into()))
 }

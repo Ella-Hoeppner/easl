@@ -40,6 +40,8 @@ use crate::{
     builtins::PATH_BUILTIN_ARGUMENTS,
     error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
     graph::cycles,
+    util::compile_word,
+    wgsl::WGSL_PREDECLARED_NAMES,
   },
   parse::{
     EaslMultiDocument, EaslTree, Encloser, Operator, escape_string_literal,
@@ -257,6 +259,12 @@ struct Resolver<'a> {
   /// The names written in the main file that refer to definitions, with
   /// the internal names they refer to.
   main_file_references: Vec<(DocumentPosition, Vec<Arc<str>>)>,
+  /// The internal name given to each definition's natural internal name
+  /// (its module prefix + its name), and the identifiers every given name
+  /// compiles to, along with WGSL's predeclared names: see
+  /// `claim_internal_name`.
+  internal_names: HashMap<Arc<str>, Arc<str>>,
+  compiled_internal_names: HashSet<String>,
   errors: &'a mut ErrorLog,
 }
 
@@ -466,6 +474,11 @@ pub fn resolve_modules(
     groups: HashMap::new(),
     definition_sites: HashMap::new(),
     main_file_references: vec![],
+    internal_names: HashMap::new(),
+    compiled_internal_names: WGSL_PREDECLARED_NAMES
+      .iter()
+      .map(|name| name.to_string())
+      .collect(),
     errors,
   };
   for (file, prefix) in file_prefixes.into_iter().enumerate() {
@@ -518,6 +531,39 @@ pub fn resolve_modules(
 impl<'a> Resolver<'a> {
   fn error(&mut self, kind: CompileErrorKind, source: SourceTrace) {
     self.errors.log(CompileError::new(kind, source));
+  }
+
+  /// The internal name of a definition named `name` in a module whose
+  /// internal names start with `prefix`: `prefix` + `name` + `suffix`, unless
+  /// an earlier definition's internal name, or a WGSL predeclared name,
+  /// compiles to the same identifier (`my-fn` and `my_fn` both compile to
+  /// `my_fn`). A later one then gets an extra segment before its name
+  /// (`distinct1/my_fn`), which `display_name` leaves out. Overloads share a
+  /// natural internal name, so they share the name given to it.
+  fn claim_internal_name(
+    &mut self,
+    prefix: &str,
+    name: &str,
+    suffix: &str,
+  ) -> Arc<str> {
+    let natural: Arc<str> = format!("{prefix}{name}{suffix}").into();
+    if let Some(internal) = self.internal_names.get(&natural) {
+      return internal.clone();
+    }
+    let mut internal = natural.clone();
+    let mut i = 1;
+    while self
+      .compiled_internal_names
+      .contains(&compile_word(internal.clone()))
+    {
+      internal = format!("{prefix}distinct{i}/{name}{suffix}").into();
+      i += 1;
+    }
+    self
+      .compiled_internal_names
+      .insert(compile_word(internal.clone()));
+    self.internal_names.insert(natural, internal.clone());
+    internal
   }
 
   fn define(
@@ -661,21 +707,24 @@ impl<'a> Resolver<'a> {
         ) => match definition_name(keyword, &body) {
           Some((name, name_source)) => {
             let prefix = self.modules[id].prefix.clone();
-            let mut internal = if keyword == "defn"
+            let definition_prefix = if keyword == "defn"
               && prefix.is_empty()
               && self.builtin_functions.contains(&name)
             {
-              format!("{}{name}", self.root_builtin_prefix)
+              self.root_builtin_prefix.clone()
             } else {
-              format!("{prefix}{name}")
+              prefix.clone()
             };
-            if keyword == "defn"
+            let suffix = if keyword == "defn"
               && private
               && function_privacies.get(&name) == Some(&(true, true))
             {
-              internal += "/private";
-            }
-            let internal: Arc<str> = internal.into();
+              "/private"
+            } else {
+              ""
+            };
+            let internal =
+              self.claim_internal_name(&definition_prefix, &name, suffix);
             if matches!(keyword, "struct" | "enum")
               && self.builtin_types.contains(&name)
             {
@@ -693,11 +742,13 @@ impl<'a> Resolver<'a> {
                 for variant in children(&body).iter().skip(2) {
                   if let Some((variant, variant_source)) = variant_name(variant)
                   {
-                    let variant_internal: Arc<str> = if unpack {
-                      format!("{prefix}{variant}").into()
+                    let variant_prefix = if unpack {
+                      prefix.clone()
                     } else {
-                      format!("{internal}/{variant}").into()
+                      format!("{internal}/")
                     };
+                    let variant_internal =
+                      self.claim_internal_name(&variant_prefix, &variant, "");
                     let origin = Origin {
                       internal: variant_internal,
                       kind: OriginKind::Variant,

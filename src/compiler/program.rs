@@ -36,7 +36,7 @@ use crate::{
     error::{CompileError, SourceTrace},
     exp_builder::{ExpBuilder, struct_constructor},
     expression::{
-      Accessor, ExpKind, ExpressionCompilationPosition, Number,
+      Accessor, ExpKind, ExpressionCompilationPosition, GlobalNames, Number,
       ReferenceVariants,
     },
     function_values::holds_function,
@@ -55,7 +55,7 @@ use crate::{
     },
     util::{compile_word, is_valid_name, is_valid_qualified_name},
     vars::TopLevelVariableKind,
-    wgsl::{FRAGMENT_POSITION_OFFSET_VAR, is_easl_reserved_word},
+    wgsl::{FRAGMENT_POSITION_OFFSET_VAR, MIDI_VARS, is_easl_reserved_word},
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -282,8 +282,33 @@ impl NameContext {
     self.user_names.insert(name.into());
     self.user_names.insert(compile_word(name.into()).into());
   }
+  /// A name for a variable local to one generated function: `base_name`,
+  /// unless some user name has its spelling or compiled form (no generated
+  /// global's is `base_name`'s), in which case a fresh one.
+  pub fn local_name(&mut self, base_name: &str) -> Arc<str> {
+    let compiled = compile_word(base_name.into());
+    if self.user_names.contains(base_name)
+      || self.user_names.contains(&*compiled)
+    {
+      self.gensym(base_name)
+    } else {
+      base_name.into()
+    }
+  }
+  /// Whether `name`, or the identifier it compiles to, is already some
+  /// name's spelling or compiled form: distinct names must compile to
+  /// distinct identifiers (`my-fn` and `my_fn` both compile to `my_fn`).
   fn is_taken(&self, name: &str) -> bool {
-    self.user_names.contains(name) || self.generated_names.contains(name)
+    let taken = |name: &str| {
+      self.user_names.contains(name) || self.generated_names.contains(name)
+    };
+    taken(name) || taken(&compile_word(name.into()))
+  }
+  fn track_generated_name(&mut self, name: &Arc<str>) {
+    self.generated_names.insert(name.clone());
+    self
+      .generated_names
+      .insert(compile_word(name.clone()).into());
   }
   pub fn gensym(&mut self, base_name: &str) -> Arc<str> {
     if self.is_taken(base_name) {
@@ -300,11 +325,12 @@ impl NameContext {
         i += 1;
       };
       self.next_gensym_suffixes.insert(base_name.into(), i + 1);
-      self.generated_names.insert(final_name.clone());
+      self.track_generated_name(&final_name);
       final_name
     } else {
-      self.generated_names.insert(base_name.into());
-      base_name.into()
+      let name: Arc<str> = base_name.into();
+      self.track_generated_name(&name);
+      name
     }
   }
   /// Reverse of `get_monomorphized_name`: maps each generated monomorphized
@@ -344,7 +370,6 @@ impl NameContext {
           )
           .into();
         let final_name = self.gensym(&full_name);
-        self.generated_names.insert(final_name.clone());
         self
           .monomorphized_names
           .insert(monomorphization_id, final_name.clone());
@@ -5592,18 +5617,28 @@ impl Program {
     }
   }
   fn deshadow(&mut self, errors: &mut ErrorLog) {
-    let globally_bound_names: Vec<Arc<str>> = self
-      .top_level_vars
-      .iter()
-      .map(|v| Arc::clone(&v.name))
-      .chain(
-        self
-          .abstract_functions
-          .keys()
-          .chain(self.overload_groups.keys())
-          .cloned(),
-      )
-      .collect();
+    let globals = GlobalNames::new(
+      self
+        .top_level_vars
+        .iter()
+        .map(|v| Arc::clone(&v.name))
+        .chain(
+          self
+            .abstract_functions
+            .keys()
+            .chain(self.overload_groups.keys())
+            .cloned(),
+        ),
+      self
+        .typedefs
+        .structs
+        .iter()
+        .map(|s| s.name.0.clone())
+        .chain(self.typedefs.enums.iter().flat_map(|e| {
+          std::iter::once(e.name.0.clone())
+            .chain(e.variants.iter().map(|variant| variant.name.clone()))
+        })),
+    );
     for (_, signatures) in self.abstract_functions.iter_mut() {
       for signature in signatures.iter_mut() {
         let mut signature = signature.write().unwrap();
@@ -5611,7 +5646,7 @@ impl Program {
           &mut signature.implementation
         {
           f.write().unwrap().expression.deshadow(
-            &globally_bound_names,
+            &globals,
             errors,
             &mut self.names.write().unwrap(),
           );
@@ -6270,7 +6305,7 @@ impl Program {
               })
               .collect::<Vec<String>>()
               .join("_");
-          let new_name: Arc<str> = new_name.into();
+          let new_name = self.names.write().unwrap().gensym(&new_name);
           s.name = new_name.clone();
           if !renames.contains_key(&base_name) {
             renames.insert(base_name.clone(), vec![]);
@@ -8831,7 +8866,7 @@ impl Program {
         // reads via the upload machinery) but excluded here like
         // `@local` vars; the names are compiler-reserved, so user vars
         // can never collide with this exclusion.
-        if name.starts_with("easl_midi_") {
+        if MIDI_VARS.contains(&&**name) {
           return None;
         }
         let audience = if main_globals.contains(name) {

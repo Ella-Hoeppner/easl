@@ -489,8 +489,10 @@ impl TopLevelFunction {
 
 impl VertexAttribute {
   /// The WGSL name of the vertex entry input this attribute is read into.
-  pub fn input_name(&self) -> String {
-    compile_word(format!("easl-vertex-input-{}", self.location).into())
+  pub fn input_name(&self, names: &mut NameContext) -> String {
+    compile_word(
+      names.local_name(&format!("easl-vertex-input-{}", self.location)),
+    )
   }
 
   /// The WGSL type of this attribute's input.
