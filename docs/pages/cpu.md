@@ -133,7 +133,7 @@ Variables only one side uses aren't shared, and avoid all overhead associated wi
 
 ## Runtime-sized arrays and strings
 
-In CPU and audio code, runtime-sized arrays (`[f32]`, `[Material]`, `[[f32]]`) are ordinary values: you can bind them, pass and return them, and store them in structs and enums. Copying one is cheap, and changing a copy never affects the original. [`push`, `insert`, `remove`, `concat`, and `reverse`](reference/arrays.md#push) return new arrays, so growing one is `(= arr (push arr x))`. Shaders can use runtime-sized storage buffers, but can't create, pass, or return runtime-sized values.
+In CPU and audio code, runtime-sized arrays (`[f32]`, `[Material]`, `[[f32]]`) are ordinary values: you can bind them, pass and return them, and store them in structs and enums. Copying one is cheap, and changing a copy never affects the original. [`push`, `insert`, `remove`, `concat`, `reverse`](reference/arrays.md#push), and [`subarray`](reference/arrays.md#subarray) return new arrays, so growing one is `(= arr (push arr x))`. Shaders can use runtime-sized storage buffers, but can't create, pass, or return runtime-sized values.
 
 `String`s work in CPU code only. `(string x)` turns any value into one, and [`concat`, `substr`, and `length`](reference/cpu-builtins.md#strings) work on them.
 

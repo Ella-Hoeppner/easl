@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 
 use std::sync::Arc;
 
 use crate::{
+  Never,
   compiler::{
     annotation::Annotation,
     error::{CompileError, CompileErrorKind::*, ErrorLog},
@@ -15,7 +16,15 @@ use crate::{
   parse::EaslTree,
 };
 
-use super::{error::SourceTrace, expression::TypedExp};
+use super::{
+  effects::Effect,
+  error::SourceTrace,
+  expression::{ExpKind, TypedExp},
+  functions::{EffectsMemo, FunctionImplementationKind},
+  modules::display_name,
+  types::TypeState,
+};
+use crate::midi_out::MidiOutKind;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VariableAddressSpace {
@@ -499,6 +508,257 @@ impl TopLevelVar {
         format!("{var_type} {name}{assignment}")
       }
       CompilerTarget::VM => panic!(),
+    }
+  }
+}
+
+impl Program {
+  /// The top-level vars whose initializers aren't WGSL constant
+  /// expressions: they call a function WGSL emits as a function (a user
+  /// function, an enum constructor, a generated function like enum `==`,
+  /// or a builtin WGSL emulates with a helper), read a `var` or a builtin
+  /// that becomes one (`sample-rate`, the MIDI queries), or read another
+  /// such value.
+  /// The CPU runtimes run them; WGSL can't declare them.
+  pub(crate) fn non_constant_initializers(&self) -> HashSet<Arc<str>> {
+    let initializers: HashMap<&Arc<str>, &TypedExp> = self
+      .top_level_vars
+      .iter()
+      .filter_map(|v| Some((&v.name, v.value.as_ref()?)))
+      .collect();
+    // WGSL constant expressions can't read variables.
+    let vars: HashSet<&Arc<str>> = self
+      .top_level_vars
+      .iter()
+      .filter(|v| matches!(v.kind, TopLevelVariableKind::Var { .. }))
+      .map(|v| &v.name)
+      .collect();
+    let mut non_constant: HashSet<Arc<str>> = initializers
+      .iter()
+      .filter(|(_, value)| {
+        value.any_subexpression(|exp| {
+          exp.calls_a_function()
+            || matches!(&exp.kind, ExpKind::Name(name) if vars.contains(name))
+            || exp.reads_input().is_some()
+        })
+      })
+      .map(|(name, _)| (*name).clone())
+      .collect();
+    loop {
+      let reads_non_constant: Vec<Arc<str>> = initializers
+        .iter()
+        .filter(|(name, value)| {
+          !non_constant.contains(**name)
+            && value.any_subexpression(|exp| {
+              matches!(&exp.kind, ExpKind::Name(read)
+                if non_constant.contains(read))
+            })
+        })
+        .map(|(name, _)| (*name).clone())
+        .collect();
+      if reads_non_constant.is_empty() {
+        return non_constant;
+      }
+      non_constant.extend(reads_non_constant);
+    }
+  }
+}
+
+/// The builtins that read input the program receives while it runs, with
+/// what they read, and `sample-rate`, which reads the audio device's rate.
+/// `extract_audio_info` turns each into a read of a variable.
+const INPUT_BUILTINS: [(&str, &str); 8] = [
+  ("audio-time", "the audio clock"),
+  ("audio-input", "audio input"),
+  ("midi-cc", "MIDI input"),
+  ("midi-aftertouch", "MIDI input"),
+  ("midi-pitch-bend", "MIDI input"),
+  ("down-midi-notes", "MIDI input"),
+  ("get-midi-note", "MIDI input"),
+  ("sample-rate", "the sample rate"),
+];
+
+impl TypedExp {
+  /// What this reads, when it's a call of one of the `INPUT_BUILTINS`.
+  fn reads_input(&self) -> Option<&'static str> {
+    let ExpKind::Application(callee, _) = &self.kind else {
+      return None;
+    };
+    let ExpKind::Name(name) = &callee.kind else {
+      return None;
+    };
+    INPUT_BUILTINS
+      .iter()
+      .find(|(builtin, _)| *builtin == &**name)
+      .map(|(_, read)| *read)
+  }
+
+  /// What input this reads, directly or through the functions it calls,
+  /// besides the sample rate (fixed for the whole run).
+  fn input_reads(
+    &self,
+    visited: &mut HashSet<usize>,
+  ) -> BTreeSet<&'static str> {
+    let mut reads = BTreeSet::new();
+    self
+      .walk(&mut |exp| {
+        if let Some(read) = exp.reads_input()
+          && read != "the sample rate"
+        {
+          reads.insert(read);
+        }
+        if let ExpKind::Application(callee, _) = &exp.kind
+          && let TypeState::Known(Type::Function(signature)) = &callee.data.kind
+          && let Some(ancestor) = &signature.abstract_ancestor
+          && let FunctionImplementationKind::Composite(implementation) =
+            &ancestor.read().unwrap().implementation
+          && visited.insert(Arc::as_ptr(implementation) as usize)
+        {
+          reads.extend(
+            implementation
+              .read()
+              .unwrap()
+              .expression
+              .input_reads(visited),
+          );
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+    reads
+  }
+
+  /// Whether this is an application WGSL emits as a function call, which
+  /// a constant expression can't contain.
+  fn calls_a_function(&self) -> bool {
+    let ExpKind::Application(callee, _) = &self.kind else {
+      return false;
+    };
+    let TypeState::Known(Type::Function(signature)) = &callee.data.kind else {
+      return false;
+    };
+    let Some(ancestor) = &signature.abstract_ancestor else {
+      return false;
+    };
+    match &ancestor.read().unwrap().implementation {
+      FunctionImplementationKind::Composite(_)
+      | FunctionImplementationKind::EnumConstructor(_) => true,
+      FunctionImplementationKind::Builtin {
+        target_specific_emulations,
+        ..
+      } => target_specific_emulations.contains(&CompilerTarget::WGSL),
+      FunctionImplementationKind::StructConstructor => false,
+    }
+  }
+}
+
+/// The CPU-only builtins a top-level initializer may call: they only build
+/// values.
+const PURE_CPU_BUILTINS: [&str; 9] = [
+  "resolve-path",
+  "into-dynamic-array",
+  "zeroed-array",
+  "push",
+  "insert",
+  "remove",
+  "concat",
+  "reverse",
+  "subarray",
+];
+
+/// The builtins that read files.
+const FILE_READS: [&str; 7] = [
+  "load-text",
+  "load-image",
+  "load-wav",
+  "load-wav-raw",
+  "get-wav-sample-rate",
+  "load-video",
+  "file-exists?",
+];
+
+/// The builtins that write files.
+const FILE_WRITES: [&str; 3] = ["save-text", "save-png", "save-wav"];
+
+/// What an initializer with `effect` does that a pure one can't, if
+/// anything.
+fn impure_description(effect: &Effect) -> Option<String> {
+  match effect {
+    Effect::ReadsVar(_)
+    | Effect::ReadsArrayLength(_)
+    | Effect::ModifiesLocalVar(_)
+    | Effect::Break
+    | Effect::Return
+    | Effect::Continue
+    | Effect::CPUExclusiveType(_)
+    // described by the more specific effects that come with them
+    | Effect::Window
+    | Effect::FileWrite => None,
+    Effect::CPUExclusiveFunction(name)
+      if PURE_CPU_BUILTINS.contains(&&**name)
+        || MidiOutKind::BUILTIN_NAMES.contains(&&**name) =>
+    {
+      None
+    }
+    Effect::CPUExclusiveFunction(name) if FILE_READS.contains(&&**name) => {
+      Some(format!("reads a file (`{name}`)"))
+    }
+    Effect::CPUExclusiveFunction(name) if FILE_WRITES.contains(&&**name) => {
+      Some(format!("writes a file (`{name}`)"))
+    }
+    Effect::CPUExclusiveFunction(name) => Some(format!("calls `{name}`")),
+    Effect::ModifiesGlobalVar(var) | Effect::SeedsGlobalVar(var) => {
+      Some(format!("writes `{}`", display_name(var)))
+    }
+    Effect::Print => Some("prints".to_string()),
+    Effect::MidiOut => Some("sends MIDI".to_string()),
+    Effect::WindowInfo(_) => Some("reads window or input state".to_string()),
+    Effect::Discard
+    | Effect::FragmentExclusiveFunction(_)
+    | Effect::LookupBuiltinAttribute(_) => {
+      Some("uses a shader-only builtin".to_string())
+    }
+    Effect::InvokesUnknownFunction => {
+      Some("calls a function value".to_string())
+    }
+  }
+}
+
+impl Program {
+  /// Rejects top-level initializers with effects beyond reading globals:
+  /// they run once at startup, ordered only by what they read, so an
+  /// effect (a print, a write to a global, a file read) would happen at a
+  /// time, and in an order, the program doesn't say.
+  pub fn validate_pure_initializers(&self, errors: &mut ErrorLog) {
+    let mut memo = EffectsMemo::default();
+    for v in self.top_level_vars.iter() {
+      let Some(value) = &v.value else {
+        continue;
+      };
+      let effects = value.effects_with(&mut memo);
+      let mut descriptions: BTreeSet<String> = effects
+        .0
+        .iter()
+        .filter_map(impure_description)
+        .chain(
+          value
+            .input_reads(&mut HashSet::new())
+            .into_iter()
+            .map(|read| format!("reads {read}")),
+        )
+        .collect();
+      if descriptions.is_empty() && effects.0.contains(&Effect::Window) {
+        descriptions.insert("uses the window".to_string());
+      }
+      if !descriptions.is_empty() {
+        errors.log(CompileError::new(
+          ImpureInitializer(
+            display_name(&v.name).to_string(),
+            descriptions.into_iter().collect::<Vec<_>>().join(" and "),
+          ),
+          value.source_trace.clone(),
+        ));
+      }
     }
   }
 }

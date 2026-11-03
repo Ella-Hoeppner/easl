@@ -42,6 +42,10 @@ pub fn read_type_annotated_name(
   }
 }
 
+/// The characters `is_valid_name` rejects in a name, which the reader also
+/// treats as separators (whitespace, `,`).
+const NON_NAME_CHARACTERS: &str = "' |~.@:;/#()[]{},\t\n";
+
 pub fn compile_word(word: Arc<str>) -> String {
   let compiled_word = match &*word {
     "!"
@@ -74,7 +78,20 @@ pub fn compile_word(word: Arc<str>) -> String {
       .replace("?", "QMARK")
       .replace("!", "EMARK")
       .replace("=", "EQUAL_SIGN")
-      .replace("/", "_"),
+      .replace("/", "_")
+      .chars()
+      // Easl names can hold characters an identifier can't: any other a
+      // name can hold becomes its codepoint (`$` is `U24_`). Characters no
+      // name can hold come from the compiler's own spellings (the C cast
+      // `(float)`), and pass through.
+      .map(|c| {
+        if c.is_alphanumeric() || c == '_' || NON_NAME_CHARACTERS.contains(c) {
+          c.to_string()
+        } else {
+          format!("U{:X}_", c as u32)
+        }
+      })
+      .collect(),
   };
   // Note: easl's own reserved names (`is_easl_reserved_word`) are NOT
   // escaped here — user declarations of them are rejected outright in

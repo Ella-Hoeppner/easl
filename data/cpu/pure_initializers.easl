@@ -1,0 +1,48 @@
+; Top-level initializers can do anything pure: call functions that loop and
+; change their own locals, read other top-level values (a GPU-bound `var`
+; included), build strings (`string` and `resolve-path` run on the host in
+; the VM), arrays, and enum values, and read the sample rate. The emitted
+; WGSL leaves out the ones it can't declare.
+(enum Shape
+  (Circle f32)
+  Square)
+
+(defn triangle-number [n: u32]: u32
+  (let [@var sum 0u]
+    (for [i 1u (<= i n) (+= i 1u)]
+      (+= sum i))
+    sum))
+
+(defn squares [count: u32]: [u32]
+  (let [@var result: [u32] (zeroed-array 0u)]
+    (for [i 0u (< i count) (+= i 1u)]
+      (= result (push result (* i i))))
+    result))
+
+(def size: u32 4u)
+(def total: u32 (triangle-number size))
+(def label: String (concat "total: " (string total)))
+(def path: String (resolve-path "/assets" "bunny.obj"))
+(def table: [u32] (subarray (squares 6u) 1u 4u))
+(def word: String (codepoints->string (reverse (string->codepoints "olleh"))))
+(def shape: Shape (Shape/Circle (f32 total)))
+(def rate: f32 (sample-rate))
+
+(var buffer: [4: f32])
+(def from-buffer: f32 (+ 1. (buffer 0u)))
+
+@local
+(var counter: u32 (* total 2u))
+
+@cpu
+(defn main []
+  (print total)
+  (print label)
+  (print path)
+  (print table)
+  (print word)
+  (print shape)
+  (print (> rate 0.))
+  (print from-buffer)
+  (+= counter 1u)
+  (print counter))

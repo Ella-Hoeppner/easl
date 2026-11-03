@@ -1,0 +1,35 @@
+; Top-level initializers with effects, directly or through the functions
+; they call: printing, writing a global, reading or writing a file, reading
+; window state or other input, and sending MIDI. A `@local var`'s
+; initializer counts too.
+@local
+(var counter: u32 0u)
+
+(defn next-id []: u32
+  (+= counter 1u)
+  counter)
+
+(defn shout [x: u32]: u32
+  (print x)
+  x)
+
+(def printed: u32 (shout 1u))
+(def counted: u32 (next-id))
+(def loaded: String (load-text "settings.txt"))
+(def found: bool (file-exists? "settings.txt"))
+(def saved: u32
+  (do (save-text "hi" "out.txt")
+      1u))
+(def started: f32 (window-time))
+(def sent: u32
+  (do (send-midi-note-on 60u 1.)
+      1u))
+
+(defn controller []: f32
+  (midi-cc 1u))
+
+(def knob: f32 (controller))
+(def clock: f32 (audio-time))
+
+@local
+(var both: u32 (+ (shout 2u) (next-id)))

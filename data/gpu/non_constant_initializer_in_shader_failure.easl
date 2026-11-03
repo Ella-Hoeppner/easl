@@ -1,0 +1,22 @@
+; Shaders can't read a top-level value whose initializer calls a function:
+; directly, through a helper, or through a `@local` var.
+(defn twice [x: u32]: u32
+  (* 2u x))
+
+(def doubled: u32 (twice 3u))
+
+@local
+(var start: u32 (twice 4u))
+
+(def plain: u32 5u)
+
+(defn read-doubled []: u32
+  doubled)
+
+@vertex
+(defn vert []: vec4f
+  (vec4f (f32 (read-doubled))))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f (f32 (+ start plain))))

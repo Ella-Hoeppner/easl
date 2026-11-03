@@ -392,6 +392,61 @@ error_test!(
   CompileErrorKind::UnusedGeneric("B".into())
 );
 success_test!(def_sized_array);
+error_test!(
+  impure_initializer_failure,
+  CompileErrorKind::ImpureInitializer(
+    "printed".to_string(),
+    "prints".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "counted".to_string(),
+    "writes `counter`".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "loaded".to_string(),
+    "reads a file (`load-text`)".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "found".to_string(),
+    "reads a file (`file-exists?`)".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "saved".to_string(),
+    "writes a file (`save-text`)".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "started".to_string(),
+    "reads window or input state".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "sent".to_string(),
+    "sends MIDI".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "knob".to_string(),
+    "reads MIDI input".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "clock".to_string(),
+    "reads the audio clock".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "both".to_string(),
+    "prints and writes `counter`".to_string()
+  )
+);
+error_test!(
+  array_size_def_failure,
+  CompileErrorKind::NonConstantArraySize("called".to_string()),
+  CompileErrorKind::NonConstantArraySize("fractional".to_string()),
+  CompileErrorKind::NegativeArraySize("negative".to_string(), -2),
+  CompileErrorKind::ArraySizeDividesByZero("by-zero".to_string())
+);
+error_test!(
+  non_constant_initializer_in_shader_failure,
+  CompileErrorKind::NonConstantInitializerInShader("doubled".to_string()),
+  CompileErrorKind::NonConstantInitializerInShader("start".to_string())
+);
 success_test!(closure);
 success_test!(return_fn);
 success_test!(okhsl);

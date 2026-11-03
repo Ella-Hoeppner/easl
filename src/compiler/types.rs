@@ -1,6 +1,7 @@
 use core::fmt::Debug;
 use std::{
-  collections::HashMap,
+  cell::RefCell,
+  collections::{HashMap, HashSet},
   fmt::Display,
   ops::{Deref, DerefMut},
 };
@@ -859,6 +860,27 @@ impl AbstractType {
   }
 }
 
+/// The values of the `def`s array sizes can name (see
+/// `Program::inline_def_array_sizes`), and the `def`s found named as sizes
+/// whose values aren't constant integers.
+pub struct ArraySizeConstants {
+  pub values: HashMap<Arc<str>, u32>,
+  /// The `def`s with no constant integer value.
+  pub invalid: HashSet<Arc<str>>,
+  /// The invalid `def`s named as array sizes.
+  pub named_invalid: RefCell<HashSet<Arc<str>>>,
+}
+
+impl ArraySizeConstants {
+  /// The size `name` stands for, noting a `def` that has none.
+  pub fn resolve(&self, name: &Arc<str>) -> Option<u32> {
+    if self.invalid.contains(name) {
+      self.named_invalid.borrow_mut().insert(name.clone());
+    }
+    self.values.get(name).copied()
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AbstractArraySize {
   Literal(u32),
@@ -1578,21 +1600,18 @@ impl Type {
       _ => false,
     }
   }
-  pub fn inline_def_array_sizes(
-    &mut self,
-    u32_constants: &HashMap<Arc<str>, u32>,
-  ) {
+  pub fn inline_def_array_sizes(&mut self, sizes: &ArraySizeConstants) {
     self.walk_mut(&|t| {
       if let Type::Function(f) = t
         && let Some(f) = &f.abstract_ancestor
       {
-        f.write().unwrap().inline_def_array_sizes(&u32_constants);
+        f.write().unwrap().inline_def_array_sizes(sizes);
       }
       if let Type::Array(Some(size), _) = t
         && let ConcreteArraySize::Constant(constant_name) = size
-        && let Some(n) = u32_constants.get(constant_name)
+        && let Some(n) = sizes.resolve(constant_name)
       {
-        *size = ConcreteArraySize::Literal(*n);
+        *size = ConcreteArraySize::Literal(n);
       }
     });
   }

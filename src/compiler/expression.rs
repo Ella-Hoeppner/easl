@@ -8,7 +8,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::function_values::{
-  FNBOX_APPLY, holds_boxed_function, is_function_value_borrow, is_pure_place,
+  function_box_op, holds_boxed_function, is_function_value_borrow,
+  is_pure_place,
 };
 use crate::compiler::modules::display_name;
 use crate::compiler::structs::{
@@ -30,8 +31,9 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{
       AbstractFunctionSignature, EffectsMemo, FunctionArgumentAnnotation,
-      FunctionSignature, FunctionTargetConfiguration, Ownership, RefMutability,
-      SpecialCasedBuiltinFunction, SpecializationOrigin, TopLevelFunction,
+      FunctionBoxOp, FunctionSignature, FunctionTargetConfiguration, Ownership,
+      RefMutability, SpecialCasedBuiltinFunction, SpecializationOrigin,
+      TopLevelFunction,
     },
     program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
@@ -2449,6 +2451,10 @@ impl TypedExp {
                 FunctionTargetConfiguration::AliasedBuiltin(alias) => panic!(
                   "call to aliased builtin (alias of `{alias}`) survived to \
                    emission; `rewrite_aliased_builtin_calls` must run first"
+                ),
+                FunctionTargetConfiguration::FunctionBox(op) => panic!(
+                  "a function value's {op:?} survived to emission; \
+                   `defunctionalize_boxed_functions` must run first"
                 ),
                 FunctionTargetConfiguration::Default => {}
               },
@@ -5755,7 +5761,7 @@ impl TypedExp {
       .unwrap()
   }
   /// Variables this expression writes through a mutable-reference argument
-  /// of any call besides a stored-function call (`$fnbox-apply`). That
+  /// of any call besides a stored-function call (`fnbox-apply`). That
   /// call takes the stored function by reference only so a stateful
   /// closure can advance in place; whether it does depends on which
   /// closures the value can hold, which `validate_copied_stateful_closures`
@@ -5770,7 +5776,8 @@ impl TypedExp {
             .abstract_ancestor
             .as_ref()
             .is_some_and(|ancestor| {
-              &*ancestor.read().unwrap().name == FNBOX_APPLY
+              function_box_op(&ancestor.read().unwrap())
+                == Some(FunctionBoxOp::Apply)
             })
         {
           for ((arg, _), arg_exp) in signature.args.iter().zip(args.iter()) {
@@ -5875,7 +5882,8 @@ impl TypedExp {
             ExpKind::Application(f, args) => {
               if let Type::Function(f) = f.data.unwrap_known()
                 && !f.abstract_ancestor.as_ref().is_some_and(|ancestor| {
-                  &*ancestor.read().unwrap().name == FNBOX_APPLY
+                  function_box_op(&ancestor.read().unwrap())
+                    == Some(FunctionBoxOp::Apply)
                 })
               {
                 for (i, (arg, _)) in f.args.iter().enumerate() {

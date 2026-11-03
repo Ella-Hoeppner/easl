@@ -1,0 +1,9 @@
+10u
+"total: 10u"
+"/assets/bunny.obj"
+[1u 4u 9u]
+"hello"
+(Circle 10.)
+true
+1.
+21u

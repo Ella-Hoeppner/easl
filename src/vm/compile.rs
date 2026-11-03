@@ -2958,8 +2958,15 @@ impl BytecodeCompilationState {
         })
         .collect(),
     };
+    // The CPU runtime runs the initializers itself, with its host: they can
+    // use builtins that run as host ops, like `string`.
+    let program = if self.cpu_mode {
+      BytecodeProgram::without_initializing(code)
+    } else {
+      BytecodeProgram::from_code(code)
+    };
     (
-      BytecodeProgram::from_code(code),
+      program,
       self
         .finished_functions
         .iter()

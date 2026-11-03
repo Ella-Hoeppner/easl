@@ -5970,6 +5970,18 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           }
         }
       };
+      // Main's copy of the implicit `easl_sample_rate` local (see
+      // `Program::extract_audio_info`): the stream rate is fixed and
+      // knowable before any stream exists, so main-thread `(sample-rate)`
+      // calls, including in the initializers after this one and closure
+      // constructors sizing delay buffers during `start-audio` argument
+      // evaluation, read a real value. The audio thread's own copy is
+      // written by the driver instead.
+      let value = if &*var.name == "easl_sample_rate" {
+        Value::Prim(Primitive::F32(env.io.sample_rate()))
+      } else {
+        value
+      };
       env.bind(var.name.clone(), value, var.var_type.clone());
     }
     // Initial window-info values: dispatches that happen outside a frame
@@ -5977,20 +5989,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     env.refresh_window_info_bindings();
     // Initial MIDI values, so pre-frame code sees the live state.
     env.refresh_midi_state();
-    // Main's copy of the implicit `easl_sample_rate` local (see
-    // `Program::extract_audio_info`): the stream rate is fixed and
-    // knowable before any stream exists, so main-thread `(sample-rate)`
-    // calls — including closure constructors sizing delay buffers during
-    // `start-audio` argument evaluation — read a real value. The audio
-    // thread's own copy is written by the driver instead.
-    let main_sample_rate = env.io.sample_rate();
-    if let Some(slot) = env
-      .bindings
-      .get_mut("easl_sample_rate")
-      .and_then(|v| v.last_mut())
-    {
-      slot.0 = Value::Prim(Primitive::F32(main_sample_rate));
-    }
     let wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
     env.wgsl = wgsl;
     Ok(env)
@@ -10543,7 +10541,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
   ) -> Result<Self, EvalError> {
     let env_program = program.clone();
     #[cfg(feature = "window")]
-    let env =
+    let mut env =
       EvaluationEnvironment::from_program_with_audio_source_and_external(
         env_program,
         io,
@@ -10551,7 +10549,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
         external_vars,
       )?;
     #[cfg(not(feature = "window"))]
-    let env =
+    let mut env =
       EvaluationEnvironment::build_inner(env_program, io, external_vars)?;
     let (mut vm_program, function_names) =
       program.compile_to_bytecode_program_cpu();
@@ -10561,7 +10559,25 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     // seeded at env construction, but the VM reads its own slots.
     let main_sample_rate = env.io.sample_rate();
     vm_program.write_global("easl_sample_rate", &[main_sample_rate.to_bits()]);
-    let slots_dirty = vec![false; vm_program.code.host_bindings.len()];
+    let mut slots_dirty = vec![false; vm_program.code.host_bindings.len()];
+    // Top-level initializers, with the host: `string` and `resolve-path`
+    // run as host ops. They're pure (`Program::validate_pure_initializers`),
+    // so they never open a window or wait on the GPU.
+    if let Some(init) = vm_program.code.init_function_index {
+      use crate::vm::bytecode::RunResult;
+      vm_program.prepare_to_run_function(init);
+      let mut host = VmHostView {
+        env: &mut env,
+        slots_dirty: &mut slots_dirty,
+      };
+      match vm_program.execute_with_host(&mut host)? {
+        RunResult::Finished => {}
+        RunResult::Trapped(trap) => return Err(trap.into()),
+        RunResult::Suspended(reason) => {
+          unreachable!("a top-level initializer suspended: {reason:?}")
+        }
+      }
+    }
     Ok(Self {
       program: vm_program,
       env,

@@ -91,6 +91,13 @@ Array literals are written with the `[]` brackets, e.g.:
 
 Array types are written like `[5: f32]` to represent an array of `f32`s of size `5u`. Dynamically-sized array types are written simply like `[f32]`.
 
+A size can also name a `def` whose value is an integer literal, or `+`, `-`, `*`, `/`, or `%` of those and of other such `def`s. The compiler computes it the way the program would at runtime: integer arithmetic wraps on overflow, and `/` and `%` round toward zero, so `%`'s result takes the sign of the dividend.
+
+```easl
+(def cell-count: u32 (* 16u 16u))
+(var cells: [cell-count: f32])
+```
+
 You index into an array using the application syntax, e.g.:
 
 ```easl
@@ -368,6 +375,10 @@ Importantly, references are second-class values in easl. Easl has no first-class
 ```easl
 (def gravity: f32 9.8)
 ```
+
+A `def`'s value can be any pure expression, computed once before the program starts: it can call functions and read other top-level values, but it can't print, write a variable, read or write files, read input (the window, the mouse and keyboard, MIDI, the audio clock), or have any other effect, since there'd be no saying when that happens. Do those in `main` instead.
+
+Shaders can read a `def` only when its value is something wgsl can compute on its own: literals, other such `def`s, vector and struct constructors, and builtins like `sin`. One whose value calls a function (including your own functions, an enum's data variant, and `==` on enums) or reads a `var` or the sample rate works anywhere on the CPU and audio thread, and is a compile error in a shader. The same goes for a `@local var`'s initial value.
 
 `var`, on the other hand, is used to define a top-level variable.
 ```

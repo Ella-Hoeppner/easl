@@ -1,0 +1,43 @@
+; Top-level initializers that WGSL can't take as constant expressions: a
+; user function call, an enum constructor, enum `==` (a generated function),
+; and a definition reading one of those. They run on the CPU, and the
+; emitted WGSL leaves them out instead of declaring them invalidly. Plain
+; constant initializers are still declared, and shaders can read them.
+(enum Shape
+  (Circle f32)
+  Square)
+
+(def base: u32 3u)
+
+(defn twice-base []: u32
+  (* 2u base))
+
+(def via-function: u32 (twice-base))
+
+(def plus-one: u32 (+ via-function 1u))
+
+(def circle: Shape (Shape/Circle 2.))
+
+(def same-shape: bool (== circle (Shape/Circle 2.)))
+
+@local
+(var counter: u32 (twice-base))
+
+(def scale: vec2f (* (vec2f 2.) (sin 0.)))
+
+(var out: [1: f32])
+
+@compute
+(defn uses-constants []
+  (= (out 0u) (+ scale.x (f32 base))))
+
+@cpu
+(defn main []
+  (print via-function)
+  (print plus-one)
+  (print circle)
+  (print same-shape)
+  (+= counter 1u)
+  (print counter)
+  (dispatch-compute-shader uses-constants (vec3u 1u))
+  (print (out 0u)))

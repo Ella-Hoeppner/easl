@@ -633,6 +633,30 @@ pub enum CompileErrorKind {
      limit of 15"
   )]
   VertexLocationOutOfRange(usize),
+  #[error(
+    "shaders can't read \"{0}\": its initial value calls a function, and \
+     WGSL only allows constant expressions there. Compute it in the shader, \
+     or keep it in a GPU variable"
+  )]
+  NonConstantInitializerInShader(String),
+  #[error(
+    "`{0}` is used as an array size, so its value must be a constant \
+     integer: an integer literal, or `+`, `-`, `*`, `/`, or `%` of those and \
+     of other such `def`s"
+  )]
+  NonConstantArraySize(String),
+  #[error(
+    "`{0}` is used as an array size, but computing its value divides by zero"
+  )]
+  ArraySizeDividesByZero(String),
+  #[error("`{0}` is used as an array size, but its value is {1}")]
+  NegativeArraySize(String, i64),
+  #[error(
+    "the value of `{0}` {1}, but a top-level value's initializer can't have \
+     effects: it runs once at startup, at a time the program doesn't say. \
+     Do this in a function, like `main`, instead"
+  )]
+  ImpureInitializer(String, String),
   #[error("this vertex shader's inputs use location {0} twice")]
   OverlappingVertexLocations(usize),
   #[error(
@@ -1015,6 +1039,22 @@ impl PartialEq for CompileErrorKind {
         Self::OverlappingVertexLocations(l0),
         Self::OverlappingVertexLocations(r0),
       ) => l0 == r0,
+      (
+        Self::NonConstantInitializerInShader(l0),
+        Self::NonConstantInitializerInShader(r0),
+      ) => l0 == r0,
+      (Self::ImpureInitializer(l0, l1), Self::ImpureInitializer(r0, r1)) => {
+        l0 == r0 && l1 == r1
+      }
+      (Self::NonConstantArraySize(l0), Self::NonConstantArraySize(r0)) => {
+        l0 == r0
+      }
+      (Self::ArraySizeDividesByZero(l0), Self::ArraySizeDividesByZero(r0)) => {
+        l0 == r0
+      }
+      (Self::NegativeArraySize(l0, l1), Self::NegativeArraySize(r0, r1)) => {
+        l0 == r0 && l1 == r1
+      }
       (
         Self::VertexDataCountMismatch(l0, l1, l2),
         Self::VertexDataCountMismatch(r0, r1, r2),

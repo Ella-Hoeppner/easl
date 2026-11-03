@@ -1,0 +1,15 @@
+; Audio code reading a top-level value whose initializer calls a function:
+; the audio thread's VM computes it too.
+(defn sixteenths [n: u32]: f32
+  (/ (f32 n) 16.))
+
+(def level: f32 (sixteenths 3u))
+
+(defn voice []: f32
+  level)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn []
+                  (print level))))

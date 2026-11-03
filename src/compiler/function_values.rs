@@ -15,13 +15,13 @@
 //!    yields a function, anything read back out of those, and every `@var`
 //!    holding a function — as [`Type::BoxedFunction`], an opaque value type.
 //!    Static function values flowing into a dynamic position are wrapped in
-//!    `$fnbox-make`, and applications of boxed values become `$fnbox-apply`
+//!    `fnbox-make`, and applications of boxed values become `fnbox-apply`
 //!    calls (passing the boxed value by mutable reference, so a stateful
 //!    closure advances *in place*, exactly like a directly-called closure).
 //!    A function that itself takes or returns functions is stored through
 //!    a clone with those positions boxed (a top-level function) or retyped
 //!    in place (a lambda written where it's stored); a static closure passed
-//!    to a boxed parameter is lent as `$fnbox-borrow`.
+//!    to a boxed parameter is lent as `fnbox-borrow`.
 //!    From then on the deexpressionification / monomorphization / closure
 //!    extraction / higher-order-inlining passes see boxed values as plain
 //!    data, and their one-static-ancestor invariant holds for every remaining
@@ -53,8 +53,9 @@ use crate::compiler::{
   },
   expression::{Accessor, Exp, ExpKind, Number, TypedExp},
   functions::{
-    AbstractFunctionSignature, EffectsMemo, FunctionImplementationKind,
-    FunctionSignature, Ownership, RefMutability, TopLevelFunction,
+    AbstractFunctionSignature, EffectsMemo, FunctionBoxOp,
+    FunctionImplementationKind, FunctionSignature, FunctionTargetConfiguration,
+    Ownership, RefMutability, TopLevelFunction,
   },
   program::{
     CompilerTarget, NameContext, Program, ref_arg_lvalue_path,
@@ -67,9 +68,57 @@ use crate::compiler::{
   },
 };
 
-const FNBOX_MAKE: &str = "$fnbox-make";
-pub(crate) const FNBOX_APPLY: &str = "$fnbox-apply";
-const FNBOX_BORROW: &str = "$fnbox-borrow";
+/// The names of the function-value builtins (`FunctionBoxOp`), generated
+/// so no name in the program shares one. Checks recognize the builtins by
+/// `function_box_op`, never by these.
+#[derive(Clone)]
+struct FunctionBoxNames {
+  make: Arc<str>,
+  borrow: Arc<str>,
+  apply: Arc<str>,
+}
+
+impl FunctionBoxNames {
+  fn new(names: &RwLock<NameContext>) -> Self {
+    let mut names = names.write().unwrap();
+    Self {
+      make: names.gensym("fnbox-make"),
+      borrow: names.gensym("fnbox-borrow"),
+      apply: names.gensym("fnbox-apply"),
+    }
+  }
+}
+
+/// Which function-value builtin `signature` is, if it's one.
+pub(crate) fn function_box_op(
+  signature: &AbstractFunctionSignature,
+) -> Option<FunctionBoxOp> {
+  implementation_box_op(&signature.implementation)
+}
+
+/// Which function-value builtin `implementation` is, if it's one.
+fn implementation_box_op(
+  implementation: &FunctionImplementationKind,
+) -> Option<FunctionBoxOp> {
+  match implementation {
+    FunctionImplementationKind::Builtin {
+      target_configuration: FunctionTargetConfiguration::FunctionBox(op),
+      ..
+    } => Some(*op),
+    _ => None,
+  }
+}
+
+/// Which function-value builtin an application calls, if it calls one.
+fn applied_box_op(exp: &TypedExp) -> Option<FunctionBoxOp> {
+  let ExpKind::Application(callee, _) = &exp.kind else {
+    return None;
+  };
+  let Some(Type::Function(signature)) = known_type(&callee.data) else {
+    return None;
+  };
+  function_box_op(&signature.abstract_ancestor.as_ref()?.read().unwrap())
+}
 
 fn ptr_key<T: ?Sized>(arc: &Arc<T>) -> usize {
   Arc::as_ptr(arc) as *const () as usize
@@ -426,32 +475,73 @@ fn kind_of_type(t: &Type) -> Kind {
   }
 }
 
-/// `($fnbox-make value)`: wraps a statically-known function value into the
+/// The signature of the function-value builtin `op`, named `name`.
+fn function_box_signature(
+  op: FunctionBoxOp,
+  name: &str,
+  arg_types: Vec<(Type, Ownership)>,
+  return_type: Type,
+  effect: Option<Effect>,
+) -> Arc<RwLock<AbstractFunctionSignature>> {
+  let signature = builtin_signature(name, arg_types, return_type, effect);
+  if let FunctionImplementationKind::Builtin {
+    target_configuration,
+    ..
+  } = &mut signature.write().unwrap().implementation
+  {
+    *target_configuration = FunctionTargetConfiguration::FunctionBox(op);
+  }
+  signature
+}
+
+/// `(fnbox-make value)`: wraps a statically-known function value into the
 /// boxed representation.
-fn wrap_in_box(exp: &mut TypedExp, boxed: FunctionSignature) {
-  box_through(exp, boxed, FNBOX_MAKE, Ownership::Owned);
+fn wrap_in_box(
+  exp: &mut TypedExp,
+  boxed: FunctionSignature,
+  names: &FunctionBoxNames,
+) {
+  box_through(
+    exp,
+    boxed,
+    FunctionBoxOp::Make,
+    &names.make,
+    Ownership::Owned,
+  );
 }
 
-/// `($fnbox-borrow place)`: lends the static closure held in a local place
+/// `(fnbox-borrow place)`: lends the static closure held in a local place
 /// to a boxed function parameter, which advances it in place.
-fn borrow_into_box(exp: &mut TypedExp, boxed: FunctionSignature) {
-  box_through(exp, boxed, FNBOX_BORROW, Ownership::MutableReference);
+fn borrow_into_box(
+  exp: &mut TypedExp,
+  boxed: FunctionSignature,
+  names: &FunctionBoxNames,
+) {
+  box_through(
+    exp,
+    boxed,
+    FunctionBoxOp::Borrow,
+    &names.borrow,
+    Ownership::MutableReference,
+  );
 }
 
-/// `(builtin value)`, for the boxing builtin `builtin` taking the static
+/// `(builtin value)`, for the boxing builtin `op` taking the static
 /// function value with `ownership`.
 fn box_through(
   exp: &mut TypedExp,
   boxed: FunctionSignature,
-  builtin: &str,
+  op: FunctionBoxOp,
+  name: &str,
   ownership: Ownership,
 ) {
   take(exp, |value| {
     let b = ExpBuilder::at(&value.source_trace);
     let static_type = known_type(&value.data).unwrap();
     let boxed_type = Type::BoxedFunction(Box::new(boxed));
-    let signature = builtin_signature(
-      builtin,
+    let signature = function_box_signature(
+      op,
+      name,
       vec![(static_type, ownership)],
       boxed_type.clone(),
       None,
@@ -460,16 +550,21 @@ fn box_through(
   });
 }
 
-/// The callee of `($fnbox-apply boxed args...)`: boxed function arguments
+/// The callee of `(fnbox-apply boxed args...)`: boxed function arguments
 /// are passed by mutable reference.
-fn apply_callee(boxed: &FunctionSignature, source: &SourceTrace) -> TypedExp {
+fn apply_callee(
+  boxed: &FunctionSignature,
+  source: &SourceTrace,
+  names: &FunctionBoxNames,
+) -> TypedExp {
   let boxed_type = Type::BoxedFunction(Box::new(boxed.clone()));
   let params: Vec<Type> = std::iter::once(boxed_type)
     .chain(boxed.args.iter().map(|(a, _)| a.var_type.unwrap_known()))
     .collect();
   let return_type = boxed.return_type.unwrap_known();
-  let signature = builtin_signature(
-    FNBOX_APPLY,
+  let signature = function_box_signature(
+    FunctionBoxOp::Apply,
+    &names.apply,
     params
       .iter()
       .enumerate()
@@ -642,6 +737,7 @@ struct Boxer<'a> {
   clones: &'a HashMap<CloneKey, Arc<RwLock<AbstractFunctionSignature>>>,
   global_vars: &'a HashSet<Arc<str>>,
   names: &'a RwLock<NameContext>,
+  box_names: &'a FunctionBoxNames,
   /// The registry signature of each composite function, by implementation.
   /// Inference attaches *copies* of signatures to references; later passes
   /// (monomorphization in particular) read a reference's ancestor, so every
@@ -679,7 +775,7 @@ impl<'a> Boxer<'a> {
     }
   }
   /// Coerces a value flowing into a boxed position: a statically-known
-  /// function value is wrapped in `$fnbox-make`, pushing the wrap down into
+  /// function value is wrapped in `fnbox-make`, pushing the wrap down into
   /// block / let tails and `if`/`match` arms so the wrapped operand is always
   /// a simple function-valued expression.
   fn coerce_to_box(&mut self, exp: &mut TypedExp) {
@@ -714,7 +810,7 @@ impl<'a> Boxer<'a> {
             unreachable!()
           };
           let boxed = self.types.boxed_signature(&sig);
-          wrap_in_box(exp, boxed);
+          wrap_in_box(exp, boxed, &self.box_names);
         }
       },
       _ => {}
@@ -861,7 +957,7 @@ impl<'a> Boxer<'a> {
   }
   /// Prepares an argument for a boxed function parameter (passed by mutable
   /// reference): a static closure held in a local place is lent as
-  /// `$fnbox-borrow`, which lowers to the place itself (or, when the
+  /// `fnbox-borrow`, which lowers to the place itself (or, when the
   /// parameter's set is a union, to a copy whose state is written back after
   /// the call); any other static function is boxed; and the result is bound
   /// to a temporary unless it's already a place. Returns that temporary.
@@ -876,7 +972,7 @@ impl<'a> Boxer<'a> {
         && self.env.contains_key(n)
       {
         self.lent_places.insert(n.clone());
-        borrow_into_box(a, param);
+        borrow_into_box(a, param, &self.box_names);
         return None;
       }
       self.coerce_to_box(a);
@@ -1192,7 +1288,7 @@ impl<'a> Boxer<'a> {
         // Function arguments of a boxed function are passed by mutable
         // reference, so a stateful closure argument advances in place. A
         // boxed argument is passed as (or bound to) a place; a static
-        // closure held in a local place is lent as `$fnbox-borrow`, which
+        // closure held in a local place is lent as `fnbox-borrow`, which
         // lowers to the place itself (or, when the parameter's set is a
         // union, to a copy whose state is written back after the call).
         let mut temps = vec![];
@@ -1204,7 +1300,7 @@ impl<'a> Boxer<'a> {
           }
         }
         let return_kind = kind_of_type(&boxed.return_type.unwrap_known());
-        let mut new_callee = apply_callee(&boxed, &source);
+        let mut new_callee = apply_callee(&boxed, &source, &self.box_names);
         std::mem::swap(f.as_mut(), &mut new_callee);
         let mut value = new_callee;
         if let Some(temp) = self.ensure_place(&mut value) {
@@ -1374,10 +1470,11 @@ impl<'a> Boxer<'a> {
           Some(FunctionImplementationKind::Builtin { .. }) => {
             let ancestor = ancestor.unwrap();
             let name = ancestor.read().unwrap().name.clone();
-            if &*name == FNBOX_MAKE || &*name == FNBOX_BORROW {
+            let op = function_box_op(&ancestor.read().unwrap());
+            if matches!(op, Some(FunctionBoxOp::Make | FunctionBoxOp::Borrow)) {
               return Kind::Boxed;
             }
-            if &*name == FNBOX_APPLY {
+            if op == Some(FunctionBoxOp::Apply) {
               return known_type(&exp.data)
                 .map(|t| kind_of_type(&t))
                 .unwrap_or(Kind::NotFn);
@@ -1596,6 +1693,7 @@ struct BoxingContext<'a> {
   local_boxed_params: &'a HashMap<LocalLambdaKey, BTreeSet<usize>>,
   global_vars: &'a HashSet<Arc<str>>,
   names: &'a RwLock<NameContext>,
+  box_names: &'a FunctionBoxNames,
   canonical: &'a HashMap<usize, Arc<RwLock<AbstractFunctionSignature>>>,
 }
 
@@ -1608,6 +1706,7 @@ impl<'a> BoxingContext<'a> {
       local_boxed_params: self.local_boxed_params,
       global_vars: self.global_vars,
       names: self.names,
+      box_names: self.box_names,
       canonical: self.canonical,
       function_key,
       requests: vec![],
@@ -1748,14 +1847,15 @@ fn box_global_initializer(
 
 impl Program {
   /// See the module docs: retypes every function value in a dynamic
-  /// position as a `BoxedFunction`, inserting `$fnbox-make` wraps and
-  /// `$fnbox-apply` calls. A strict no-op for programs without function
+  /// position as a `BoxedFunction`, inserting `fnbox-make` wraps and
+  /// `fnbox-apply` calls. A strict no-op for programs without function
   /// values.
   pub fn box_function_values(&mut self, errors: &mut ErrorLog) {
     if !program_has_function_values(self) {
       return;
     }
     let types = build_type_boxer(self);
+    let box_names = FunctionBoxNames::new(&self.names);
     // Snapshot every body's types so a top-level retype never leaks through
     // a unification variable shared with another node.
     let composites: Vec<(
@@ -1860,6 +1960,7 @@ impl Program {
             local_boxed_params: &local_boxed_params,
             global_vars: &global_vars,
             names: &self.names,
+            box_names: &box_names,
             canonical: &canonical,
           },
           *key,
@@ -1885,6 +1986,7 @@ impl Program {
             local_boxed_params: &local_boxed_params,
             global_vars: &global_vars,
             names: &self.names,
+            box_names: &box_names,
             canonical: &canonical,
           },
         );
@@ -2086,7 +2188,7 @@ struct Instance {
   ret: Skel,
   /// slot of a composite call -> callee instance
   calls: HashMap<u32, usize>,
-  /// slot of a `$fnbox-apply` call -> apply site
+  /// slot of a `fnbox-apply` call -> apply site
   applies: HashMap<u32, usize>,
   /// slot of a host-invoked closure argument -> closure instance
   hosts: HashMap<u32, usize>,
@@ -2592,11 +2694,9 @@ impl<'p> Analysis<'p> {
         let Some(ancestor) = sig.abstract_ancestor.clone() else {
           return t.map(|t| self.fresh(&t)).unwrap_or(Skel::Leaf);
         };
-        let (name, implementation) = {
-          let a = ancestor.read().unwrap();
-          (a.name.clone(), a.implementation.clone())
-        };
-        if &*name == FNBOX_MAKE || &*name == FNBOX_BORROW {
+        let implementation = ancestor.read().unwrap().implementation.clone();
+        let op = implementation_box_op(&implementation);
+        if matches!(op, Some(FunctionBoxOp::Make | FunctionBoxOp::Borrow)) {
           let node = self.new_node();
           stamp_member_ancestor(&mut args[0], self.program);
           let static_type = known_type(&args[0].data).unwrap();
@@ -2635,7 +2735,7 @@ impl<'p> Analysis<'p> {
           }
           return Skel::Box(node);
         }
-        if &*name == FNBOX_APPLY {
+        if op == Some(FunctionBoxOp::Apply) {
           let Skel::Box(node) = arg_skels[0].clone() else {
             return t.map(|t| self.fresh(&t)).unwrap_or(Skel::Leaf);
           };
@@ -3879,7 +3979,7 @@ fn zero_value(t: &Type, source: &SourceTrace) -> Option<TypedExp> {
   })
 }
 
-/// Whether `exp` is a `($fnbox-borrow place)` lending a static closure to a
+/// Whether `exp` is a `(fnbox-borrow place)` lending a static closure to a
 /// boxed function parameter.
 pub(crate) fn is_function_value_borrow(exp: &TypedExp) -> bool {
   let ExpKind::Application(callee, _) = &exp.kind else {
@@ -3887,7 +3987,7 @@ pub(crate) fn is_function_value_borrow(exp: &TypedExp) -> bool {
   };
   matches!(known_type(&callee.data), Some(Type::Function(sig))
     if sig.abstract_ancestor.as_ref().is_some_and(
-      |a| &*a.read().unwrap().name == FNBOX_BORROW))
+      |a| function_box_op(&a.read().unwrap()) == Some(FunctionBoxOp::Borrow)))
 }
 
 /// Whether `exp` is a place whose re-evaluation has no effects: a variable
@@ -4543,19 +4643,22 @@ impl<'p> Lowering<'p> {
       let a = ancestor.read().unwrap();
       (a.name.clone(), a.implementation.clone())
     };
+    let op = implementation_box_op(&implementation);
     // Member identity of a wrapped function, read before its type is
     // retargeted by lowering.
     let make_key =
-      (&*name == FNBOX_MAKE || &*name == FNBOX_BORROW).then(|| {
-        let static_type = known_type(&args[0].data).unwrap();
-        let Type::Function(s) = &static_type else {
-          unreachable!()
-        };
-        member_key(
-          &s.abstract_ancestor.as_ref().unwrap().read().unwrap(),
-          &static_type,
-        )
-      });
+      matches!(op, Some(FunctionBoxOp::Make | FunctionBoxOp::Borrow)).then(
+        || {
+          let static_type = known_type(&args[0].data).unwrap();
+          let Type::Function(s) = &static_type else {
+            unreachable!()
+          };
+          member_key(
+            &s.abstract_ancestor.as_ref().unwrap().read().unwrap(),
+            &static_type,
+          )
+        },
+      );
     // Closures lent to a boxed call's parameters, read before lowering
     // rewrites the arguments: (argument index, lent place, member key, box
     // skeleton).
@@ -4571,10 +4674,10 @@ impl<'p> Lowering<'p> {
           else {
             return None;
           };
-          let is_borrow = callee_sig
-            .abstract_ancestor
-            .as_ref()
-            .is_some_and(|c| &*c.read().unwrap().name == FNBOX_BORROW);
+          let is_borrow =
+            callee_sig.abstract_ancestor.as_ref().is_some_and(|c| {
+              function_box_op(&c.read().unwrap()) == Some(FunctionBoxOp::Borrow)
+            });
           if !is_borrow {
             return None;
           }
@@ -4601,7 +4704,7 @@ impl<'p> Lowering<'p> {
       self.lower(instance, a);
     }
     let b = ExpBuilder::at(&source);
-    if &*name == FNBOX_MAKE || &*name == FNBOX_BORROW {
+    if matches!(op, Some(FunctionBoxOp::Make | FunctionBoxOp::Borrow)) {
       let Skel::Box(n) = skel else { unreachable!() };
       let members = self.members_of(*n);
       let make_key = make_key.unwrap();
@@ -4674,7 +4777,7 @@ impl<'p> Lowering<'p> {
       ));
       lent_temps.push((temp, value));
     }
-    if &*name == FNBOX_APPLY {
+    if op == Some(FunctionBoxOp::Apply) {
       self.lower_apply(instance, exp, slot, new_type, source.clone());
     } else {
       self.lower_builtin_or_constructor(
@@ -4702,7 +4805,7 @@ impl<'p> Lowering<'p> {
       );
     }
   }
-  /// Lowers `($fnbox-apply boxed args...)` (arguments already lowered) to a
+  /// Lowers `(fnbox-apply boxed args...)` (arguments already lowered) to a
   /// direct call of the site's single member, a dispatcher call for a
   /// union, or a zero value for a provably-empty set.
   fn lower_apply(
@@ -6220,7 +6323,7 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
     i: usize,
     walk: &CopyWalk,
   ) -> bool {
-    if &**callee_name == FNBOX_APPLY {
+    if applied_box_op(exp) == Some(FunctionBoxOp::Apply) {
       // A stored function's call: any member copying the parameter.
       let (Some(analysis), Some(instance), Some(slot)) =
         (self.analysis, walk.instance, exp.data.defun_slot)

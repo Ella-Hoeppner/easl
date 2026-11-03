@@ -1,0 +1,54 @@
+; User functions named like things the compiler creates, beside a program
+; that makes those things too: a top-level initializer that calls a
+; function, and function values (wrapped, lent, and called). The compiler
+; generates its own names, so nothing collides.
+(defn $init_globals []: u32
+  1u)
+
+(defn init-globals []: u32
+  2u)
+
+(defn $fnbox-make [x: f32]: f32
+  (+ x 10.))
+
+(defn $fnbox-apply [x: f32]: f32
+  (+ x 20.))
+
+(defn $fnbox-borrow [x: f32]: f32
+  (+ x 30.))
+
+(defn fnbox-apply [x: f32]: f32
+  (+ x 40.))
+
+(def computed: u32 (+ ($init_globals) (init-globals)))
+
+(defn double [x: f32]: f32
+  (* x 2.))
+
+(defn triple [x: f32]: f32
+  (* x 3.))
+
+(defn apply-each [fs: [2: (Fn [f32] f32)] x: f32]: f32
+  (+ ((fs 0u) x) ((fs 1u) x)))
+
+; Called with a stored function and with a stateful closure, which is lent.
+(defn call-it [f: (Fn [f32] f32) x: f32]: f32
+  (f x))
+
+@cpu
+(defn main []
+  (print computed)
+  (let [fs [double triple]
+        @var count 0.
+        counter (fn [x: f32]: f32
+                  (+= count 1.)
+                  (+ x count))]
+    (print ((fs 1u) 1.))
+    (print (apply-each fs 2.))
+    (print (call-it (fs 0u) 4.))
+    (print (call-it counter 0.))
+    (print (call-it counter 0.)))
+  (print ($fnbox-make 1.))
+  (print ($fnbox-apply 1.))
+  (print ($fnbox-borrow 1.))
+  (print (fnbox-apply 1.)))

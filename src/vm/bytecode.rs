@@ -1546,7 +1546,10 @@ pub struct BytecodeProgram {
 }
 
 impl BytecodeProgram {
-  pub fn from_code(code: Code) -> Self {
+  /// A program from `code` whose top-level initializers haven't run: the
+  /// caller runs `code.init_function_index` (as the CPU runtime does, with
+  /// its host).
+  pub fn without_initializing(code: Code) -> Self {
     let max_stack_size = code
       .function_instructions
       .iter()
@@ -1554,7 +1557,7 @@ impl BytecodeProgram {
       .max()
       .map_or(0, |i| i as usize + 1)
       .max(code.min_stack_size);
-    let mut program = Self {
+    let program = Self {
       stack: vec![0u32; max_stack_size],
       call_stack: Vec::with_capacity(code.functions.len()),
       dyn_memory: (0..code.dyn_memory_count)
@@ -1577,6 +1580,12 @@ impl BytecodeProgram {
       audio_rate: 0.,
       code,
     };
+    program
+  }
+  /// A program from `code`, its top-level initializers already run, with no
+  /// host: their host ops would panic.
+  pub fn from_code(code: Code) -> Self {
+    let mut program = Self::without_initializing(code);
     if let Some(init_idx) = program.code.init_function_index {
       program.prepare_to_run_function(init_idx);
       program.execute();

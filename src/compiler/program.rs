@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use std::hash::Hash;
@@ -47,7 +48,7 @@ use crate::{
     graph::topological_order,
     structs::{AbstractStructField, UntypedStruct},
     types::{
-      AbstractArraySize, AbstractType, ConcreteArraySize,
+      AbstractArraySize, AbstractType, ArraySizeConstants, ConcreteArraySize,
       ConstGenericResolution, GenericArgument, ImmutableProgramLocalContext,
       NameDefinitionSource, Type, TypeDescription, TypeState, UntypedType,
       Variable, VariableKind, parse_generic_argument,
@@ -406,6 +407,47 @@ impl TypeDefs {
       }
     }
   }
+}
+
+/// Why a `def` named as an array size has no size.
+#[derive(Debug, Clone, Copy)]
+enum SizeFoldError {
+  /// Its value isn't integer arithmetic on literals and such `def`s.
+  NotConstant,
+  /// Computing it divides by zero (an error at runtime too).
+  DividesByZero,
+  Negative(i64),
+}
+
+/// `a op b` in `t` (`u32` or `i32`), as the runtime computes it.
+fn apply_size_op(
+  op: &str,
+  t: &Type,
+  a: i64,
+  b: i64,
+) -> Result<i64, SizeFoldError> {
+  if matches!(op, "/" | "%") && b == 0 {
+    return Err(SizeFoldError::DividesByZero);
+  }
+  Ok(if *t == Type::U32 {
+    let (a, b) = (a as u32, b as u32);
+    (match op {
+      "+" => a.wrapping_add(b),
+      "-" => a.wrapping_sub(b),
+      "*" => a.wrapping_mul(b),
+      "/" => a / b,
+      _ => a % b,
+    }) as i64
+  } else {
+    let (a, b) = (a as i32, b as i32);
+    (match op {
+      "+" => a.wrapping_add(b),
+      "-" => a.wrapping_sub(b),
+      "*" => a.wrapping_mul(b),
+      "/" => a.wrapping_div(b),
+      _ => a.wrapping_rem(b),
+    }) as i64
+  })
 }
 
 /// Execution-context bit indices shared by the context-exclusivity
@@ -2462,6 +2504,7 @@ impl Program {
     };
     let fns = self.compute_function_contexts();
     let storage_write_vars = self.storage_write_vars();
+    let non_constant_initializers = self.non_constant_initializers();
     // rule scan: check each function's direct uses against every context
     // it can run in
     let runtime_sized_error_present = errors.iter().any(|e| {
@@ -2496,6 +2539,19 @@ impl Program {
                 exp.source_trace.clone(),
                 bit(FRAGMENT),
                 std::array::from_fn(|_| Some(DiscardOutsideFragment)),
+              ));
+            }
+            // WGSL can't declare a value whose initializer isn't a
+            // constant expression, so only the CPU runtimes have one.
+            ExpKind::Name(name) if non_constant_initializers.contains(name) => {
+              violations.push((
+                exp.source_trace.clone(),
+                bit(CPU) | bit(AUDIO),
+                std::array::from_fn(|_| {
+                  Some(NonConstantInitializerInShader(
+                    display_name(name).to_string(),
+                  ))
+                }),
               ));
             }
             ExpKind::Application(applied_f, args) => {
@@ -2764,6 +2820,123 @@ impl Program {
     use crate::compiler::expression::ExpKind;
     let mut new_vars: Vec<TopLevelVar> = vec![];
     let mut created: HashSet<&'static str> = HashSet::new();
+    // Function bodies and top-level initializers alike.
+    let mut rewrite = |exp: &mut TypedExp| {
+      let ExpKind::Application(applied_f, args) = &exp.kind else {
+        return Ok::<bool, Never>(true);
+      };
+      let ExpKind::Name(applied_name) = &applied_f.kind else {
+        return Ok(true);
+      };
+      if args.is_empty() {
+        // Audio-info vars are `@local` (per-execution-context, driver-
+        // authoritative); MIDI vars are storage-read bindings with
+        // elided numbers, so shader code can read them too — the
+        // main thread's per-frame refresh marks them CPU-written and
+        // the ordinary dirty-upload machinery ships them to the GPU
+        // (they only become runtime bindings when a shader actually
+        // touches them, like any GPU-space var).
+        let (var_name, address_space, group_and_binding) = match &**applied_name
+        {
+          "sample-rate" => {
+            ("easl_sample_rate", VariableAddressSpace::Local, None)
+          }
+          "audio-time" => {
+            ("easl_audio_time", VariableAddressSpace::Local, None)
+          }
+          "audio-input" => {
+            ("easl_audio_input", VariableAddressSpace::Local, None)
+          }
+          "midi-aftertouch" => (
+            "easl_midi_aftertouch",
+            VariableAddressSpace::StorageRead,
+            Some(BindingSpec::Elided),
+          ),
+          "midi-pitch-bend" => (
+            "easl_midi_pitch_bend",
+            VariableAddressSpace::StorageRead,
+            Some(BindingSpec::Elided),
+          ),
+          "down-midi-notes" => (
+            "easl_midi_down_notes",
+            VariableAddressSpace::StorageRead,
+            Some(BindingSpec::Elided),
+          ),
+          _ => return Ok(true),
+        };
+        if created.insert(var_name) {
+          new_vars.push(TopLevelVar {
+            name: var_name.into(),
+            kind: TopLevelVariableKind::Var {
+              address_space,
+              group_and_binding,
+            },
+            // The call's inferred return type is exactly the var's
+            // type (f32, or `[MidiNote]` for `down-midi-notes`).
+            var_type: exp.data.unwrap_known(),
+            value: None,
+            source_trace: exp.source_trace.clone(),
+            external: false,
+            directly_user_written: false,
+          });
+        }
+        exp.kind = ExpKind::Name(var_name.into());
+        exp.data.is_globally_bound = true;
+        return Ok(true);
+      }
+      // `get-midi-note` and `midi-cc` both index a fixed 128-entry
+      // storage table by note/controller number: rewrite to an array
+      // lookup into the implicit global. `midi-cc`'s element is f32;
+      // `get-midi-note`'s is the call's inferred `(Option MidiNote)`
+      // (concrete here — this pass runs after monomorphization).
+      if args.len() == 1
+        && matches!(&**applied_name, "midi-cc" | "get-midi-note")
+      {
+        let (var_name, element_type) = if &**applied_name == "midi-cc" {
+          ("easl_midi_cc", Type::F32)
+        } else {
+          ("easl_midi_notes", exp.data.unwrap_known())
+        };
+        let array_type = Type::Array(
+          Some(ConcreteArraySize::Literal(128)),
+          Box::new(element_type.known().into()),
+        );
+        if created.insert(var_name) {
+          new_vars.push(TopLevelVar {
+            name: var_name.into(),
+            kind: TopLevelVariableKind::Var {
+              address_space: VariableAddressSpace::StorageRead,
+              group_and_binding: Some(BindingSpec::Elided),
+            },
+            var_type: array_type.clone(),
+            value: None,
+            source_trace: exp.source_trace.clone(),
+            external: false,
+            directly_user_written: false,
+          });
+        }
+        // The call becomes an ordinary array lookup on the global —
+        // the `Access` form the backends expect (array-lookup
+        // applications are normalized to `Access` before this pass),
+        // with both nodes marked globally bound, mirroring what
+        // inference produces for `(global i)`. Valid indices are
+        // 0-127, MIDI's own 7-bit range — out-of-range indices
+        // behave like any other out-of-range array access.
+        let old_kind =
+          std::mem::replace(&mut exp.kind, ExpKind::Name(var_name.into()));
+        let ExpKind::Application(mut accessed, mut args) = old_kind else {
+          unreachable!()
+        };
+        let index = args.remove(0);
+        accessed.kind = ExpKind::Name(var_name.into());
+        accessed.data.kind = TypeState::Known(array_type);
+        accessed.data.is_globally_bound = true;
+        exp.kind =
+          ExpKind::Access(Accessor::ArrayIndex(Box::new(index)), accessed);
+        exp.data.is_globally_bound = true;
+      }
+      Ok(true)
+    };
     for f in self.abstract_functions_iter() {
       let FunctionImplementationKind::Composite(implementation) =
         f.read().unwrap().implementation.clone()
@@ -2774,123 +2947,13 @@ impl Program {
         .write()
         .unwrap()
         .expression
-        .walk_mut(&mut |exp| {
-          let ExpKind::Application(applied_f, args) = &exp.kind else {
-            return Ok::<bool, Never>(true);
-          };
-          let ExpKind::Name(applied_name) = &applied_f.kind else {
-            return Ok(true);
-          };
-          if args.is_empty() {
-            // Audio-info vars are `@local` (per-execution-context, driver-
-            // authoritative); MIDI vars are storage-read bindings with
-            // elided numbers, so shader code can read them too — the
-            // main thread's per-frame refresh marks them CPU-written and
-            // the ordinary dirty-upload machinery ships them to the GPU
-            // (they only become runtime bindings when a shader actually
-            // touches them, like any GPU-space var).
-            let (var_name, address_space, group_and_binding) =
-              match &**applied_name {
-                "sample-rate" => {
-                  ("easl_sample_rate", VariableAddressSpace::Local, None)
-                }
-                "audio-time" => {
-                  ("easl_audio_time", VariableAddressSpace::Local, None)
-                }
-                "audio-input" => {
-                  ("easl_audio_input", VariableAddressSpace::Local, None)
-                }
-                "midi-aftertouch" => (
-                  "easl_midi_aftertouch",
-                  VariableAddressSpace::StorageRead,
-                  Some(BindingSpec::Elided),
-                ),
-                "midi-pitch-bend" => (
-                  "easl_midi_pitch_bend",
-                  VariableAddressSpace::StorageRead,
-                  Some(BindingSpec::Elided),
-                ),
-                "down-midi-notes" => (
-                  "easl_midi_down_notes",
-                  VariableAddressSpace::StorageRead,
-                  Some(BindingSpec::Elided),
-                ),
-                _ => return Ok(true),
-              };
-            if created.insert(var_name) {
-              new_vars.push(TopLevelVar {
-                name: var_name.into(),
-                kind: TopLevelVariableKind::Var {
-                  address_space,
-                  group_and_binding,
-                },
-                // The call's inferred return type is exactly the var's
-                // type (f32, or `[MidiNote]` for `down-midi-notes`).
-                var_type: exp.data.unwrap_known(),
-                value: None,
-                source_trace: exp.source_trace.clone(),
-                external: false,
-                directly_user_written: false,
-              });
-            }
-            exp.kind = ExpKind::Name(var_name.into());
-            exp.data.is_globally_bound = true;
-            return Ok(true);
-          }
-          // `get-midi-note` and `midi-cc` both index a fixed 128-entry
-          // storage table by note/controller number: rewrite to an array
-          // lookup into the implicit global. `midi-cc`'s element is f32;
-          // `get-midi-note`'s is the call's inferred `(Option MidiNote)`
-          // (concrete here — this pass runs after monomorphization).
-          if args.len() == 1
-            && matches!(&**applied_name, "midi-cc" | "get-midi-note")
-          {
-            let (var_name, element_type) = if &**applied_name == "midi-cc" {
-              ("easl_midi_cc", Type::F32)
-            } else {
-              ("easl_midi_notes", exp.data.unwrap_known())
-            };
-            let array_type = Type::Array(
-              Some(ConcreteArraySize::Literal(128)),
-              Box::new(element_type.known().into()),
-            );
-            if created.insert(var_name) {
-              new_vars.push(TopLevelVar {
-                name: var_name.into(),
-                kind: TopLevelVariableKind::Var {
-                  address_space: VariableAddressSpace::StorageRead,
-                  group_and_binding: Some(BindingSpec::Elided),
-                },
-                var_type: array_type.clone(),
-                value: None,
-                source_trace: exp.source_trace.clone(),
-                external: false,
-                directly_user_written: false,
-              });
-            }
-            // The call becomes an ordinary array lookup on the global —
-            // the `Access` form the backends expect (array-lookup
-            // applications are normalized to `Access` before this pass),
-            // with both nodes marked globally bound, mirroring what
-            // inference produces for `(global i)`. Valid indices are
-            // 0-127, MIDI's own 7-bit range — out-of-range indices
-            // behave like any other out-of-range array access.
-            let old_kind =
-              std::mem::replace(&mut exp.kind, ExpKind::Name(var_name.into()));
-            let ExpKind::Application(mut accessed, mut args) = old_kind else {
-              unreachable!()
-            };
-            let index = args.remove(0);
-            accessed.kind = ExpKind::Name(var_name.into());
-            accessed.data.kind = TypeState::Known(array_type);
-            accessed.data.is_globally_bound = true;
-            exp.kind =
-              ExpKind::Access(Accessor::ArrayIndex(Box::new(index)), accessed);
-            exp.data.is_globally_bound = true;
-          }
-          Ok(true)
-        })
+        .walk_mut(&mut rewrite)
         .unwrap();
+    }
+    for v in self.top_level_vars.iter_mut() {
+      if let Some(value) = &mut v.value {
+        value.walk_mut(&mut rewrite).unwrap();
+      }
     }
     self.top_level_vars.extend(new_vars);
   }
@@ -5194,6 +5257,7 @@ impl Program {
     // into the typedefs only if the enum is actually constructed/matched,
     // which audio-only `get-midi-note` use never does).
     let functions = self.emitted_function_closure(target);
+    let non_constant_initializers = self.non_constant_initializers();
     let wgsl_referenced_globals = if target == CompilerTarget::WGSL {
       self.wgsl_referenced_globals(&functions)
     } else {
@@ -5215,7 +5279,7 @@ impl Program {
       {
         continue;
       }
-      if self.omits_global(v, target) {
+      if self.omits_global(v, target, &non_constant_initializers) {
         continue;
       }
       compiled_string += &v.clone().compile(&mut names, target);
@@ -6256,25 +6320,43 @@ impl Program {
       self.abstract_functions.entry(name).or_default().push(sig);
     }
   }
-  pub fn inline_def_array_sizes(&mut self) {
-    let u32_constants: HashMap<Arc<str>, u32> = self
+  /// Replaces each array size that names a `def` with the `def`'s value.
+  /// A size `def`'s value is an integer literal, or `+`, `-`, `*`, `/`, or
+  /// `%` of those and of other such `def`s, computed as the runtime would
+  /// in the `def`'s type (`fold_size_constant`). A size naming a `def`
+  /// with any other value is an error, reported at the `def`.
+  pub fn inline_def_array_sizes(&mut self, errors: &mut ErrorLog) {
+    let mut memo: HashMap<Arc<str>, Result<i64, SizeFoldError>> =
+      HashMap::new();
+    let folded: Vec<(Arc<str>, Result<i64, SizeFoldError>)> = self
       .top_level_vars
       .iter()
-      .filter_map(|v| {
-        if (v.var_type == Type::U32 || v.var_type == Type::I32)
-          && v.kind == TopLevelVariableKind::Const
-          && let Some(TypedExp {
-            kind: ExpKind::NumberLiteral(Number::Int(n)),
-            ..
-          }) = v.value
-          && let Ok(n) = n.try_into()
-        {
-          Some((v.name.clone(), n))
-        } else {
-          None
-        }
+      .filter(|v| v.kind == TopLevelVariableKind::Const)
+      .map(|v| {
+        let result =
+          self.fold_size_constant(&v.name, &mut memo, &mut HashSet::new());
+        (v.name.clone(), result)
       })
       .collect();
+    let mut invalid: HashMap<Arc<str>, SizeFoldError> = HashMap::new();
+    let mut values: HashMap<Arc<str>, u32> = HashMap::new();
+    for (name, result) in folded {
+      match result
+        .and_then(|n| u32::try_from(n).map_err(|_| SizeFoldError::Negative(n)))
+      {
+        Ok(n) => {
+          values.insert(name, n);
+        }
+        Err(error) => {
+          invalid.insert(name, error);
+        }
+      }
+    }
+    let u32_constants = ArraySizeConstants {
+      values,
+      invalid: invalid.keys().cloned().collect(),
+      named_invalid: RefCell::new(HashSet::new()),
+    };
     for v in self.top_level_vars.iter_mut() {
       v.var_type.inline_def_array_sizes(&u32_constants);
     }
@@ -6285,9 +6367,9 @@ impl Program {
           .walk_mut(&mut |t| {
             if let AbstractType::AbstractArray { size, .. } = t
               && let AbstractArraySize::Constant(constant_name) = size
-              && let Some(n) = u32_constants.get(constant_name)
+              && let Some(n) = u32_constants.resolve(constant_name)
             {
-              *size = AbstractArraySize::Literal(*n);
+              *size = AbstractArraySize::Literal(n);
             }
             Ok::<bool, Never>(true)
           })
@@ -6311,6 +6393,105 @@ impl Program {
           })
           .unwrap();
       }
+    }
+    let mut named: Vec<Arc<str>> = u32_constants
+      .named_invalid
+      .into_inner()
+      .into_iter()
+      .collect();
+    named.sort();
+    for name in named {
+      let def = self.top_level_vars.iter().find(|v| v.name == name).unwrap();
+      let source = def
+        .value
+        .as_ref()
+        .map_or(def.source_trace.clone(), |value| value.source_trace.clone());
+      let shown = display_name(&name).to_string();
+      errors.log(CompileError::new(
+        match invalid[&name] {
+          SizeFoldError::NotConstant => NonConstantArraySize(shown),
+          SizeFoldError::DividesByZero => ArraySizeDividesByZero(shown),
+          SizeFoldError::Negative(n) => NegativeArraySize(shown, n),
+        },
+        source,
+      ));
+    }
+  }
+  /// The value of the `def` `name` as an array size, computed in its type
+  /// (`u32` or `i32`) with the runtime's arithmetic: `+`, `-`, and `*`
+  /// wrap, and `/` and `%` truncate toward zero (so `%` takes the sign of
+  /// the dividend). Results are memoized in `memo`.
+  fn fold_size_constant(
+    &self,
+    name: &Arc<str>,
+    folded: &mut HashMap<Arc<str>, Result<i64, SizeFoldError>>,
+    visiting: &mut HashSet<Arc<str>>,
+  ) -> Result<i64, SizeFoldError> {
+    if let Some(result) = folded.get(name) {
+      return *result;
+    }
+    let Some(def) = self
+      .top_level_vars
+      .iter()
+      .find(|v| &v.name == name && v.kind == TopLevelVariableKind::Const)
+    else {
+      return Err(SizeFoldError::NotConstant);
+    };
+    // A cycle is reported elsewhere (`CyclicTopLevelDefinitions`).
+    if !visiting.insert(name.clone()) {
+      return Err(SizeFoldError::NotConstant);
+    }
+    let result = match (&def.var_type, &def.value) {
+      (t @ (Type::U32 | Type::I32), Some(value)) => {
+        self.fold_size_expression(value, t, folded, visiting)
+      }
+      _ => Err(SizeFoldError::NotConstant),
+    };
+    visiting.remove(name);
+    folded.insert(name.clone(), result);
+    result
+  }
+  fn fold_size_expression(
+    &self,
+    exp: &TypedExp,
+    t: &Type,
+    folded: &mut HashMap<Arc<str>, Result<i64, SizeFoldError>>,
+    visiting: &mut HashSet<Arc<str>>,
+  ) -> Result<i64, SizeFoldError> {
+    let in_type = |n: i64| match t {
+      Type::U32 => u32::try_from(n).is_ok(),
+      _ => i32::try_from(n).is_ok(),
+    };
+    match &exp.kind {
+      ExpKind::NumberLiteral(Number::Int(n)) if in_type(*n) => Ok(*n),
+      ExpKind::Name(name) => {
+        match self.top_level_vars.iter().find(|v| &v.name == name) {
+          Some(v) if v.var_type == *t => {
+            self.fold_size_constant(name, folded, visiting)
+          }
+          _ => Err(SizeFoldError::NotConstant),
+        }
+      }
+      ExpKind::Application(f, args) => {
+        let ExpKind::Name(op) = &f.kind else {
+          return Err(SizeFoldError::NotConstant);
+        };
+        let operands = args
+          .iter()
+          .map(|arg| self.fold_size_expression(arg, t, folded, visiting))
+          .collect::<Result<Vec<i64>, SizeFoldError>>()?;
+        match (&**op, operands.as_slice()) {
+          ("-", [n]) if *t == Type::I32 => {
+            Ok((*n as i32).wrapping_neg() as i64)
+          }
+          ("+" | "*", [first, rest @ ..]) if !rest.is_empty() => rest
+            .iter()
+            .try_fold(*first, |a, b| apply_size_op(op, t, a, *b)),
+          ("-" | "/" | "%", [a, b]) => apply_size_op(op, t, *a, *b),
+          _ => Err(SizeFoldError::NotConstant),
+        }
+      }
+      _ => Err(SizeFoldError::NotConstant),
     }
   }
   pub fn inline_static_array_length_calls(&mut self) {
@@ -7447,7 +7628,10 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.inline_def_array_sizes();
+    self.inline_def_array_sizes(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.fully_infer_types(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -7459,6 +7643,7 @@ impl Program {
       return errors;
     }
     self.validate_integer_literals(&mut errors);
+    self.validate_pure_initializers(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -8323,8 +8508,16 @@ impl Program {
   /// - in WGSL, a GPU-space var involving a bool, which isn't
   ///   host-shareable and is guaranteed GPU-unused by
   ///   `validate_gpu_used_binding_types` (`var<private> b: bool` is valid
-  ///   WGSL, so `@local` bools stay).
-  fn omits_global(&self, v: &TopLevelVar, target: CompilerTarget) -> bool {
+  ///   WGSL, so `@local` bools stay);
+  /// - in WGSL, a var whose initializer isn't a constant expression
+  ///   (`non_constant_initializers`), which WGSL can't declare; context
+  ///   exclusivity rejects shaders reading one.
+  fn omits_global(
+    &self,
+    v: &TopLevelVar,
+    target: CompilerTarget,
+    non_constant_initializers: &HashSet<Arc<str>>,
+  ) -> bool {
     let is_runtime_sized_array = matches!(
       &v.var_type,
       Type::Array(Some(ConcreteArraySize::Unsized), _)
@@ -8357,6 +8550,8 @@ impl Program {
       || (target == CompilerTarget::WGSL
         && gpu_space
         && v.var_type.involves_bool())
+      || (target == CompilerTarget::WGSL
+        && non_constant_initializers.contains(&v.name))
   }
   /// The globals a WGSL function can't refer to: GPU-space globals whose
   /// types can't be a WGSL binding, and globals WGSL output leaves out
@@ -8364,6 +8559,7 @@ impl Program {
   /// either (see `TopLevelFunction::is_valid_for_target`), even when it
   /// only touches the global's plain fields.
   fn wgsl_unemittable_globals(&self) -> HashSet<Arc<str>> {
+    let non_constant_initializers = self.non_constant_initializers();
     self
       .top_level_vars
       .iter()
@@ -8378,7 +8574,12 @@ impl Program {
               ..
             }
           ) && !v.var_type.is_valid_wgsl_binding_layout();
-        gpu_space_without_binding || self.omits_global(v, CompilerTarget::WGSL)
+        gpu_space_without_binding
+          || self.omits_global(
+            v,
+            CompilerTarget::WGSL,
+            &non_constant_initializers,
+          )
       })
       .map(|v| v.name.clone())
       .collect()
@@ -8751,30 +8952,32 @@ impl Program {
           queue.push(f.clone());
         }
       }
-      if !cpu_mode && reachable.is_empty() {
-        None
-      } else {
-        while let Some(f) = queue.pop() {
-          let mut found: Vec<Arc<str>> = vec![];
-          f.read()
-            .unwrap()
-            .expression
-            .walk(&mut |exp| {
-              if let ExpKind::Name(name) = &exp.kind
-                && by_name.contains_key(name)
-              {
-                found.push(name.clone());
-              }
-              if let ExpKind::Application(_, _) = &exp.kind
-                && let TypeState::Known(Type::Function(signature)) =
-                  &exp.data.kind
-                && let Some(ancestor) = &signature.abstract_ancestor
-              {
-                found.push(ancestor.read().unwrap().name.clone());
-              }
-              Ok::<bool, Never>(true)
-            })
-            .unwrap();
+      // The functions an expression names or calls.
+      let referenced = |exp: &TypedExp| {
+        let mut found: Vec<Arc<str>> = vec![];
+        exp
+          .walk(&mut |exp| {
+            if let ExpKind::Name(name) = &exp.kind
+              && by_name.contains_key(name)
+            {
+              found.push(name.clone());
+            }
+            if let ExpKind::Application(_, _) = &exp.kind
+              && let TypeState::Known(Type::Function(signature)) =
+                &exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              found.push(ancestor.read().unwrap().name.clone());
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+        found
+      };
+      let reach =
+        |found: Vec<Arc<str>>,
+         reachable: &mut HashSet<Arc<str>>,
+         queue: &mut Vec<Arc<RwLock<TopLevelFunction>>>| {
           for name in found {
             if let Some(target) = by_name.get(&name)
               && is_target_compilable(target)
@@ -8783,6 +8986,19 @@ impl Program {
               queue.push(target.clone());
             }
           }
+        };
+      if !cpu_mode && reachable.is_empty() {
+        None
+      } else {
+        // The initializer function runs every top-level initializer, so the
+        // functions they call are reachable too.
+        for value in self.top_level_vars.iter().filter_map(|v| v.value.as_ref())
+        {
+          reach(referenced(value), &mut reachable, &mut queue);
+        }
+        while let Some(f) = queue.pop() {
+          let found = referenced(&f.read().unwrap().expression);
+          reach(found, &mut reachable, &mut queue);
         }
         Some(reachable)
       }
@@ -9009,51 +9225,6 @@ impl Program {
       .filter(|info| info.atomic)
       .map(|info| info.name.clone())
       .collect();
-    // If any top-level var has an initializer expression, compile a
-    // synthetic "$init_globals" function that computes each one and Moves it
-    // into the corresponding global slot. `BytecodeProgram::from_code` runs
-    // it once at construction so globals are live before any user code.
-    let init_function_index =
-      if self.top_level_vars.iter().any(|v| v.value.is_some()) {
-        state.open_function("$init_globals".into(), 0);
-        for v in self.top_level_vars.iter() {
-          if let Some(value_exp) = &v.value
-            && touched_globals.contains(&v.name)
-          {
-            let value_slot = value_exp
-              .compile_to_bytecode(CompilePosition::Value, &mut state)
-              .unwrap();
-            if let Some((memory, _)) =
-              state.dynamic_array_memory.get(&v.name).copied()
-            {
-              // A runtime-sized global lives in its own region.
-              let Type::Array(_, element_type) = &v.var_type else {
-                unreachable!("a region-backed global is a runtime-sized array")
-              };
-              state.emit_region_assignment(
-                memory,
-                value_slot,
-                &element_type.unwrap_known(),
-              );
-            } else {
-              // Slot-sized like the global itself, and copied so the global
-              // owns any heap values (Strings, struct fields) it holds.
-              let var_size = vm_stack_size(&v.var_type) as u16;
-              let global_slot = *state.globals.get(&v.name).unwrap();
-              state.emit_value_copy(
-                value_slot,
-                var_size,
-                global_slot,
-                &v.var_type,
-              );
-            }
-          }
-        }
-        state.close_function();
-        Some(state.finished_functions.len() - 1)
-      } else {
-        None
-      };
     for (f_name, implementation) in ordered_functions {
       if let Some(reachable) = &reachable
         && !reachable.contains(&f_name)
@@ -9221,6 +9392,54 @@ impl Program {
         }
       }
     }
+    // If any top-level var has an initializer expression, compile a
+    // function (with a generated name, so it can't share a user's) that
+    // computes each one and Moves it into the corresponding global slot.
+    // It's compiled last, since its initializers can call functions. It runs
+    // once before any user code: in `BytecodeProgram::from_code` for audio
+    // programs, and through the host in `VmCpuRuntime::new`.
+    let init_function_index =
+      if self.top_level_vars.iter().any(|v| v.value.is_some()) {
+        let name = self.names.write().unwrap().gensym("init-globals");
+        state.open_function(name, 0);
+        for v in self.top_level_vars.iter() {
+          if let Some(value_exp) = &v.value
+            && touched_globals.contains(&v.name)
+          {
+            let value_slot = value_exp
+              .compile_to_bytecode(CompilePosition::Value, &mut state)
+              .unwrap();
+            if let Some((memory, _)) =
+              state.dynamic_array_memory.get(&v.name).copied()
+            {
+              // A runtime-sized global lives in its own region.
+              let Type::Array(_, element_type) = &v.var_type else {
+                unreachable!("a region-backed global is a runtime-sized array")
+              };
+              state.emit_region_assignment(
+                memory,
+                value_slot,
+                &element_type.unwrap_known(),
+              );
+            } else {
+              // Slot-sized like the global itself, and copied so the global
+              // owns any heap values (Strings, struct fields) it holds.
+              let var_size = vm_stack_size(&v.var_type) as u16;
+              let global_slot = *state.globals.get(&v.name).unwrap();
+              state.emit_value_copy(
+                value_slot,
+                var_size,
+                global_slot,
+                &v.var_type,
+              );
+            }
+          }
+        }
+        state.close_function();
+        Some(state.finished_functions.len() - 1)
+      } else {
+        None
+      };
     state.finalize(init_function_index)
   }
 }

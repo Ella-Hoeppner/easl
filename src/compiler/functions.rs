@@ -7,7 +7,9 @@ use take_mut::take;
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::expression::compile_typed_name;
-use crate::compiler::types::{AbstractArraySize, ConcreteArraySize};
+use crate::compiler::types::{
+  AbstractArraySize, ArraySizeConstants, ConcreteArraySize,
+};
 use crate::compiler::vertex_inputs::VertexInputLayout;
 use crate::vm::compile::{
   BytecodeCompilationState, CompilePosition, RefArgBinding,
@@ -317,9 +319,22 @@ pub enum SpecialCasedBuiltinFunction {
   ZeroedArray,
 }
 
+/// The builtins that stand in for function values until
+/// defunctionalization (`function_values`): wrapping a static function as a
+/// boxed value, lending a static closure to a boxed parameter, and calling a
+/// boxed value. They're recognized by this, never by name, so their
+/// (generated) names can't be confused with a user's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionBoxOp {
+  Make,
+  Borrow,
+  Apply,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FunctionTargetConfiguration {
   Default,
+  FunctionBox(FunctionBoxOp),
   SpecialCased(SpecialCasedBuiltinFunction),
   BuiltinAttributeLookup(BuiltinIOAttribute),
   /// A builtin that's a pure alias of another builtin (e.g. the `into`
@@ -454,22 +469,19 @@ impl AbstractFunctionSignature {
         .remove_unitlike_arguments(names);
     }
   }
-  pub fn inline_def_array_sizes(
-    &mut self,
-    u32_constants: &HashMap<Arc<str>, u32>,
-  ) {
+  pub fn inline_def_array_sizes(&mut self, sizes: &ArraySizeConstants) {
     for (arg_type, _) in self.arg_types.iter_mut() {
       arg_type
         .walk_mut(&mut |t| {
           match t {
             AbstractType::AbstractArray { size, .. } => {
               if let AbstractArraySize::Constant(constant_name) = size
-                && let Some(n) = u32_constants.get(constant_name)
+                && let Some(n) = sizes.resolve(constant_name)
               {
-                *size = AbstractArraySize::Literal(*n);
+                *size = AbstractArraySize::Literal(n);
               }
             }
-            AbstractType::Type(t) => t.inline_def_array_sizes(u32_constants),
+            AbstractType::Type(t) => t.inline_def_array_sizes(sizes),
             _ => {}
           }
           Ok::<bool, Never>(true)
@@ -482,12 +494,12 @@ impl AbstractFunctionSignature {
         match t {
           AbstractType::AbstractArray { size, .. } => {
             if let AbstractArraySize::Constant(constant_name) = size
-              && let Some(n) = u32_constants.get(constant_name)
+              && let Some(n) = sizes.resolve(constant_name)
             {
-              *size = AbstractArraySize::Literal(*n);
+              *size = AbstractArraySize::Literal(n);
             }
           }
-          AbstractType::Type(t) => t.inline_def_array_sizes(u32_constants),
+          AbstractType::Type(t) => t.inline_def_array_sizes(sizes),
           _ => {}
         }
         Ok::<bool, Never>(true)

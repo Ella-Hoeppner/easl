@@ -1,0 +1,52 @@
+; Array sizes can name `def`s computed with `+`, `-`, `*`, `/`, and `%`
+; from integer literals and other such `def`s. The compiler computes them
+; the way the runtime does, which each line checks by printing the `def`
+; (computed at runtime) beside the length of an array of that size:
+; wrapping overflow, and `/` and `%` truncating toward zero, so `%` takes
+; the sign of the dividend.
+(def base: u32 4u)
+(def three: u32 (+ 1u 2u))
+(def six: u32 (+ 1u 2u 3u))
+(def eight: u32 (* base (- three 1u)))
+(def quotient: u32 (/ 17u base))
+(def remainder: u32 (% 17u base))
+(def wrapped: u32 (+ 4294967295u 3u))
+; truncating division gives -3 (flooring would give -4)
+(def negated-quotient: i32 (- (/ -7i 2i)))
+; truncating `%` gives -1 here (a Euclidean one would give 1, making this -1)
+(def negated-remainder: i32 (- 0i (% -7i 2i)))
+
+; A `def` that calls a function is fine when it isn't an array size.
+(defn twice [x: u32]: u32
+  (* 2u x))
+
+(def computed: u32 (twice 5u))
+
+(struct Bucket
+  items: [three: u32])
+
+(defn total [values: [quotient: u32]]: u32
+  (let [@var sum 0u]
+    (for [i 0u (< i quotient) (+= i 1u)]
+      (+= sum (values i)))
+    sum))
+
+(defn show [size: u32 count: u32]
+  (print (== size count))
+  (print count))
+
+@cpu
+(defn main []
+  (show three (array-length (zeroed-array): [three: f32]))
+  (show six (array-length (zeroed-array): [six: f32]))
+  (show eight (array-length (zeroed-array): [eight: f32]))
+  (show quotient (array-length (zeroed-array): [quotient: f32]))
+  (show remainder (array-length (zeroed-array): [remainder: f32]))
+  (show wrapped (array-length (zeroed-array): [wrapped: f32]))
+  (show (u32 negated-quotient)
+        (array-length (zeroed-array): [negated-quotient: f32]))
+  (show (u32 negated-remainder)
+        (array-length (zeroed-array): [negated-remainder: f32]))
+  (print (array-length (.items (Bucket (zeroed-array)))))
+  (print (total [1u 2u 3u 4u]))
+  (print computed))
