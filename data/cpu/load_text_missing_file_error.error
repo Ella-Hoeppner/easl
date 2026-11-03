@@ -1,1 +1,5 @@
 load-text: failed to read "/nonexistent-easl-test-directory/missing.txt": No such file or directory (os error 2)
+data/cpu/load_text_missing_file_error.easl
+2 | (defn main []
+3 |   (print (load-text "/nonexistent-easl-test-directory/missing.txt")))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

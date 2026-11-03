@@ -7,6 +7,10 @@ use std::ops::Range;
 use std::slice;
 use std::sync::{Arc, RwLock};
 
+use fsexp::document::DocumentPosition;
+
+use crate::parse::EaslMultiDocument;
+
 use crate::compiler::builtins::short_circuit_deciding_value;
 use crate::compiler::closure_lift::{LiftedCapture, LiftedCaptures};
 use crate::compiler::enums::Enum;
@@ -302,6 +306,16 @@ pub struct BytecodeCompilationState {
   /// Callee effects for the whole compilation, which only reads function
   /// bodies (so no memoized entry can go stale).
   pub effects_memo: EffectsMemo,
+  /// `Code::source_positions` and `Code::instruction_sources` so far, and
+  /// each position's index.
+  source_positions: Vec<DocumentPosition>,
+  source_position_indices: HashMap<DocumentPosition, u32>,
+  instruction_sources: Vec<(u32, u32)>,
+  /// The index of the source position instructions are being compiled
+  /// from, `u32::MAX` for none.
+  current_source: u32,
+  /// `Code::documents`.
+  pub documents: Option<Arc<EaslMultiDocument>>,
 }
 
 impl BytecodeCompilationState {
@@ -339,7 +353,33 @@ impl BytecodeCompilationState {
       lifted_audio_captures: HashMap::new(),
       lifted_gpu_captures: HashMap::new(),
       effects_memo: EffectsMemo::default(),
+      source_positions: vec![],
+      source_position_indices: HashMap::new(),
+      instruction_sources: vec![],
+      current_source: u32::MAX,
+      documents: None,
     }
+  }
+  /// Compiles the instructions `compile` emits as compiled from `position`,
+  /// returning what it returns.
+  fn compiling_from<T>(
+    &mut self,
+    position: &DocumentPosition,
+    compile: impl FnOnce(&mut Self) -> T,
+  ) -> T {
+    let index = match self.source_position_indices.get(position) {
+      Some(&index) => index,
+      None => {
+        let index = self.source_positions.len() as u32;
+        self.source_positions.push(position.clone());
+        self.source_position_indices.insert(position.clone(), index);
+        index
+      }
+    };
+    let enclosing = std::mem::replace(&mut self.current_source, index);
+    let result = compile(self);
+    self.current_source = enclosing;
+    result
   }
   /// `size` slots of the current function's shared copy scratch (see
   /// `emit_copy_with_plan`), growing it when it's too small; fresh slots
@@ -390,6 +430,7 @@ impl BytecodeCompilationState {
     // scalar return written over it would poison the next execution's
     // release (float bits misread as a heap id) and leak the cell.
     self.take_stack_slot(return_size);
+    self.current_source = u32::MAX;
   }
   pub fn close_function(&mut self) {
     let mut f = self.current_function.take().unwrap();
@@ -397,6 +438,13 @@ impl BytecodeCompilationState {
     self.finished_functions.push(f);
   }
   pub fn push_instruction(&mut self, instruction: Instruction) {
+    if self.instruction_sources.last().map(|&(_, source)| source)
+      != Some(self.current_source)
+    {
+      self
+        .instruction_sources
+        .push((self.instructions.len() as u32, self.current_source));
+    }
     self.instructions.push(instruction);
   }
   /// Emits an ownership-correct copy of a `t`-typed value from `src` to
@@ -2957,6 +3005,9 @@ impl BytecodeCompilationState {
           )
         })
         .collect(),
+      source_positions: self.source_positions,
+      instruction_sources: self.instruction_sources,
+      documents: self.documents,
     };
     // The CPU runtime runs the initializers itself, with its host: they can
     // use builtins that run as host ops, like `string`.
@@ -4045,6 +4096,124 @@ impl TypedExp {
     });
     Some(dest)
   }
+  /// `=` into an element of a runtime-sized array or into a whole
+  /// dynamic-memory (global) array.
+  fn try_compile_dyn_array_store(
+    args: &[TypedExp],
+    state: &mut BytecodeCompilationState,
+  ) -> Option<Option<u16>> {
+    // element store into a dynamic-memory (global) array
+    if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
+      &args[0].kind
+      && let ExpKind::Name(name) = &inner.kind
+      && let Some((memory, stride)) =
+        state.dynamic_array_memory.get(name).copied()
+      && let Type::Array(_, element_type) = inner.data.unwrap_known()
+    {
+      let index_slot = index_exp.compile_index_to_bytecode(state);
+      let src_slot = args[1]
+        .compile_to_bytecode(CompilePosition::Value, state)
+        .unwrap();
+      // A partial write: the rest of the array must be current first.
+      state.emit_read_check(name);
+      if let Some(fixups) = BytecodeCompilationState::embedding_element_fixups(
+        &element_type.unwrap_known(),
+      ) {
+        state.emit_embedding_element_store(
+          EmbeddingContainer::Region(memory),
+          index_slot,
+          src_slot,
+          stride,
+          &fixups,
+        );
+      } else {
+        state.push_instruction(Instruction {
+          op: Op::DynStore,
+          arg_positions: [memory, index_slot, src_slot],
+          return_position: stride,
+        });
+      }
+      Some(None)
+    } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
+      &args[0].kind
+      && let Type::Array(_, element_type) = inner.data.unwrap_known()
+      && matches!(
+        inner.data.unwrap_known(),
+        Type::Array(Some(ConcreteArraySize::Unsized), _)
+      )
+    {
+      // element store into a runtime-sized array *value* (a local, a
+      // field, or a nested element), through its heap id with
+      // copy-on-write. The inner expression compiles in REF position:
+      // when it's itself an element lookup (`(= ((g i) j) v)`), the
+      // loaded id is a COW share whose mutation must be written back
+      // to the parent container — value position would mutate a
+      // discarded clone and silently drop the store.
+      state.array_mut_ref_store_instructions.push(vec![]);
+      let heap_id_slot = inner
+        .compile_to_bytecode(CompilePosition::MutRef, state)
+        .unwrap();
+      let index_slot = index_exp.compile_index_to_bytecode(state);
+      let src_slot = args[1]
+        .compile_to_bytecode(CompilePosition::Value, state)
+        .unwrap();
+      let element_type = element_type.unwrap_known();
+      let stride = vm_stack_size(&element_type);
+      if let Some(fixups) =
+        BytecodeCompilationState::embedding_element_fixups(&element_type)
+      {
+        state.emit_embedding_element_store(
+          EmbeddingContainer::Cell(heap_id_slot),
+          index_slot,
+          src_slot,
+          stride,
+          &fixups,
+        );
+      } else {
+        state.push_instruction(Instruction {
+          op: Op::HeapStore,
+          arg_positions: [heap_id_slot, index_slot, src_slot],
+          return_position: stride,
+        });
+      }
+      state.flush_pending_write_backs();
+      Some(None)
+    } else if let ExpKind::Name(name) = &args[0].kind
+      && let Some((memory, _)) = state.dynamic_array_memory.get(name).copied()
+      && let Type::Array(Some(ConcreteArraySize::Unsized), element_type) =
+        args[0].data.unwrap_known()
+      && !(state.cpu_mode
+        && assigns_special_dyn_rhs(&args[1])
+        && !involves_heap_values(&element_type.unwrap_known()))
+    {
+      // whole-array assignment of a general runtime-sized value to a
+      // dynamic global: compile the value to a heap cell and copy its
+      // payload into the global's region. (In cpu mode the direct
+      // `zeroed-array`/`into-dynamic-array`/`load-wav` right-hand
+      // sides keep their dedicated host/region fast paths in
+      // `try_compile_cpu_builtin` — but only for flat element types;
+      // heap-backed elements need `Cells` storage, which the generic
+      // value-then-`RegionFromHeap` path produces.)
+      if !state.cpu_mode
+        && let ExpKind::Application(rhs_f, _) = &args[1].kind
+        && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
+        && &**rhs_f_name == "load-wav"
+      {
+        panic!("load-wav is only available in the CPU runtime");
+      }
+      let src_slot = args[1]
+        .compile_to_bytecode(CompilePosition::Value, state)
+        .unwrap();
+      state.emit_region_assignment(
+        memory,
+        src_slot,
+        &element_type.unwrap_known(),
+      );
+      Some(None)
+    } else {
+      None
+    }
+  }
   fn try_compile_dyn_array_builtin(
     &self,
     f_name: &str,
@@ -4087,122 +4256,21 @@ impl TypedExp {
           panic!("array-length of unsupported array kind in VM runtime")
         }
       }
-      "=" => {
-        // element store into a dynamic-memory (global) array
-        if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
-          &args[0].kind
-          && let ExpKind::Name(name) = &inner.kind
-          && let Some((memory, stride)) =
-            state.dynamic_array_memory.get(name).copied()
-          && let Type::Array(_, element_type) = inner.data.unwrap_known()
+      "=" => match &args[0].source_trace.primary_position {
+        // An out-of-range index in the stored element is reported at the
+        // element, as the tree-walker reports it.
+        Some(target)
+          if matches!(
+            args[0].kind,
+            ExpKind::Access(Accessor::ArrayIndex(_), _)
+          ) =>
         {
-          let index_slot = index_exp.compile_index_to_bytecode(state);
-          let src_slot = args[1]
-            .compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap();
-          // A partial write: the rest of the array must be current first.
-          state.emit_read_check(name);
-          if let Some(fixups) =
-            BytecodeCompilationState::embedding_element_fixups(
-              &element_type.unwrap_known(),
-            )
-          {
-            state.emit_embedding_element_store(
-              EmbeddingContainer::Region(memory),
-              index_slot,
-              src_slot,
-              stride,
-              &fixups,
-            );
-          } else {
-            state.push_instruction(Instruction {
-              op: Op::DynStore,
-              arg_positions: [memory, index_slot, src_slot],
-              return_position: stride,
-            });
-          }
-          Some(None)
-        } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
-          &args[0].kind
-          && let Type::Array(_, element_type) = inner.data.unwrap_known()
-          && matches!(
-            inner.data.unwrap_known(),
-            Type::Array(Some(ConcreteArraySize::Unsized), _)
-          )
-        {
-          // element store into a runtime-sized array *value* (a local, a
-          // field, or a nested element), through its heap id with
-          // copy-on-write. The inner expression compiles in REF position:
-          // when it's itself an element lookup (`(= ((g i) j) v)`), the
-          // loaded id is a COW share whose mutation must be written back
-          // to the parent container — value position would mutate a
-          // discarded clone and silently drop the store.
-          state.array_mut_ref_store_instructions.push(vec![]);
-          let heap_id_slot = inner
-            .compile_to_bytecode(CompilePosition::MutRef, state)
-            .unwrap();
-          let index_slot = index_exp.compile_index_to_bytecode(state);
-          let src_slot = args[1]
-            .compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap();
-          let element_type = element_type.unwrap_known();
-          let stride = vm_stack_size(&element_type);
-          if let Some(fixups) =
-            BytecodeCompilationState::embedding_element_fixups(&element_type)
-          {
-            state.emit_embedding_element_store(
-              EmbeddingContainer::Cell(heap_id_slot),
-              index_slot,
-              src_slot,
-              stride,
-              &fixups,
-            );
-          } else {
-            state.push_instruction(Instruction {
-              op: Op::HeapStore,
-              arg_positions: [heap_id_slot, index_slot, src_slot],
-              return_position: stride,
-            });
-          }
-          state.flush_pending_write_backs();
-          Some(None)
-        } else if let ExpKind::Name(name) = &args[0].kind
-          && let Some((memory, _)) =
-            state.dynamic_array_memory.get(name).copied()
-          && let Type::Array(Some(ConcreteArraySize::Unsized), element_type) =
-            args[0].data.unwrap_known()
-          && !(state.cpu_mode
-            && assigns_special_dyn_rhs(&args[1])
-            && !involves_heap_values(&element_type.unwrap_known()))
-        {
-          // whole-array assignment of a general runtime-sized value to a
-          // dynamic global: compile the value to a heap cell and copy its
-          // payload into the global's region. (In cpu mode the direct
-          // `zeroed-array`/`into-dynamic-array`/`load-wav` right-hand
-          // sides keep their dedicated host/region fast paths in
-          // `try_compile_cpu_builtin` — but only for flat element types;
-          // heap-backed elements need `Cells` storage, which the generic
-          // value-then-`RegionFromHeap` path produces.)
-          if !state.cpu_mode
-            && let ExpKind::Application(rhs_f, _) = &args[1].kind
-            && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
-            && &**rhs_f_name == "load-wav"
-          {
-            panic!("load-wav is only available in the CPU runtime");
-          }
-          let src_slot = args[1]
-            .compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap();
-          state.emit_region_assignment(
-            memory,
-            src_slot,
-            &element_type.unwrap_known(),
-          );
-          Some(None)
-        } else {
-          None
+          state.compiling_from(target, |state| {
+            Self::try_compile_dyn_array_store(args, state)
+          })
         }
-      }
+        _ => Self::try_compile_dyn_array_store(args, state),
+      },
       _ => None,
     }
   }
@@ -4991,7 +5059,31 @@ impl TypedExp {
     }
   }
 
+  /// Compiles this expression. An application's or access's instructions
+  /// are compiled from its source position (see
+  /// `BytecodeCompilationState::compiling_from`), so a runtime error in
+  /// them is reported there, as the tree-walker reports it.
   pub fn compile_to_bytecode(
+    &self,
+    position: CompilePosition,
+    state: &mut BytecodeCompilationState,
+  ) -> Option<u16> {
+    match &self.source_trace.primary_position {
+      Some(source)
+        if matches!(
+          self.kind,
+          ExpKind::Application(..) | ExpKind::Access(..)
+        ) =>
+      {
+        state.compiling_from(source, |state| {
+          self.compile_unlocated_to_bytecode(position, state)
+        })
+      }
+      _ => self.compile_unlocated_to_bytecode(position, state),
+    }
+  }
+
+  fn compile_unlocated_to_bytecode(
     &self,
     position: CompilePosition,
     state: &mut BytecodeCompilationState,

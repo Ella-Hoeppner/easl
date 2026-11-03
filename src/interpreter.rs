@@ -46,15 +46,16 @@ use crate::compiler::{
 };
 use crate::external::ExternalVars;
 use crate::midi_out::{MidiMessage, MidiOutKind, sysex_message};
+use crate::parse::EaslMultiDocument;
 use crate::render_settings::{RenderSetting, RenderSettings};
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, participant,
 };
 use crate::video::VideoRegistry;
 use crate::vm::bytecode::{
-  DynMemory, HeapCell, SharedAtomic, Trap, alloc_heap_cell, heap_index,
-  heap_string_words, pack_2x16_float, release_heap_id, string_to_words,
-  unpack_2x16_float, words_to_string,
+  BytecodeProgram, DynMemory, HeapCell, SharedAtomic, Trap, alloc_heap_cell,
+  heap_index, heap_string_words, pack_2x16_float, release_heap_id,
+  string_to_words, unpack_2x16_float, words_to_string,
 };
 use crate::vm::compile::{involves_heap_values, vm_stack_size};
 #[cfg(feature = "window")]
@@ -185,6 +186,116 @@ pub enum EvalError {
   Internal(InternalEvalError),
   #[error("{0}")]
   Userspace(UserspaceEvalError),
+  #[error("{0}")]
+  Located(Box<LocatedEvalError>),
+}
+
+/// A userspace error and where in the program it happened.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LocatedEvalError {
+  pub error: UserspaceEvalError,
+  /// The application that failed, then each call that led to it, innermost
+  /// first.
+  pub source_trace: SourceTrace,
+  /// Set while the error leaves a function's body, until the call it leaves
+  /// records itself in `source_trace`.
+  leaving_call: bool,
+  /// `source_trace` described against the program's documents (see
+  /// `EvalError::described`).
+  description: Option<String>,
+}
+
+impl std::fmt::Display for LocatedEvalError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.error)?;
+    if let Some(description) = &self.description {
+      write!(f, "\n{description}")?;
+    }
+    Ok(())
+  }
+}
+
+impl EvalError {
+  /// This error, if it's a userspace error with no location yet, located
+  /// at the application at `source_trace`; a located error leaving a
+  /// function's body records `source_trace` as the call it leaves.
+  fn located_at(self, source_trace: &SourceTrace) -> Self {
+    let Some(position) = &source_trace.primary_position else {
+      return self;
+    };
+    match self {
+      EvalError::Userspace(error) => {
+        EvalError::Located(Box::new(LocatedEvalError {
+          error,
+          source_trace: position.clone().into(),
+          leaving_call: false,
+          description: None,
+        }))
+      }
+      EvalError::Located(mut located) if located.leaving_call => {
+        located
+          .source_trace
+          .secondary_positions
+          .push(position.clone());
+        located.leaving_call = false;
+        EvalError::Located(located)
+      }
+      other => other,
+    }
+  }
+  /// This error, leaving a function's body.
+  fn leaving_call(self) -> Self {
+    match self {
+      EvalError::Located(mut located) => {
+        located.leaving_call = true;
+        EvalError::Located(located)
+      }
+      other => other,
+    }
+  }
+  /// This error with its location described against `documents`, the
+  /// documents its program was built from, so displaying it shows where it
+  /// happened.
+  pub fn described(self, documents: &EaslMultiDocument) -> Self {
+    match self {
+      EvalError::Located(mut located)
+        if located.description.is_none() && !documents.sources.is_empty() =>
+      {
+        located.description =
+          Some(located.source_trace.describe_runtime_location(documents));
+        EvalError::Located(located)
+      }
+      other => other,
+    }
+  }
+}
+
+impl EvalError {
+  /// This error, if it's a userspace error with no location yet, located
+  /// where `program`'s last run stopped (see `BytecodeProgram::trap_site`),
+  /// then described against `documents`.
+  fn located_in_vm(
+    self,
+    program: &BytecodeProgram,
+    documents: &EaslMultiDocument,
+  ) -> Self {
+    match self {
+      EvalError::Userspace(error) => {
+        let source_trace = program.code.source_trace(&program.trap_site);
+        if source_trace.primary_position.is_none() {
+          return EvalError::Userspace(error);
+        }
+        EvalError::Located(Box::new(LocatedEvalError {
+          error,
+          source_trace,
+          leaving_call: false,
+          description: None,
+        }))
+        .described(documents)
+      }
+      other => other,
+    }
+  }
 }
 
 impl From<CompileError> for EvalError {
@@ -603,6 +714,29 @@ impl Value {
   }
 }
 
+/// The trap an integer `/` or `%` (or `/=`, `%=`) by `divisor` hits, when
+/// it or one of its components is zero.
+fn integer_division_by_zero(f_name: &str, divisor: &Value) -> Option<Trap> {
+  let trap = match f_name {
+    "/" | "/=" => Trap::DivisionByZero,
+    "%" | "%=" => Trap::RemainderByZero,
+    _ => return None,
+  };
+  let is_integer_zero = |value: &Value| {
+    matches!(
+      value,
+      Value::Prim(Primitive::I32(0)) | Value::Prim(Primitive::U32(0))
+    )
+  };
+  let zero = match divisor {
+    Value::Struct(components) => {
+      components.iter().any(|(_, value)| is_integer_zero(value))
+    }
+    value => is_integer_zero(value),
+  };
+  zero.then_some(trap)
+}
+
 fn primitive_arithmetic(
   a: Primitive,
   b: Primitive,
@@ -957,6 +1091,9 @@ fn apply_builtin_fn<IO: IOManager>(
     ),
     "+" | "+=" | "-" | "-=" | "*" | "*=" | "/" | "/=" | "%" | "%=" | "min"
     | "max" => {
+      if let Some(trap) = integer_division_by_zero(&f_name, &args[1].0) {
+        return Err(trap.into());
+      }
       let operator = |a: &Primitive, b: &Primitive| {
         primitive_arithmetic(
           a.clone(),
@@ -5778,6 +5915,9 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// the rest): such a var isn't replicated, every read loads it and every
   /// write stores the words it changed.
   shared_atomics: Vec<Option<SharedAtomic>>,
+  /// The documents the program was built from, which runtime errors are
+  /// described against.
+  documents: Arc<EaslMultiDocument>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
@@ -5909,6 +6049,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       shared_globals,
       shared_table,
       shared_indices,
+      documents: program.documents.clone(),
     };
     // Enum unit-variant names are bound before global initializers are
     // evaluated, since an initializer may reference one (a function-union
@@ -5947,7 +6088,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
-        Some(exp) => eval(exp.clone(), &mut env)?,
+        Some(exp) => eval(exp.clone(), &mut env)
+          .map_err(|e| EvalError::from(e).described(&env.documents))?,
         None => {
           // A texture starts as its own blank 1×1 texture, and a sampler
           // with the default settings.
@@ -7060,6 +7202,25 @@ impl From<EvalError> for EvalException {
   }
 }
 
+impl EvalException {
+  /// `EvalError::located_at` for an error.
+  fn located_at(self, source_trace: &SourceTrace) -> Self {
+    match self {
+      EvalException::Error(error) => {
+        EvalException::Error(error.located_at(source_trace))
+      }
+      other => other,
+    }
+  }
+  /// `EvalError::leaving_call` for an error.
+  fn leaving_call(self) -> Self {
+    match self {
+      EvalException::Error(error) => EvalException::Error(error.leaving_call()),
+      other => other,
+    }
+  }
+}
+
 impl From<EvalException> for EvalError {
   fn from(e: EvalException) -> Self {
     match e {
@@ -7877,7 +8038,8 @@ pub fn eval(
       })
     }
     ExpKind::Application(..) => unreachable!("dispatched above"),
-    ExpKind::Access(accessor, exp) => eval_access(accessor, *exp, env)?,
+    ExpKind::Access(accessor, inner) => eval_access(accessor, *inner, env)
+      .map_err(|e| e.located_at(&exp.source_trace))?,
     ExpKind::Let(items, exp) => eval_let(items, *exp, env)?,
     ExpKind::Match(scrutinee, arms) => {
       return eval_match(*scrutinee, arms, env);
@@ -7924,9 +8086,20 @@ pub fn eval(
   Ok(closure_as_scope(value, &exp.data))
 }
 
+/// Evaluates an application, locating an error it fails with at it (see
+/// `EvalError::located_at`).
+fn eval_application<IO: IOManager>(
+  mut exp: Exp<ExpTypeInfo>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  let source_trace =
+    std::mem::replace(&mut exp.source_trace, SourceTrace::empty());
+  eval_unlocated_application(exp, env).map_err(|e| e.located_at(&source_trace))
+}
+
 /// Evaluates an application: a call (builtin, constructor, composite, or
 /// closure) or an array lookup.
-fn eval_application<IO: IOManager>(
+fn eval_unlocated_application<IO: IOManager>(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<IO>,
 ) -> Result<Value, EvalException> {
@@ -8208,7 +8381,7 @@ fn eval_application<IO: IOManager>(
             Ok(value) => Ok(value),
             Err(exception) => match exception {
               EvalException::Return(value) => Ok(value),
-              other => Err(other),
+              other => Err(other.leaving_call()),
             },
           };
           // Mutable-reference write-back. For each arg bound to a
@@ -8258,7 +8431,7 @@ fn eval_application<IO: IOManager>(
             Ok(value) => Ok(value),
             Err(exception) => match exception {
               EvalException::Return(value) => Ok(value),
-              other => Err(other),
+              other => Err(other.leaving_call()),
             },
           };
           for name in arg_names.iter() {
@@ -8543,7 +8716,7 @@ fn run_program_with<IO: IOManager>(
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
     Err(EvalException::ReloadRequested) => Ok((env.io, true)),
-    Err(e) => Err(e.into()),
+    Err(e) => Err(EvalError::from(e).described(&env.documents)),
   }
 }
 
@@ -8566,7 +8739,7 @@ fn run_program_with_audio_source<IO: IOManager>(
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
     Err(EvalException::ReloadRequested) => Ok((env.io, true)),
-    Err(e) => Err(e.into()),
+    Err(e) => Err(EvalError::from(e).described(&env.documents)),
   }
 }
 
@@ -10459,8 +10632,12 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
            that can block on the GPU"
         )
       }
-      Ok(RunResult::Trapped(trap)) => Err(trap.into()),
-      Err(e) => Err(EvalException::Error(e)),
+      Ok(RunResult::Trapped(trap)) => Err(EvalException::Error(
+        EvalError::from(trap).located_in_vm(self.program, &self.env.documents),
+      )),
+      Err(e) => Err(EvalException::Error(
+        e.located_in_vm(self.program, &self.env.documents),
+      )),
     };
     // Publish on success and on close-window (the frame's writes are still
     // real); genuine errors abort the run, so skip the publish.
@@ -10570,9 +10747,16 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
         env: &mut env,
         slots_dirty: &mut slots_dirty,
       };
-      match vm_program.execute_with_host(&mut host)? {
+      let result = vm_program
+        .execute_with_host(&mut host)
+        .map_err(|e| e.located_in_vm(&vm_program, &env.documents))?;
+      match result {
         RunResult::Finished => {}
-        RunResult::Trapped(trap) => return Err(trap.into()),
+        RunResult::Trapped(trap) => {
+          return Err(
+            EvalError::from(trap).located_in_vm(&vm_program, &env.documents),
+          );
+        }
         RunResult::Suspended(reason) => {
           unreachable!("a top-level initializer suspended: {reason:?}")
         }
@@ -10716,9 +10900,14 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       env: &mut self.env,
       slots_dirty: &mut self.slots_dirty,
     };
-    let result = self.program.execute_with_host(&mut host)?;
+    let result = self
+      .program
+      .execute_with_host(&mut host)
+      .map_err(|e| e.located_in_vm(&self.program, &self.env.documents))?;
     match (activity, result) {
-      (_, RunResult::Trapped(trap)) => Err(trap.into()),
+      (_, RunResult::Trapped(trap)) => Err(
+        EvalError::from(trap).located_in_vm(&self.program, &self.env.documents),
+      ),
       (_, RunResult::Suspended(HostSuspendReason::GpuReadback { binding })) => {
         self.awaiting_readback = Some((activity, binding));
         Ok(VmRunState::AwaitingReadback)

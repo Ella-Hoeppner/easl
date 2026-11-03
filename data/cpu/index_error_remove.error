@@ -1,1 +1,5 @@
 `remove` index 2 is out of bounds for an array of length 2
+data/cpu/index_error_remove.easl
+4 |   (let [@var arr: [u32] (into-dynamic-array [1u 2u])]
+5 |     (= arr (remove arr 2u))))
+               ^^^^^^^^^^^^^^^

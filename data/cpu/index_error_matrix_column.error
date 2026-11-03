@@ -1,1 +1,5 @@
 index 2 is out of bounds for length 2
+data/cpu/index_error_matrix_column.easl
+5 |         i 2u]
+6 |     (print (m i))))
+               ^^^^^

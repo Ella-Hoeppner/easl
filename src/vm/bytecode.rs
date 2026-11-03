@@ -8,8 +8,13 @@ use std::sync::Arc;
 use half::f16;
 use serde::{Deserialize, Serialize};
 
-use crate::compiler::{types::Type, vars::VariableAddressSpace};
+use fsexp::document::DocumentPosition;
+
+use crate::compiler::{
+  error::SourceTrace, types::Type, vars::VariableAddressSpace,
+};
 use crate::midi_out::{MidiMessage, MidiOutError, MidiOutKind};
+use crate::parse::EaslMultiDocument;
 use crate::render_settings::RenderSetting;
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, ThreadSharedTable,
@@ -503,6 +508,10 @@ impl Instruction {
       *stack.get_unchecked_mut(self.return_position as usize) =
         f(*stack.get_unchecked(self.arg_positions[0] as usize));
     }
+  }
+  /// The word at the second operand's position.
+  fn second_operand(&self, stack: &[u32]) -> u32 {
+    unsafe { *stack.get_unchecked(self.arg_positions[1] as usize) }
   }
   fn u32_binary(&self, stack: &mut [u32], f: impl Fn(u32, u32) -> u32) {
     unsafe {
@@ -1216,6 +1225,11 @@ pub enum Trap {
     index: u32,
     length: u32,
   },
+  /// An integer `/` by zero. (A shader's gives its dividend, as WGSL
+  /// defines.)
+  DivisionByZero,
+  /// An integer `%` by zero. (A shader's gives 0, as WGSL defines.)
+  RemainderByZero,
 }
 
 impl std::fmt::Display for Trap {
@@ -1241,6 +1255,8 @@ impl std::fmt::Display for Trap {
         "`remove` index {index} is out of bounds for an array of length \
          {length}"
       ),
+      Trap::DivisionByZero => write!(f, "integer division by zero"),
+      Trap::RemainderByZero => write!(f, "integer remainder by zero"),
     }
   }
 }
@@ -1390,9 +1406,45 @@ pub struct Code {
   /// cross-thread sharing. `Op::MarkSharedDirty` indices and the runtime
   /// `ThreadSharedTable` slots address into this list.
   pub shared_vars: Vec<SharedVarInfo>,
+  /// The source positions instructions were compiled from, which runtime
+  /// errors are reported at (see `Code::source_trace`).
+  #[serde(skip)]
+  pub source_positions: Vec<DocumentPosition>,
+  /// Runs of instructions compiled from one source position: each run's
+  /// first instruction and its index into `source_positions` (`u32::MAX`
+  /// for instructions with none), by instruction.
+  #[serde(skip)]
+  pub instruction_sources: Vec<(u32, u32)>,
+  /// The documents the program was compiled from, which runtime errors are
+  /// described against.
+  #[serde(skip)]
+  pub documents: Option<Arc<EaslMultiDocument>>,
 }
 
 impl Code {
+  /// The source position instruction `instruction` was compiled from: the
+  /// innermost application around it with one.
+  fn instruction_source(&self, instruction: u32) -> Option<&DocumentPosition> {
+    let run = self
+      .instruction_sources
+      .partition_point(|&(start, _)| start <= instruction)
+      .checked_sub(1)?;
+    self
+      .source_positions
+      .get(self.instruction_sources[run].1 as usize)
+  }
+  /// Where a run stopped at `site` (see `BytecodeProgram::trap_site`)
+  /// happened: the first source position among its instructions, then the
+  /// rest, the calls that led to it.
+  pub fn source_trace(&self, site: &[u32]) -> SourceTrace {
+    let mut positions = site
+      .iter()
+      .filter_map(|&instruction| self.instruction_source(instruction));
+    SourceTrace {
+      primary_position: positions.next().cloned(),
+      secondary_positions: positions.cloned().collect(),
+    }
+  }
   /// Whether this program sends MIDI (`Op::SendMidi`).
   pub fn sends_midi(&self) -> bool {
     self
@@ -1543,6 +1595,10 @@ pub struct BytecodeProgram {
   /// before every sample; zero outside the audio thread.
   pub audio_samples: u64,
   pub audio_rate: f32,
+  /// Where the last run that trapped or failed in a host call stopped: the
+  /// instruction, then the call instruction of each function it was in,
+  /// innermost first (see `Code::source_trace`).
+  pub trap_site: Vec<u32>,
 }
 
 impl BytecodeProgram {
@@ -1578,6 +1634,7 @@ impl BytecodeProgram {
       gpu_newer: vec![false; code.host_bindings.len()],
       audio_samples: 0,
       audio_rate: 0.,
+      trap_site: vec![],
       code,
     };
     program
@@ -1645,30 +1702,51 @@ impl BytecodeProgram {
       .copy_from_slice(&data[..n]);
     Some(n)
   }
-  /// Runs without a host (audio, global initializers, tests). A trap here
-  /// has no caller to report to, so it panics with the trap's message.
+  /// Runs without a host (audio-mode global initializers, tests). A trap
+  /// here has no caller to report to, so it panics with the trap's message
+  /// and location.
   pub fn execute(&mut self) {
     match self.execute_with_host(&mut NoopHost) {
-      Ok(RunResult::Trapped(trap)) => panic!("easl runtime error: {trap}"),
+      Ok(RunResult::Trapped(trap)) => panic!(
+        "easl runtime error: {}",
+        self.describe_trap(&trap.to_string())
+      ),
       Ok(_) => {}
       Err(never) => match never {},
     }
   }
-  /// [`Self::execute`] on the audio thread: appends the MIDI messages the
-  /// run sends to `midi_out`, and sets `reset_time` if it resets the audio
-  /// clock.
+  /// Runs without a host on the audio thread: appends the MIDI messages
+  /// the run sends to `midi_out`, and sets `reset_time` if it resets the
+  /// audio clock. A trap ends the run and is returned.
   pub fn execute_audio(
     &mut self,
     midi_out: &mut Vec<MidiMessage>,
     reset_time: &mut bool,
-  ) {
+  ) -> Result<(), Trap> {
     match self.execute_with_host(&mut AudioHost {
       midi_out,
       reset_time,
     }) {
-      Ok(RunResult::Trapped(trap)) => panic!("easl runtime error: {trap}"),
-      Ok(_) => {}
+      Ok(RunResult::Trapped(trap)) => Err(trap),
+      Ok(_) => Ok(()),
       Err(never) => match never {},
+    }
+  }
+  /// `message`, about the last run that trapped, followed by where it
+  /// stopped (see `trap_site`) when the code knows its source.
+  pub fn describe_trap(&self, message: &str) -> String {
+    let source_trace = self.code.source_trace(&self.trap_site);
+    match &self.code.documents {
+      Some(documents)
+        if source_trace.primary_position.is_some()
+          && !documents.sources.is_empty() =>
+      {
+        format!(
+          "{message}\n{}",
+          source_trace.describe_runtime_location(documents)
+        )
+      }
+      _ => message.to_string(),
     }
   }
   pub fn execute_with_host<H: VmHost>(
@@ -1689,6 +1767,7 @@ impl BytecodeProgram {
       gpu_newer,
       audio_samples,
       audio_rate,
+      trap_site,
     } = self;
     // Heap helpers for the `Heap*` ops. `release` implements
     // drop-on-overwrite: the previous occupant of a heap-id destination
@@ -1713,10 +1792,19 @@ impl BytecodeProgram {
     let Some(mut ip) = call_stack.pop() else {
       return Ok(RunResult::Finished);
     };
+    // Records where the run stopped in `trap_site`. `ip` has advanced past
+    // the current instruction, and each frame on `call_stack` past its call.
+    macro_rules! record_trap_site {
+      () => {{
+        trap_site.clear();
+        trap_site.push(ip.start - 1);
+        trap_site.extend(call_stack.iter().rev().map(|frame| frame.start - 1));
+      }};
+    }
     // Runs host op `$index`, suspending the run if the host asks to.
     macro_rules! host_call {
       ($index:expr) => {
-        if let Some(reason) = host.host_call(
+        let result = host.host_call(
           &code.host_ops[$index as usize],
           stack,
           dyn_memory,
@@ -1728,7 +1816,11 @@ impl BytecodeProgram {
             scratch: shared_scratch,
           },
           code,
-        )? {
+        );
+        if result.is_err() {
+          record_trap_site!();
+        }
+        if let Some(reason) = result? {
           // Resume point: `ip` has already advanced past this instruction,
           // so pushing it back means resuming continues with the next
           // instruction.
@@ -1740,6 +1832,7 @@ impl BytecodeProgram {
     // Ends the run with a fatal runtime error.
     macro_rules! trap {
       ($trap:expr) => {{
+        record_trap_site!();
         call_stack.clear();
         return Ok(RunResult::Trapped($trap));
       }};
@@ -2027,14 +2120,30 @@ impl BytecodeProgram {
         }
         Op::DivideF32 => instruction.f32_binary(stack, |a, b| a / b),
         Op::DivideI32 => {
+          if instruction.second_operand(stack) == 0 {
+            trap!(Trap::DivisionByZero);
+          }
           instruction.i32_binary(stack, |a, b| a.wrapping_div(b))
         }
-        Op::DivideU32 => instruction.u32_binary(stack, |a, b| a / b),
+        Op::DivideU32 => {
+          if instruction.second_operand(stack) == 0 {
+            trap!(Trap::DivisionByZero);
+          }
+          instruction.u32_binary(stack, |a, b| a / b)
+        }
         Op::RemainderF32 => instruction.f32_binary(stack, |a, b| a % b),
         Op::RemainderI32 => {
+          if instruction.second_operand(stack) == 0 {
+            trap!(Trap::RemainderByZero);
+          }
           instruction.i32_binary(stack, |a, b| a.wrapping_rem(b))
         }
-        Op::RemainderU32 => instruction.u32_binary(stack, |a, b| a % b),
+        Op::RemainderU32 => {
+          if instruction.second_operand(stack) == 0 {
+            trap!(Trap::RemainderByZero);
+          }
+          instruction.u32_binary(stack, |a, b| a % b)
+        }
         Op::NegateF32 => instruction.f32_unary(stack, |a| -a),
         Op::NegateI32 => instruction.i32_unary(stack, |a| a.wrapping_neg()),
 

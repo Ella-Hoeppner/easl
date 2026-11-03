@@ -1,0 +1,10 @@
+; An integer remainder by zero is a runtime error on the CPU, including by a
+; zero component of a vector, and in a compound assignment.
+@cpu
+(defn main []
+  (let [@var counts (vec2i 7i 9i)
+        buckets (vec2i 2i 0i)]
+    (%= counts (vec2i 2i 4i))
+    (print counts)
+    (%= counts buckets)
+    (print counts)))

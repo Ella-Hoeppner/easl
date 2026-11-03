@@ -6,6 +6,7 @@ use easl::interpreter::{
   CpuRuntime, IOEvent, MidiNoteState, MidiState, StringIO,
   run_program_capturing_output_with_runtime, run_program_with_runtime,
 };
+use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -83,12 +84,14 @@ fn run_cpu_error_test(name: &str) {
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
   common::assert_valid_wgsl(&program);
+  // Errors name the files they happened in by absolute path.
+  let repository = format!("{}/", env::current_dir().unwrap().display());
   for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
     let error =
       run_program_capturing_output_with_runtime(program.clone(), runtime)
         .expect_err(&format!("{name}: no runtime error ({runtime:?})"));
     assert_eq!(
-      error.to_string(),
+      error.to_string().replace(&repository, ""),
       expected.trim_end(),
       "{name}: error mismatch ({runtime:?})"
     );
@@ -274,33 +277,14 @@ cpu_test!(file_exists);
 cpu_test!(string_characters);
 cpu_test!(string_codepoints);
 cpu_error_test!(get_char_out_of_bounds_error);
+cpu_error_test!(division_by_zero_error);
+cpu_error_test!(remainder_by_zero_error);
+cpu_error_test!(initializer_division_by_zero_error);
 cpu_test!(subarray);
 cpu_test!(obj_parsing);
 cpu_error_test!(load_text_missing_file_error);
 
-/// The message names the file's absolute path, so it has no `.error` file.
-#[test]
-fn load_text_binary_file_error() {
-  let name = "load_text_binary_file_error";
-  let Ok(Ok((_, Ok(mut program)))) =
-    load_easl_program_from_file(Path::new(&format!("./data/cpu/{name}.easl")))
-  else {
-    panic!("{name}: failed to load");
-  };
-  let errors = program.validate_raw_program(CompilerTarget::WGSL);
-  assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
-  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
-    let error =
-      run_program_capturing_output_with_runtime(program.clone(), runtime)
-        .expect_err(&format!("{name}: no runtime error ({runtime:?})"))
-        .to_string();
-    assert!(
-      error.starts_with("load-text: ")
-        && error.ends_with("red_pixel.png\" isn't UTF-8 text"),
-      "{name}: unexpected error ({runtime:?}): {error}"
-    );
-  }
-}
+cpu_error_test!(load_text_binary_file_error);
 cpu_test!(listenable_sources);
 cpu_test!(midi_silent_defaults);
 cpu_test!(for_loop_zero_iterations_lifted_condition);

@@ -1,1 +1,5 @@
 index 2 is out of bounds for length 2
+data/cpu/get_char_out_of_bounds_error.easl
+3 | (defn main []
+4 |   (print (get-char "é✨" 2u)))
+             ^^^^^^^^^^^^^^^^^^^^^

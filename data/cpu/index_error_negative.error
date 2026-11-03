@@ -1,1 +1,5 @@
 index -1 is out of bounds: indices can't be negative
+data/cpu/index_error_negative.easl
+5 |         i -1i]
+6 |     (print (arr i))))
+               ^^^^^^^

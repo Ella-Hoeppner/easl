@@ -1,1 +1,5 @@
 index 3 is out of bounds for length 3
+data/cpu/index_error_shared_atomic.easl
+12 |   (let [i 3u]
+13 |     (print (atomic-add (hits i) 10u))))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^

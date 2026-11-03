@@ -1,1 +1,5 @@
 index 2 is out of bounds for length 2
+data/cpu/index_error_fixed_compound_assign.easl
+7 |         i 2u]
+8 |     (+= (arr i) 1u)
+            ^^^^^^^

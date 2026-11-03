@@ -60,6 +60,27 @@ impl SourceTrace {
       .map(|pos| pos.path.clone())
       .unwrap_or_default()
   }
+  /// Where a runtime error at this trace happened, described against the
+  /// program's `documents`: the failing application, then the calls that
+  /// led to it.
+  pub fn describe_runtime_location(
+    &self,
+    documents: &EaslMultiDocument,
+  ) -> String {
+    let mut description = self
+      .primary_position
+      .iter()
+      .map(|position| documents.describe_document_position(position.clone()))
+      .collect::<String>();
+    if !self.secondary_positions.is_empty() {
+      description += "\ncalled from:";
+      for position in self.secondary_positions.iter() {
+        description += "\n";
+        description += &documents.describe_document_position(position.clone());
+      }
+    }
+    description
+  }
 }
 
 impl From<DocumentPosition> for SourceTrace {

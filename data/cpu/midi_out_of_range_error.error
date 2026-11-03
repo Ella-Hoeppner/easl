@@ -1,1 +1,5 @@
 MIDI note 128 is out of range (it must be at most 127)
+data/cpu/midi_out_of_range_error.easl
+4 | (defn main []
+5 |   (send-midi-note-on 128u 1.))
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^

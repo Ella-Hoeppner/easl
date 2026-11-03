@@ -1,1 +1,5 @@
 index 3 is out of bounds for length 3
+data/cpu/index_error_dynamic_global_write.easl
+7 |   (let [i 3u]
+8 |     (= (xs i) 1.)))
+           ^^^^^^

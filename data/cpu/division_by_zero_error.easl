@@ -1,0 +1,12 @@
+; An integer division by zero is a runtime error on the CPU, reported at
+; the division, with the calls that led to it.
+(defn share [total: u32 people: u32]: u32
+  (/ total people))
+
+(defn split-bill [people: u32]: u32
+  (share 120u people))
+
+@cpu
+(defn main []
+  (print (split-bill 4u))
+  (print (split-bill 0u)))

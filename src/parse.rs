@@ -238,7 +238,7 @@ pub fn parse_easl_without_comments(easl_source: &str) -> EaslDocument {
 
 pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EaslMultiDocument {
   pub sources: Vec<(EaslDocument, String, String)>,
   /// Which document each `import` form loads: the form's position (its
@@ -247,7 +247,7 @@ pub struct EaslMultiDocument {
 }
 
 impl EaslMultiDocument {
-  fn empty() -> Self {
+  pub fn empty() -> Self {
     Self {
       sources: vec![],
       imports: HashMap::new(),

@@ -1,0 +1,10 @@
+integer division by zero
+data/cpu/initializer_division_by_zero_error.easl
+3 | (defn per-person [total: u32 people: u32]: u32
+4 |   (/ total people))
+      ^^^^^^^^^^^^^^^^
+called from:
+data/cpu/initializer_division_by_zero_error.easl
+6 | (def nobody: u32 0u)
+7 | (def share: u32 (per-person 120u nobody))
+                    ^^^^^^^^^^^^^^^^^^^^^^^^

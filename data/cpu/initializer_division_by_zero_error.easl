@@ -1,0 +1,11 @@
+; A runtime error in a top-level initializer is reported at the failing
+; application in it.
+(defn per-person [total: u32 people: u32]: u32
+  (/ total people))
+
+(def nobody: u32 0u)
+(def share: u32 (per-person 120u nobody))
+
+@cpu
+(defn main []
+  (print share))

@@ -6,6 +6,7 @@ use easl::interpreter::{
   CaptureIO, CpuRuntime, run_program_entry_with_io_and_runtime_from_path,
 };
 use easl::thread_sync::participant;
+use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -196,9 +197,6 @@ fn vm_audio_driver_entry_switch() {
 }
 
 #[test]
-#[should_panic(
-  expected = "easl runtime error: index 4 is out of bounds for length 4"
-)]
 fn vm_audio_driver_index_error() {
   use easl::audio::VmAudioDriver;
   let source_path = Path::new("./data/audio/index_error.easl");
@@ -212,7 +210,25 @@ fn vm_audio_driver_index_error() {
   let (program, names) = program.compile_to_bytecode_program();
   let mut driver = VmAudioDriver::new("f", program, &names, None).unwrap();
   // At 8 Hz, samples 0..3 read elements 0..3 and sample 4 reads past them.
-  driver.run_batch(5, 8.0, |_| {}, |_| {}, |_| {});
+  let mut samples = Vec::new();
+  driver.run_batch(6, 8.0, |s| samples.push(s), |_| {}, |_| {});
+  assert_eq!(samples, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
+  assert_eq!(
+    driver.runtime_error().map(|error| error
+      .replace(&format!("{}/", env::current_dir().unwrap().display()), "")),
+    Some(
+      "index 4 is out of bounds for length 4\n\
+       data/audio/index_error.easl\n\
+       6 | (defn f []: f32\n\
+       7 |   (+ (table (u32 (* (audio-time) 8.))) 0.5))\n         \
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+        .to_string()
+    )
+  );
+  // The audio code doesn't run again.
+  samples.clear();
+  driver.run_batch(2, 8.0, |s| samples.push(s), |_| {}, |_| {});
+  assert_eq!(samples, vec![0.0, 0.0]);
 }
 
 /// An audio program round-tripped through `Code::to_bytes` /

@@ -1,9 +1,9 @@
-; An out-of-range index in audio code: the audio thread can't return an
-; error to anyone, so it panics with the runtime error's message.
+; An out-of-range index in audio code stops the audio code: the error is
+; reported with where it happened, and the audio goes silent.
 (var table: [4: f32])
 
 @audio
 (defn f []: f32
-  (table (u32 (* (audio-time) 8.))))
+  (+ (table (u32 (* (audio-time) 8.))) 0.5))
 
 @cpu (defn main [])

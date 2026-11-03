@@ -1,1 +1,5 @@
 index 3 is out of bounds for length 3
+data/cpu/index_error_ref_element_arg.easl
+8 |         i 3u]
+9 |     (bump (arr i))))
+              ^^^^^^^

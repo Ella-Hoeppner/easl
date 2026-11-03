@@ -1,1 +1,5 @@
 index 5 is out of bounds for length 2
+data/cpu/index_error_dynamic_read.easl
+7 |     (print (arr 1u))
+8 |     (print (arr i))))
+               ^^^^^^^

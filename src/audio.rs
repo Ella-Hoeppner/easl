@@ -557,6 +557,10 @@ pub struct VmAudioDriver {
   pub midi_out_capture: Option<Vec<MidiMessage>>,
   shared_table: Option<Arc<ThreadSharedTable>>,
   sample_index: u64,
+  /// The runtime error the audio code stopped with, described with where
+  /// it happened. Once it's set, the driver runs no more code: every
+  /// sample is silent.
+  runtime_error: Option<String>,
 }
 
 impl VmAudioDriver {
@@ -620,6 +624,7 @@ impl VmAudioDriver {
       midi_out_capture: None,
       shared_table,
       sample_index: 0,
+      runtime_error: None,
     })
   }
 
@@ -705,11 +710,17 @@ impl VmAudioDriver {
       self.program.get_function_return_position(fn_index) as usize;
   }
 
+  /// The runtime error the audio code stopped with, if it has.
+  pub fn runtime_error(&self) -> Option<&str> {
+    self.runtime_error.as_deref()
+  }
+
   /// Runs one batch of `frames` samples, calling `emit` with each computed
   /// (already clamped) sample. Adopts before the first sample and publishes
   /// after the last, so within a batch every read of a shared global is
   /// stable and the batch's writes become visible to other threads as one
-  /// unit.
+  /// unit. A runtime error stops the audio code: it's reported on stderr,
+  /// and the rest of this batch and every later one is silent.
   pub fn run_batch(
     &mut self,
     frames: usize,
@@ -718,6 +729,10 @@ impl VmAudioDriver {
     on_adopt: impl FnMut(u16),
     on_publish: impl FnMut(u16),
   ) {
+    if self.runtime_error.is_some() {
+      (0..frames).for_each(|_| emit(0.0));
+      return;
+    }
     if let Some(table) = &self.shared_table {
       self
         .program
@@ -756,9 +771,16 @@ impl VmAudioDriver {
       }
       self.program.prepare_to_run_function(self.fn_index);
       let mut reset_time = false;
-      self
+      if let Err(trap) = self
         .program
-        .execute_audio(&mut self.midi_out, &mut reset_time);
+        .execute_audio(&mut self.midi_out, &mut reset_time)
+      {
+        let error = self.program.describe_trap(&trap.to_string());
+        eprintln!("Runtime error in audio code: {error}");
+        self.runtime_error = Some(error);
+        (i..frames).for_each(|_| emit(0.0));
+        return;
+      }
       // A reset by the sample's own code makes the next sample sample 0.
       if reset_time {
         self.sample_index = 0;

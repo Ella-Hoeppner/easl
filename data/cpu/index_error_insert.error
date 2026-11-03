@@ -1,1 +1,5 @@
 `insert` index 4 is out of bounds for an array of length 3
+data/cpu/index_error_insert.easl
+6 |     (print arr)
+7 |     (= arr (insert arr 4u 4u))))
+               ^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,14 @@
+integer division by zero
+data/cpu/division_by_zero_error.easl
+3 | (defn share [total: u32 people: u32]: u32
+4 |   (/ total people))
+      ^^^^^^^^^^^^^^^^
+called from:
+data/cpu/division_by_zero_error.easl
+6 | (defn split-bill [people: u32]: u32
+7 |   (share 120u people))
+      ^^^^^^^^^^^^^^^^^^^
+data/cpu/division_by_zero_error.easl
+11 |   (print (split-bill 4u))
+12 |   (print (split-bill 0u)))
+              ^^^^^^^^^^^^^^^

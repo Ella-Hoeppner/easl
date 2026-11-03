@@ -576,6 +576,9 @@ pub struct Program {
   /// (see [`crate::compiler::storage_views`]). Planned at the end of
   /// validation.
   pub storage_read_views: StorageReadViews,
+  /// The documents the program was built from, which runtime errors are
+  /// described against (empty for a program built without them).
+  pub documents: Arc<EaslMultiDocument>,
 }
 
 impl Clone for Program {
@@ -594,6 +597,7 @@ impl Clone for Program {
       overload_groups: self.overload_groups.clone(),
       main_file_index: self.main_file_index.clone(),
       storage_read_views: self.storage_read_views.clone(),
+      documents: self.documents.clone(),
     }
   }
 }
@@ -620,6 +624,7 @@ impl Program {
       overload_groups: HashMap::new(),
       main_file_index: MainFileIndex::default(),
       storage_read_views: StorageReadViews::default(),
+      documents: Arc::new(EaslMultiDocument::empty()),
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar) {
@@ -1125,6 +1130,7 @@ impl Program {
     program.names = names.into();
     program.overload_groups = resolved.overload_groups;
     program.main_file_index = resolved.main_file_index;
+    program.documents = Arc::new(documents.clone());
     match UntypedType::sort_by_references(&untyped_types) {
       Ok(sorted_untyped_types) => {
         for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned())
@@ -1624,6 +1630,7 @@ impl Program {
       monomorphized_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
       monomorphized_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
       monomorphized_ctx.split_globals = old_ctx.split_globals;
+      monomorphized_ctx.documents = old_ctx.documents;
       monomorphized_ctx
     });
   }
@@ -3563,6 +3570,7 @@ impl Program {
         monomorphized_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
         monomorphized_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
         monomorphized_ctx.split_globals = old_ctx.split_globals;
+        monomorphized_ctx.documents = old_ctx.documents;
         monomorphized_ctx
       });
       if !changed {
@@ -5117,6 +5125,7 @@ impl Program {
       inlined_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
       inlined_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
       inlined_ctx.split_globals = old_ctx.split_globals;
+      inlined_ctx.documents = old_ctx.documents;
       inlined_ctx
     });
     changed
@@ -8915,6 +8924,7 @@ impl Program {
     };
     let mut state = BytecodeCompilationState::new();
     state.cpu_mode = cpu_mode;
+    state.documents = Some(self.documents.clone());
     state.lifted_audio_captures = self.lifted_audio_captures.clone();
     state.lifted_gpu_captures = self.lifted_gpu_captures.clone();
     state.monomorphized_to_base_names =

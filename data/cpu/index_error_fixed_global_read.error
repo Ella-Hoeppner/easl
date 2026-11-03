@@ -1,1 +1,5 @@
 index 5 is out of bounds for length 2
+data/cpu/index_error_fixed_global_read.easl
+7 |   (let [i 5u]
+8 |     (print (xs i))))
+               ^^^^^^

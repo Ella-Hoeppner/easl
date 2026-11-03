@@ -1,0 +1,5 @@
+integer remainder by zero
+data/cpu/remainder_by_zero_error.easl
+8 |     (print counts)
+9 |     (%= counts buckets)
+        ^^^^^^^^^^^^^^^^^^^

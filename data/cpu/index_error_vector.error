@@ -1,1 +1,5 @@
 index 3 is out of bounds for length 3
+data/cpu/index_error_vector.easl
+5 |         i 3u]
+6 |     (print (v i))))
+               ^^^^^
