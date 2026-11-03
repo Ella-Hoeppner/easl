@@ -1,1 +1,1 @@
-This program is the background of this page, compiled and running in your browser.
+The background of this page is an easl program, running live in your browser.

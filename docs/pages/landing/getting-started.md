@@ -1,4 +1,4 @@
-Do this to get started:
+Quick start guide:
 
 ```
 git clone https://github.com/Ella-Hoeppner/easl_cli

@@ -224,7 +224,7 @@ main {
   align-self: center;
   min-width: 0;
   max-width: 100%;
-  padding: 1rem 1.3rem 0.7rem;
+  padding: 0.8rem 1.3rem 1rem;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(13, 14, 19, var(--code-panel-opacity));
@@ -256,7 +256,7 @@ pre.code {
 .easl .a { color: var(--hl-annotation); }
 
 .program-note {
-  margin-top: 0.6rem;
+  margin-bottom: 0.6rem;
   color: var(--text-dim);
   font-size: 0.8rem;
 }
