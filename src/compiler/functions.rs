@@ -436,6 +436,18 @@ pub fn extract_mat_size(name: &str) -> Option<(usize, usize)> {
 }
 
 impl AbstractFunctionSignature {
+  /// The names of this function's const generics, which its body can read
+  /// as `u32` values.
+  pub fn const_generic_names(&self) -> Vec<Arc<str>> {
+    self
+      .generic_args
+      .iter()
+      .filter(|(_, generic_arg, _)| {
+        matches!(generic_arg, GenericArgument::Constant)
+      })
+      .map(|(name, _, _)| name.clone())
+      .collect()
+  }
   pub fn is_builtin_vector_constructor(&self) -> bool {
     matches!(
       &self.implementation,
@@ -970,6 +982,9 @@ impl AbstractFunctionSignature {
       new_fn
         .expression
         .replace_const_generic_skolems(&generic_constant_bindings);
+      new_fn
+        .expression
+        .fill_const_generic_values(&generic_constant_bindings);
       new_fn
         .expression
         .monomorphize(base_program, new_program, target)?;

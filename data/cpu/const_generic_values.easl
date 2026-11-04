@@ -1,0 +1,55 @@
+; A const generic is a `u32` value in its function's body: the size the
+; function is instantiated at.
+(import lib "modules/const_generic_sizes.easl")
+
+(def N: u32 9u)
+(defn (sum C: u32)
+      [arr: [C: f32]]: f32
+      (let [@var total 0.]
+        (for [i C]
+          (+= total (arr i)))
+        total))
+
+(defn (size-of C: u32)
+      [arr: [C: f32]]: u32
+      C)
+
+; Passed on to another generic function, used in arithmetic, and read by a
+; closure, which gets the size, not a capture.
+(defn (mean C: u32)
+      [arr: [C: f32]]: f32
+      (let [count (fn [] (f32 (size-of arr)))]
+        (/ (sum arr) (count))))
+
+(defn (scaled-size C: u32)
+      [arr: [C: f32]]: f32
+      (let [scale (fn [x: f32]: f32 (* x (f32 C)))]
+        (scale 2.)))
+
+; A local named like the generic hides it where it's bound.
+(defn (shadowed C: u32)
+      [arr: [C: f32]]: u32
+      (+ C
+         (let [C 100u]
+           C)))
+
+; Inside the function, its generic `N`, not the `def`.
+(defn (own-size N: u32)
+      [arr: [N: u32]]: u32
+      N)
+
+@fragment
+(defn frag []: vec4f
+  (vec4f (sum [1. 2. 3.]) (f32 (size-of [1. 2.])) (scaled-size [1.]) 1.))
+
+@cpu
+(defn main []
+  (print (sum [1. 2. 3. 4.]))
+  (print (sum [5. 6.]))
+  (print (size-of [1. 2. 3.]))
+  (print (mean [2. 4. 6.]))
+  (print (scaled-size [0. 0. 0. 0. 0.]))
+  (print (shadowed [1. 2. 3.]))
+  (print (own-size [1u 2u 3u]))
+  (print N)
+  (print (lib/size [1u 2u])))

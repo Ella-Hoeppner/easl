@@ -1261,19 +1261,20 @@ impl Program {
         );
         anything_changed |= changed;
         let changed =
-          value_expression.propagate_types(&mut base_context, errors);
+          value_expression.propagate_types(&mut base_context, &[], errors);
         anything_changed |= changed;
       }
     }
     for f in self.abstract_functions_iter_mut() {
+      let f = f.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
-        &f.read().unwrap().implementation
+        &f.implementation
       {
         let changed = implementation
           .write()
           .unwrap()
           .expression
-          .propagate_types(&mut base_context, errors);
+          .propagate_types(&mut base_context, &f.const_generic_names(), errors);
         anything_changed |= changed;
       }
     }
@@ -1512,7 +1513,10 @@ impl Program {
         &abstract_f.implementation
       {
         let implementation = implementation.write().unwrap();
-        if let Err(e) = implementation.expression.validate_assignments(self) {
+        if let Err(e) = implementation
+          .expression
+          .validate_assignments(self, &abstract_f.const_generic_names())
+        {
           errors.log(e);
         }
       }
@@ -5651,11 +5655,13 @@ impl Program {
     for (_, signatures) in self.abstract_functions.iter_mut() {
       for signature in signatures.iter_mut() {
         let mut signature = signature.write().unwrap();
+        let const_generics = signature.const_generic_names();
         if let FunctionImplementationKind::Composite(f) =
           &mut signature.implementation
         {
           f.write().unwrap().expression.deshadow(
             &globals,
+            &const_generics,
             errors,
             &mut self.names.write().unwrap(),
           );

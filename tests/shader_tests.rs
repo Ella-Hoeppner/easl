@@ -1579,6 +1579,10 @@ error_test!(
   bitwise_assignment_immutable_failure,
   CompileErrorKind::AssignmentTargetMustBeVariable("x".into())
 );
+error_test!(
+  const_generic_assignment_failure,
+  CompileErrorKind::AssignmentTargetMustBeVariable("C".into())
+);
 error_test!(texture_let_failure, CompileErrorKind::LocalTextureOrSampler);
 error_test!(
   ambiguous_overload_failure,

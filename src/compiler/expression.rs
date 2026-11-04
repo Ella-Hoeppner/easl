@@ -4120,12 +4120,19 @@ impl TypedExp {
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();
     changed
   }
+  /// Infers what it can of this expression's types. `const_generics` are
+  /// the enclosing function's const generics, which its body can read as
+  /// `u32` values (see `TypedExp::fill_const_generic_values`).
   pub fn propagate_types(
     &mut self,
     program: &mut Program,
+    const_generics: &[Arc<str>],
     errors: &mut ErrorLog,
   ) -> bool {
-    self.propagate_types_inner(&mut LocalContext::empty(program), errors)
+    self.propagate_types_inner(
+      &mut LocalContext::with_const_generics(program, const_generics),
+      errors,
+    )
   }
   pub fn name_or_inner_accessed_name(&self) -> Option<&Arc<str>> {
     let mut exp = self;
@@ -4272,10 +4279,19 @@ impl TypedExp {
       })
     })
   }
-  pub fn validate_assignments(&self, program: &Program) -> CompileResult<()> {
-    self.validate_assignments_inner(&mut ImmutableProgramLocalContext::empty(
-      program,
-    ))
+  /// Checks that every assignment's target can be assigned to. The
+  /// function's `const_generics` are immutable values.
+  pub fn validate_assignments(
+    &self,
+    program: &Program,
+    const_generics: &[Arc<str>],
+  ) -> CompileResult<()> {
+    self.validate_assignments_inner(
+      &mut ImmutableProgramLocalContext::with_const_generics(
+        program,
+        const_generics,
+      ),
+    )
   }
   pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
     self
@@ -4309,6 +4325,25 @@ impl TypedExp {
       .walk_mut::<()>(&mut |exp| {
         if let Known(t) = &mut exp.data.kind {
           t.replace_const_generic_skolems(bindings);
+        }
+        Ok(true)
+      })
+      .unwrap()
+  }
+  /// Replaces each read of a const generic in `bindings` with the value it
+  /// has in this instantiation: a `u32` literal. Deshadowing renamed every
+  /// local that shared a const generic's name, so a name in `bindings` is
+  /// always the generic.
+  pub fn fill_const_generic_values(
+    &mut self,
+    bindings: &HashMap<Arc<str>, u32>,
+  ) {
+    self
+      .walk_mut::<Never>(&mut |exp| {
+        if let Name(name) = &exp.kind
+          && let Some(&value) = bindings.get(name)
+        {
+          exp.kind = NumberLiteral(Number::Int(value as i64));
         }
         Ok(true)
       })
@@ -5190,13 +5225,22 @@ impl TypedExp {
     }
     .into()
   }
+  /// Gives every local in this function body a name of its own (see
+  /// `DeshadowScope`). The function's `const_generics` count as bound
+  /// throughout, so a local sharing one's name is renamed and the name
+  /// always means the generic.
   pub fn deshadow(
     &mut self,
     globals: &GlobalNames,
+    const_generics: &[Arc<str>],
     errors: &mut ErrorLog,
     names: &mut NameContext,
   ) {
-    self.deshadow_inner(globals, &mut DeshadowScope::default(), errors, names);
+    let mut locals = DeshadowScope::default();
+    for name in const_generics {
+      locals.bind_unrenamed(name);
+    }
+    self.deshadow_inner(globals, &mut locals, errors, names);
   }
   fn deshadow_inner(
     &mut self,
@@ -7137,9 +7181,13 @@ impl DeshadowScope {
         .push(rename.clone());
       *name = rename;
     } else {
-      self.renames.insert(name.clone(), vec![]);
-      self.compiled.insert(compiled);
+      self.bind_unrenamed(name);
     }
+  }
+  /// Binds `name` under its own name.
+  fn bind_unrenamed(&mut self, name: &Arc<str>) {
+    self.renames.insert(name.clone(), vec![]);
+    self.compiled.insert(compile_word(name.clone()));
   }
   fn unbind(&mut self, name: &Arc<str>) {
     if let Some(original) = self.originals.get(name) {

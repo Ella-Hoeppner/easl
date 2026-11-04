@@ -292,6 +292,7 @@ cpu_test!(assign_field_in_dyn_array_element);
 cpu_test!(const_generic_zeroed_array);
 cpu_test!(const_generic_zeroed_array_map);
 cpu_test!(const_generic_array_from_hof);
+cpu_test!(const_generic_values);
 cpu_test!(overload_chain_returning_hof);
 // The embedding-element container pins: RUNTIME-SIZED containers whose
 // element type *embeds* heap ids without being one (`[(Option [f32])]`,

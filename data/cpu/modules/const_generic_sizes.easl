@@ -1,0 +1,5 @@
+; A library function whose const generic shares its name with a definition
+; in the file importing this one, which this file can't see.
+(defn (size N: u32)
+      [arr: [N: u32]]: u32
+      N)

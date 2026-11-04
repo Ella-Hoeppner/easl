@@ -4080,6 +4080,19 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
       program,
     }
   }
+  /// A context for a function body whose function has `const_generics`,
+  /// which the body reads as immutable `u32` values.
+  pub fn with_const_generics(program: P, const_generics: &[Arc<str>]) -> Self {
+    let mut context = Self::empty(program);
+    for name in const_generics {
+      context.bind(
+        name,
+        Variable::immutable(Type::U32.known().into()),
+        SourceTrace::empty(),
+      );
+    }
+    context
+  }
   pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
     self.enclosing_function_types.push(typestate);
   }

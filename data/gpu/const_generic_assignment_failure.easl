@@ -1,0 +1,9 @@
+; A const generic is an immutable value.
+(defn (bump C: u32)
+      [arr: [C: f32]]: u32
+      (= C 3u)
+      C)
+
+@cpu
+(defn main []
+  (print (bump [1. 2.])))
