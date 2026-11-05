@@ -1,0 +1,74 @@
+; The workgroup synchronization builtins, each in a kernel whose result
+; depends on it:
+; - `sum`: every invocation writes its value to workgroup memory, and after
+;   `workgroup-barrier` invocation 0 adds them all up.
+; - `count-rounds`: invocation 0 picks a round count, and every invocation
+;   reads it with `workgroup-uniform-load`, which makes it a uniform value,
+;   so a loop bounded by it may hold a barrier.
+; - `rotate`: every invocation writes storage, and after `storage-barrier`
+;   reads its neighbor's write.
+@workgroup
+(var partial: [64: u32])
+
+@workgroup
+(var rounds: u32)
+
+@workgroup
+(var counter: u32)
+
+(var input: [64: u32])
+
+(var rounds-wanted: [1: u32])
+
+(var results: [2: u32])
+
+(var scratch: [64: u32])
+
+(var rotated: [64: u32])
+
+@compute
+@{workgroup-size 64}
+(defn sum []
+  (let [i (local-invocation-index)]
+    (= (partial i) (input i))
+    (workgroup-barrier)
+    (when (== i 0u)
+      (let [@var total 0u]
+        (for [k 64u]
+          (+= total (partial k)))
+        (= (results 0u) total)))))
+
+@compute
+@{workgroup-size 64}
+(defn count-rounds []
+  (let [i (local-invocation-index)]
+    (when (== i 0u)
+      (= rounds (rounds-wanted 0u))
+      (= counter 0u))
+    (let [n (workgroup-uniform-load rounds)]
+      (for [k n]
+        (when (== i 0u)
+          (+= counter 1u))
+        (workgroup-barrier))
+      (when (== i 0u)
+        (= (results 1u) counter)))))
+
+@compute
+@{workgroup-size 64}
+(defn rotate []
+  (let [i (local-invocation-index)]
+    (= (scratch i) (* i 10u))
+    (storage-barrier)
+    (= (rotated i) (scratch (% (+ i 1u) 64u)))))
+
+@cpu
+(defn main []
+  (for [k 64u]
+    (= (input k) (+ k 1u)))
+  (= (rounds-wanted 0u) 5u)
+  (dispatch-compute-shader sum (vec3u 1u))
+  (dispatch-compute-shader count-rounds (vec3u 1u))
+  (dispatch-compute-shader rotate (vec3u 1u))
+  (print results)
+  (print (rotated 0u))
+  (print (rotated 63u)))

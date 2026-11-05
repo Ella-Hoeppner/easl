@@ -1583,6 +1583,18 @@ error_test!(
   const_generic_assignment_failure,
   CompileErrorKind::AssignmentTargetMustBeVariable("C".into())
 );
+error_test!(
+  barrier_in_fragment_failure,
+  CompileErrorKind::BarrierOutsideCompute("workgroup-barrier".into())
+);
+error_test!(
+  barrier_on_cpu_failure,
+  CompileErrorKind::BarrierOutsideCompute("storage-barrier".into())
+);
+error_test!(
+  workgroup_uniform_load_non_workgroup_failure,
+  CompileErrorKind::WorkgroupUniformLoadOfNonWorkgroupVar("shared".into())
+);
 error_test!(texture_let_failure, CompileErrorKind::LocalTextureOrSampler);
 error_test!(
   ambiguous_overload_failure,

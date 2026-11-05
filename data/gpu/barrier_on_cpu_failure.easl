@@ -1,0 +1,4 @@
+; The CPU has no workgroups to synchronize.
+@cpu
+(defn main []
+  (storage-barrier))

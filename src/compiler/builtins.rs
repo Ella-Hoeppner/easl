@@ -3128,6 +3128,48 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
     // fixed-name implicit `@local` var (`easl_audio_time` /
     // `easl_sample_rate`) that the audio driver writes directly — so no
     // backend ever sees these calls, and no effect machinery is needed.
+    // Workgroup synchronization, compute-only (`validate_context_
+    // exclusivity`): WGSL's `workgroupBarrier` and `storageBarrier`, and
+    // `workgroupUniformLoad`, whose argument must be a `@workgroup` var
+    // (`validate_workgroup_uniform_loads`). WGSL also requires them to be
+    // in uniform control flow, which easl doesn't check yet.
+    AbstractFunctionSignature {
+      name: "workgroup-barrier".into(),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::Barrier("workgroup-barrier".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "storage-barrier".into(),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::Barrier("storage-barrier".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "workgroup-uniform-load".into(),
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![(
+        AbstractType::Generic("T".into()),
+        Ownership::Reference,
+      )],
+      return_type: AbstractType::Generic("T".into()),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::Barrier("workgroup-uniform-load".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     // The running compute shader's workgroup size: `validate_context_
     // exclusivity` rejects calls reachable from anything but a compute
     // entry, and `extract_workgroup_size` rewrites each into a read of an
@@ -4695,6 +4737,9 @@ pub fn rename_builtin_fn(name: &str) -> Option<String> {
     "atomic-xor" => Some("atomicXor"),
     "atomic-exchange" => Some("atomicExchange"),
     "inverse-sqrt" => Some("inverseSqrt"),
+    "workgroup-barrier" => Some("workgroupBarrier"),
+    "storage-barrier" => Some("storageBarrier"),
+    "workgroup-uniform-load" => Some("workgroupUniformLoad"),
     _ => None,
   }
   .map(|name| name.to_string())

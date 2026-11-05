@@ -165,6 +165,10 @@ pub enum Effect {
   Continue,
   Discard,
   FragmentExclusiveFunction(Arc<str>),
+  /// Synchronizes a compute shader's workgroup (`workgroup-barrier`,
+  /// `storage-barrier`, `workgroup-uniform-load`): compute-only, and never
+  /// pruned, since a barrier's whole effect is on other invocations.
+  Barrier(Arc<str>),
   CPUExclusiveFunction(Arc<str>),
   CPUExclusiveType(Arc<str>),
   /// A query of ambient window/input state (see `WindowInfoKind`). Legal in
@@ -224,6 +228,18 @@ impl EffectType {
       }
     }
     true
+  }
+  /// Whether these effects include a builtin only shaders have, which no
+  /// CPU or audio code can run.
+  pub fn uses_shader_only_builtin(&self) -> bool {
+    self.0.iter().any(|e| {
+      matches!(
+        e,
+        Effect::FragmentExclusiveFunction(_)
+          | Effect::LookupBuiltinAttribute(_)
+          | Effect::Barrier(_)
+      )
+    })
   }
   pub fn window_info_kinds(&self) -> Vec<WindowInfoKind> {
     self

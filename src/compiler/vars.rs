@@ -715,6 +715,7 @@ fn impure_description(effect: &Effect) -> Option<String> {
     Effect::WindowInfo(_) => Some("reads window or input state".to_string()),
     Effect::Discard
     | Effect::FragmentExclusiveFunction(_)
+    | Effect::Barrier(_)
     | Effect::LookupBuiltinAttribute(_) => {
       Some("uses a shader-only builtin".to_string())
     }

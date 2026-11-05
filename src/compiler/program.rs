@@ -2532,6 +2532,54 @@ impl Program {
     }
     fns
   }
+  /// Rejects a `workgroup-uniform-load` whose argument isn't a `@workgroup`
+  /// var or part of one: WGSL's `workgroupUniformLoad` takes a pointer into
+  /// workgroup memory.
+  pub fn validate_workgroup_uniform_loads(&self, errors: &mut ErrorLog) {
+    let is_workgroup_var = |name: &Arc<str>| {
+      self.top_level_vars.iter().any(|var| {
+        &var.name == name
+          && matches!(
+            var.kind,
+            TopLevelVariableKind::Var {
+              address_space: VariableAddressSpace::Workgroup,
+              ..
+            }
+          )
+      })
+    };
+    for signature in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        &signature.read().unwrap().implementation
+      else {
+        continue;
+      };
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Application(f, args) = &exp.kind
+            && let ExpKind::Name(name) = &f.kind
+            && &**name == "workgroup-uniform-load"
+          {
+            let root = args[0].name_or_inner_accessed_name();
+            if !root.is_some_and(|root| is_workgroup_var(root)) {
+              errors.log(CompileError::new(
+                WorkgroupUniformLoadOfNonWorkgroupVar(
+                  root.map_or("its argument".to_string(), |root| {
+                    display_name(root).to_string()
+                  }),
+                ),
+                args[0].source_trace.clone(),
+              ));
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+  }
   pub fn validate_context_exclusivity(&self, errors: &mut ErrorLog) {
     use crate::compiler::expression::ExpKind;
     use execution_context::{
@@ -2721,6 +2769,15 @@ impl Program {
                           Some(FragmentExclusiveFunctionOutsideFragment(
                             fn_name.to_string(),
                           ))
+                        }),
+                      ));
+                    }
+                    Effect::Barrier(fn_name) => {
+                      violations.push((
+                        exp.source_trace.clone(),
+                        bit(COMPUTE),
+                        std::array::from_fn(|_| {
+                          Some(BarrierOutsideCompute(fn_name.to_string()))
                         }),
                       ));
                     }
@@ -4683,6 +4740,7 @@ impl Program {
                           | Effect::SeedsGlobalVar(_)
                           | Effect::Discard
                           | Effect::FragmentExclusiveFunction(_)
+                          | Effect::Barrier(_)
                           | Effect::CPUExclusiveFunction(_)
                           | Effect::CPUExclusiveType(_)
                           | Effect::WindowInfo(_)
@@ -7845,6 +7903,7 @@ impl Program {
     // precede the audio-closure lift so clones inherit the rewritten
     // reads.
     self.validate_context_exclusivity(&mut errors);
+    self.validate_workgroup_uniform_loads(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -9315,8 +9374,9 @@ impl Program {
         let skip = if cpu_mode {
           // CPU mode: compile `@cpu` entries and plain functions; skip GPU
           // and audio entry points, plus any helper that's only meaningful
-          // inside a shader (fragment-exclusive calls, GPU builtin-attribute
-          // lookups like `global-invocation-id`) — those are reachable only
+          // inside a shader (fragment-exclusive calls, barriers, GPU
+          // builtin-attribute lookups like `global-invocation-id`) — those
+          // are reachable only
           // from GPU entries, and compiling them would hit shader-only
           // builtins.
           let is_non_cpu_entry = implementation_read
@@ -9325,15 +9385,7 @@ impl Program {
             .unwrap_or(false);
           let gpu_only = implementation_read
             .effects_with(&mut state.effects_memo)
-            .0
-            .iter()
-            .any(|e| {
-              matches!(
-                e,
-                Effect::FragmentExclusiveFunction(_)
-                  | Effect::LookupBuiltinAttribute(_)
-              )
-            });
+            .uses_shader_only_builtin();
           is_non_cpu_entry || gpu_only
         } else {
           let skip_for_entry_point = implementation_read

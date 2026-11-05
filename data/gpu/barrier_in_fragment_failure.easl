@@ -1,0 +1,9 @@
+; Barriers synchronize a compute shader's workgroup, so other shaders
+; can't call them, even through a helper.
+(defn sync []
+  (workgroup-barrier))
+
+@fragment
+(defn frag []: vec4f
+  (sync)
+  (vec4f 1.))

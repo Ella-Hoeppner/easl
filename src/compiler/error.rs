@@ -230,6 +230,13 @@ pub enum CompileErrorKind {
   WorkgroupSizeOutOfRange(String),
   #[error("`workgroup-size` can only be called from compute shaders")]
   WorkgroupSizeOutsideCompute,
+  #[error("`{0}` can only be called from compute shaders")]
+  BarrierOutsideCompute(String),
+  #[error(
+    "`workgroup-uniform-load` reads a `@workgroup` var, or part of one, but \
+     `{0}` isn't one"
+  )]
+  WorkgroupUniformLoadOfNonWorkgroupVar(String),
   #[error("The literal `{0}` is out of range for `{1}`")]
   IntegerLiteralOutOfRange(i64, String),
   #[error(
@@ -1085,6 +1092,13 @@ impl PartialEq for CompileErrorKind {
         Self::VertexDataTypeMismatch(r0, r1),
       ) => l0 == r0 && l1 == r1,
       (Self::DrawWritesItsData(l0), Self::DrawWritesItsData(r0)) => l0 == r0,
+      (Self::BarrierOutsideCompute(l0), Self::BarrierOutsideCompute(r0)) => {
+        l0 == r0
+      }
+      (
+        Self::WorkgroupUniformLoadOfNonWorkgroupVar(l0),
+        Self::WorkgroupUniformLoadOfNonWorkgroupVar(r0),
+      ) => l0 == r0,
       _ => core::mem::discriminant(self) == core::mem::discriminant(other),
     }
   }

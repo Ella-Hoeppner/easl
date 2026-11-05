@@ -1,0 +1,9 @@
+; `workgroup-uniform-load` reads workgroup memory; a storage var isn't.
+(var shared: u32)
+
+@compute
+@{workgroup-size 64}
+(defn work []
+  (let [n (workgroup-uniform-load shared)]
+    (for [i n]
+      (workgroup-barrier))))
