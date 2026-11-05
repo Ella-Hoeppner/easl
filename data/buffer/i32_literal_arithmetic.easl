@@ -1,0 +1,21 @@
+; `i32` arithmetic on literals wraps on the GPU as it does on the CPU. In
+; WGSL an unsuffixed integer literal is an abstract integer, whose constant
+; arithmetic is 64-bit and doesn't wrap, so every `i32` literal is emitted
+; with its `i` suffix (and the most negative one as a conversion, since
+; `-2147483648i` would negate an out-of-range `2147483648i`).
+@storage-write
+(var out: [3: i32])
+
+@cpu
+(defn main []
+  (print (/ (* 2000000000i 2i) 2i))
+  (print (+ 2147483647i 1i))
+  (print -2147483648i)
+  (dispatch-compute-shader
+    (fn []
+      (= (out 0u) (/ (* 2000000000i 2i) 2i))
+      (let [x: i32 (+ 2147483647i 1i)]
+        (= (out 1u) x))
+      (= (out 2u) -2147483648i))
+    (vec3u 1u))
+  (print out))

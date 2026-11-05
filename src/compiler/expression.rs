@@ -2324,7 +2324,16 @@ impl TypedExp {
       ),
       NumberLiteral(num) => wrap(match num {
         Number::Int(i) => match self.data.kind.unwrap_known() {
-          Type::I32 => format!("{i}"),
+          // An unsuffixed WGSL literal is an abstract integer, whose
+          // constant arithmetic doesn't wrap at 32 bits. `-2147483648i`
+          // would negate `2147483648i`, which no `i32` can hold.
+          Type::I32 => match target {
+            CompilerTarget::WGSL if i == i32::MIN as i64 => {
+              "i32(-2147483648)".to_string()
+            }
+            CompilerTarget::WGSL => format!("{i}i"),
+            _ => format!("{i}"),
+          },
           Type::U32 => format!("{i}u"),
           Type::F32 => match target {
             CompilerTarget::WGSL => format!("{i}f"),
