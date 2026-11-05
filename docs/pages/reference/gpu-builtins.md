@@ -197,5 +197,5 @@ Atomically replaces the value with `value`, returning what was there before.
 
 ## See also
 
-- `(discard)` — fragment-only control flow, covered in the [language guide](../language.md#return-and-discard).
+- `(discard)` — fragment-only control flow, covered in [Writing shaders](../shaders.md#fragment-only-builtins).
 - Fragment-only texture sampling — [`texture-sample`](textures.md#texture-sample) and [`texture-sample-bias`](textures.md#texture-sample-bias).

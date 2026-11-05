@@ -89,7 +89,7 @@ Array literals are written with the `[]` brackets, e.g.:
     (print (array-length arr))) ; prints 3
 ```
 
-Array types are written like `[5: f32]` to represent an array of `f32`s of size `5u`. Dynamically-sized array types are written simply like `[f32]`.
+Array types are written like `[5: f32]` to represent an array of `f32`s of size `5`.
 
 A size can also name a `def` whose value is an integer literal, or `+`, `-`, `*`, `/`, or `%` of those and of other such `def`s. The compiler computes it the way the program would at runtime: integer arithmetic wraps on overflow, and `/` and `%` round toward zero, so `%`'s result takes the sign of the dividend.
 
@@ -105,7 +105,32 @@ You index into an array using the application syntax, e.g.:
     (print (arr 1u))) ; prints 2.
 ```
 
-An index at or past the array's length, or a negative `i32` index, is a runtime error in CPU and audio code: it stops the program (in audio code, the audio) with an error naming the index and the length, and showing where it happened. Vector components and matrix columns are checked the same way. GPU code can't stop, so it follows WGSL's rules instead: an out-of-range read gives an unspecified value, and an out-of-range write may land elsewhere in the array or be dropped.
+An index at or past the array's length, or a negative `i32` index, is a runtime error on the CPU. Since the GPU doesn't have runtime errors, out-of-bounds reads/writes on the GPU are undefined behavior.
+
+Easl also supports dynamically-sized arrays. Dynamically-sized array types are written like `[f32]`. Dynamically-sized arrays can be referenced from the GPU, but only created on the CPU. You can turn a statically-sized array into a dynamically-sized one with the `into-dynamic-array` function:
+
+```
+(var my-array: [f32])
+
+@cpu
+(defn main []
+  (= my-array (into-dynamic-array [2. 3. 4.])))
+```
+
+For convenience, there's also an `into` overload that does the same thing as `into-dynamic-array`, meaning that you can use the [`~` shorthand conversion operator](#the-into-operator-) for converting arrays, too.
+
+The `zeroed-array` function can be used to create arrays with zeroed values. This function can be used for both statically-sized and dynamically-sized arrays. To create a statically-sized array, you simply call `zeroed-array` with zero arguments; the size of the array is inferred by the type system, so there's no need to specify it with an argument. To create a dynamically-sized array, however, you pass a `u32` size to `zeroed-array`:
+
+```
+(var my-static-array: [5: f32])
+
+(var my-dynamic-array: [f32])
+
+@cpu
+(defn main []
+  (= my-static-array (zeroed-array))
+  (= my-dynamic-array (zeroed-array 3)))
+```
 
 ## Assignment
 
@@ -141,6 +166,8 @@ Structs are constructed with the fields in the order they're declared in the typ
 ```
 
 Fields can be accessed like `s.pos` (when `s` is a name) or `(.pos s)`.
+
+Types can't be recursive: a struct or enum can't contain a value of its own type, whether directly, through another type, or inside an array.
 
 ## Enums and `match` blocks
 
@@ -180,11 +207,11 @@ Each variant that you define inside an enum automatically gets an associated *co
 
 @cpu
 (defn main []
-  (print (sum-of-areas [Shape/Empty
-                        (Shape/Circle 2.)
-                        (Shape/Box (vec2f 3. 4.))
-                        Shape/Empty
-                        (Shape/Circle 0.5)])))
+  (print (sum-of-areas ~[Shape/Empty
+                         (Shape/Circle 2.)
+                         (Shape/Box (vec2f 3. 4.))
+                         Shape/Empty
+                         (Shape/Circle 0.5)])))
 ```
 
 Since it can be annoying to have to always qualify every variant name with the name of the enum itself, the `@unpack` annotation can be placed in front of an enum definition to make all of the variants available as top-level, unqualified definitions:
@@ -205,7 +232,7 @@ Since it can be annoying to have to always qualify every variant name with the n
 
 (this `@unpack` annotation is essentially a syntactic shortcut for a `(use Shape)` declaration; see [Modules](#modules) for details)
 
-Easl has a built-in enum called `Option`, with `(Some ...)` and `None` variants. This type is [generic](reference/language.md#Generics), so it can hold any kind of value in its `Some` variant. `Option` is `@unpack`ed, so its variants are always available as simply `Some` and `None`.
+Easl has a built-in enum called `Option`, with `(Some ...)` and `None` variants. This type is [generic](#generics), so it can hold any kind of value in its `Some` variant. `Option` is `@unpack`ed, so its variants are always available as simply `Some` and `None`.
 
 `match` blocks can also be used on primitive scalar types, not just enums.
 
@@ -336,6 +363,8 @@ Inside a function, the special `return` statement can be used to exit from the f
 
 In a function that returns the unit type, `return` can be called either by explicitly passing the unit value like `(return ())`, or abbreviated simply to `(return)`.
 
+Functions can't be recursive: a function can't call itself, directly or through other functions. WGSL doesn't allow recursion, and easl keeps the same rule on the CPU.
+
 ## Reference and Variable arguments
 
 Function arguments can be annotated with several different markers to change their meaning. Most simply, an argument can be marked with `@var` to declare that it's mutable within the scope of the function body, i.e. it can be assigned to. This has no effect on the original value passed in from the scope where the function was called, it's purely a convenience feature for being able to mutate the argument inside the body.
@@ -379,6 +408,12 @@ Importantly, references are second-class values in easl. Easl has no first-class
 A `def`'s value can be any pure expression, computed once before the program starts: it can call functions and read other top-level values, but it can't print, write a variable, read or write files, read input (the window, the mouse and keyboard, MIDI, the audio clock), or have any other effect, since there'd be no saying when that happens. Do those in `main` instead.
 
 Shaders can read a `def` only when its value is something wgsl can compute on its own: literals, other such `def`s, vector and struct constructors, and builtins like `sin`. One whose value calls a function (including your own functions, an enum's data variant, and `==` on enums) or reads a `var` or the sample rate works anywhere on the CPU and audio thread, and is a compile error in a shader. The same goes for a `@local var`'s initial value.
+
+`override` declares a constant just like `def`, but in the compiled WGSL it becomes an [override constant](https://www.w3.org/TR/WGSL/#override-decls), whose value a WebGPU host running that WGSL can replace when it creates a pipeline. The value written in the program is the default, and it's the value easl's own runtimes always use:
+
+```easl
+(override brightness: f32 0.5)
+```
 
 `var`, on the other hand, is used to define a top-level variable.
 ```

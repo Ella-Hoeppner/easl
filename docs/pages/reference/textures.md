@@ -31,7 +31,7 @@ Colors are linear everywhere in a program: what shaders compute, what textures h
 (texture-sample t: (Texture2D f32) s: Sampler coords: vec2f): vec4f
 ```
 
-Samples the texture at `coords` (normalized `[0,1]` UV coordinates) with the given sampler's filtering. **Fragment shaders only** (implicit derivatives are needed for mip selection) — use `texture-sample-level` elsewhere.
+Samples the texture at `coords` (normalized `[0,1]` UV coordinates) with the given sampler's filtering. **Fragment shaders only** (implicit derivatives are needed for mip selection) — use `texture-sample-level` elsewhere. Because of those derivatives, it must also be called in uniform control flow (see [derivatives](gpu-builtins.md#derivatives)); `texture-sample-level` needn't be.
 
 ### `texture-sample-bias`
 

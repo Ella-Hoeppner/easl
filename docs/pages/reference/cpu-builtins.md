@@ -331,7 +331,7 @@ A `Sampler` var that's never assigned is `(Sampler FilterMode/Nearest AddressMod
 (set-render-target t: (Texture2D f32)): ()
 ```
 
-Sends later `dispatch-render-shaders` calls (and clears) to `t` instead of the window, until `reset-render-target`, across frames too. Later dispatches can sample what was drawn; see [render targets](../cpu.md#render-targets).
+Sends later `dispatch-render-shaders` calls (and clears) to `t` instead of the window, until `reset-render-target`, across frames too. Later dispatches can sample what was drawn; see [render targets](../cpu.md#textures-and-render-targets).
 
 ### `reset-render-target`
 

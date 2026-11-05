@@ -105,7 +105,7 @@ Now let's add some definitions for our vertex and fragment shaders, so that our 
     (vec4f pos 0. 1.)))
 ```
 
-The `raymarch-vertex` function calls `vertex-index`, a built-in function that returns the index of the current vertex, and uses a `match` block to position the corners of the triangle differently for each vertex. The `raymarch-fragment` function uses the `window-resolution` function to get the current resolution of the window, and then computes `pos` (using easl's [threading syntax](language.md#the-threading-operator--)) as a normalized position value based on the pixel coordinates that are looked up using the `position` function. If you run the code yourself at this point, you'll see a window with the four quadrants of the window colored in a simple black-red-yellow-green pattern.
+The `raymarch-vertex` function calls `vertex-index`, a built-in function that returns the index of the current vertex, and uses a `match` block to position the corners of the triangle differently for each vertex. The `raymarch-fragment` function uses the `window-resolution` function to get the current resolution of the window, and then computes `pos` (using easl's [threading syntax](language.md#the-threading-operator)) as a normalized position value based on the pixel coordinates that are looked up using the `position` function. If you run the code yourself at this point, you'll see a window with the four quadrants of the window colored in a simple black-red-yellow-green pattern.
 
 To start using our raymarcher for rendering, we'll need an SDF (signed distance function) to march against, and for now we can just start with a simple sphere:
 
