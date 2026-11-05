@@ -1,0 +1,11 @@
+; `&&` only evaluates its second operand when its first is true.
+(defn synced []: bool
+  (workgroup-barrier)
+  true)
+
+@compute
+@{workgroup-size 64}
+(defn work []
+  (let [b (&& (== (local-invocation-index) 0u) (synced))]
+    (when b
+      (storage-barrier))))

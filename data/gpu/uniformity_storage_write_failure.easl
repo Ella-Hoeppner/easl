@@ -1,0 +1,8 @@
+; Invocations can see different values of a storage-write variable.
+(var flag: u32)
+
+@compute
+@{workgroup-size 64}
+(defn work []
+  (when (== flag 0u)
+    (workgroup-barrier)))

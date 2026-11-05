@@ -1,0 +1,7 @@
+; A derivative needs every fragment of its 2x2 quad: not just the ones
+; right of x = 100.
+@fragment
+(defn shade [@{builtin position} p: vec4f]: vec4f
+  (if (> p.x 100.)
+      (vec4f (dpdx p.x) 0. 0. 1.)
+      (vec4f 0. 1. 0. 1.)))

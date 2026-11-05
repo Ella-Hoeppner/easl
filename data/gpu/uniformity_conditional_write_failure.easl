@@ -1,0 +1,9 @@
+; A local written only by some invocations.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (let [@var x 0u]
+    (when (== (local-invocation-index) 0u)
+      (= x 1u))
+    (when (== x 0u)
+      (workgroup-barrier))))

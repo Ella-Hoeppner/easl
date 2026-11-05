@@ -1,0 +1,6 @@
+; A loop that runs a different number of times in each invocation.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (for [i (local-invocation-index)]
+    (workgroup-barrier)))

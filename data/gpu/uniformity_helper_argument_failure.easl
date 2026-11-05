@@ -1,0 +1,9 @@
+; A helper branching on its parameter, given the invocation's id.
+(defn sync-if [c: u32]
+  (when (== c 0u)
+    (workgroup-barrier)))
+
+@compute
+@{workgroup-size 64}
+(defn work []
+  (sync-if (local-invocation-index)))

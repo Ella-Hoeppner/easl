@@ -208,18 +208,21 @@
                                      (/ (f32 (% in.character-coords.x 32u))
                                         32.)
                                      1.)
+        ; sampled outside the branch: `texture-sample` takes derivatives,
+        ; so it needs uniform control flow
+        sampled-alpha (.x (texture-sample char-tex
+                                          char-sampler
+                                          (/ (+ (vec2f in.character-coords)
+                                                (clamp in.pos-in-char
+                                                       (vec2f 0.)
+                                                       (vec2f 1.)))
+                                             16.)))
         char-tex-alpha (if (or (<= in.pos-in-char.x 0.)
                                (or (<= in.pos-in-char.y 0.)
                                    (or (>= in.pos-in-char.x 1.)
                                        (>= in.pos-in-char.y 1.))))
                          0.
-                         (.x (texture-sample char-tex
-                                             char-sampler
-                                             (/ (+ (vec2f in.character-coords)
-                                                   (clamp in.pos-in-char
-                                                          (vec2f 0.)
-                                                          (vec2f 1.)))
-                                                16.))))]
+                         sampled-alpha)]
     (if (<= char-tex-alpha 0.5)
       (discard)
       (vec4f (vec3f 0.) 1.))))

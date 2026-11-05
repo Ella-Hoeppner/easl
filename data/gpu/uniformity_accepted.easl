@@ -1,0 +1,92 @@
+; Calls that must be in uniform control flow (barriers, and builtins taking
+; derivatives) where they are: each case is one Chrome's WGSL compiler
+; accepts. `uniformity_*_failure` holds the ones it rejects.
+@uniform
+(var count: u32)
+
+@storage
+(var limit: u32)
+
+@workgroup
+(var rounds: u32)
+
+(var results: [64: u32])
+
+@handle
+(var tex: (Texture2D f32))
+
+@handle
+(var samp: Sampler)
+
+; A helper's result computed from what its caller passes.
+(defn value-or-zero [o: (Option u32)]: u32
+  (match o
+    (Some v) v
+    None 0u))
+
+; A branch on a uniform value, or a value every invocation reads alike.
+(defn sync-if [c: u32]
+  (when (== c 0u)
+    (workgroup-barrier)))
+
+; Never called: its parameter is its callers' to make uniform.
+(defn sync-if-unused [c: u32]
+  (when (== c 1u)
+    (storage-barrier)))
+
+@compute
+@{workgroup-size 64}
+(defn branches []
+  (workgroup-barrier)
+  (when (== count 0u)
+    (workgroup-barrier))
+  (when (> limit 3u)
+    (storage-barrier))
+  (sync-if count)
+  (when (== (workgroup-uniform-load rounds) 2u)
+    (workgroup-barrier))
+  (when (== (value-or-zero (Some count)) 0u)
+    (workgroup-barrier)))
+
+@compute
+@{workgroup-size 64}
+(defn loops []
+  (for [i 4u]
+    (workgroup-barrier))
+  (for [i count]
+    (workgroup-barrier))
+  (let [n (workgroup-uniform-load rounds)]
+    (for [i n]
+      (workgroup-barrier))))
+
+; Divergence that has ended by the time the barrier runs: a branch whose
+; arms rejoin, loops some invocations leave early, and an exit only after
+; the barrier.
+@compute
+@{workgroup-size 64}
+(defn rejoined []
+  (let [i (local-invocation-index)]
+    (when (== i 0u)
+      (= (results 0u) 1u))
+    (workgroup-barrier)
+    (for [j 4u]
+      (when (== j i)
+        (break))
+      (= (results j) i))
+    (workgroup-barrier)
+    (for [k 4u]
+      (for [j 4u]
+        (when (== j i)
+          (break))
+        (= (results j) k))
+      (workgroup-barrier))
+    (when (== i 1u)
+      (return))
+    (= (results i) i)))
+
+@fragment
+(defn shade []: vec4f
+  (let [c (texture-sample tex samp (vec2f 0.5))]
+    (if (== count 0u)
+        (texture-sample tex samp (vec2f (dpdx (.x (position)))))
+        c)))

@@ -1,0 +1,12 @@
+; `texture-sample` takes derivatives too.
+@handle
+(var tex: (Texture2D f32))
+
+@handle
+(var samp: Sampler)
+
+@fragment
+(defn shade []: vec4f
+  (if (> (.x (position)) 100.)
+      (texture-sample tex samp (vec2f 0.5))
+      (vec4f 0.)))

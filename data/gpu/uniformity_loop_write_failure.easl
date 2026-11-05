@@ -1,0 +1,12 @@
+; A local counting the iterations of a loop some invocations leave early.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (let [@var x 0u
+        id (local-invocation-index)]
+    (for [i 4u]
+      (when (== i id)
+        (break))
+      (+= x 1u))
+    (when (== x 2u)
+      (workgroup-barrier))))

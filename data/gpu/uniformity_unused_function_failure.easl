@@ -1,0 +1,10 @@
+; WGSL checks every function, called or not.
+(var flag: u32)
+
+(defn sync-if-flag []
+  (when (== flag 0u)
+    (workgroup-barrier)))
+
+@compute
+@{workgroup-size 64}
+(defn work [])

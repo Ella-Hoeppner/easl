@@ -691,6 +691,10 @@ fn impure_description(effect: &Effect) -> Option<String> {
     | Effect::Return
     | Effect::Continue
     | Effect::CPUExclusiveType(_)
+    | Effect::RequiresUniformControl(_)
+    | Effect::RequiresUniformValue(_)
+    | Effect::LocalWriteDependsOn(..)
+    | Effect::ExitDependsOn(..)
     // described by the more specific effects that come with them
     | Effect::Window
     | Effect::FileWrite => None,

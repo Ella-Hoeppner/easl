@@ -1,0 +1,8 @@
+; A local holding the invocation's id.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (let [@var x 0u]
+    (= x (local-invocation-index))
+    (when (== x 0u)
+      (workgroup-barrier))))

@@ -1,0 +1,10 @@
+; A `@workgroup` variable read directly can differ between invocations;
+; `workgroup-uniform-load` would read it as a shared value.
+@workgroup
+(var flag: u32)
+
+@compute
+@{workgroup-size 64}
+(defn work []
+  (when (== flag 0u)
+    (workgroup-barrier)))

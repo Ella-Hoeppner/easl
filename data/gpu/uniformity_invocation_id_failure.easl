@@ -1,0 +1,7 @@
+; A branch on the invocation's id: only invocation 0 would reach the
+; barrier.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (when (== (local-invocation-index) 0u)
+    (workgroup-barrier)))

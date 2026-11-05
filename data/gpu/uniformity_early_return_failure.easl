@@ -1,0 +1,7 @@
+; Only the invocations that didn't return reach the barrier.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (when (== (local-invocation-index) 0u)
+    (return))
+  (workgroup-barrier))

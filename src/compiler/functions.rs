@@ -18,7 +18,7 @@ use crate::{
   Never,
   compiler::{
     annotation::FunctionAnnotation,
-    effects::{Effect, EffectType},
+    effects::{Effect, EffectType, UniformitySource},
     entry::{EntryPoint, IOAttributes},
     enums::AbstractEnum,
     expression::arg_list_and_return_type_from_easl_tree,
@@ -436,6 +436,23 @@ pub fn extract_mat_size(name: &str) -> Option<(usize, usize)> {
 }
 
 impl AbstractFunctionSignature {
+  /// This function's name, if it's a builtin WGSL requires to be called in
+  /// uniform control flow: a barrier, or one that takes derivatives (all
+  /// the fragment-only builtins).
+  pub fn uniform_control_builtin(&self) -> Option<Arc<str>> {
+    let FunctionImplementationKind::Builtin { effect_type, .. } =
+      &self.implementation
+    else {
+      return None;
+    };
+    effect_type
+      .0
+      .iter()
+      .any(|e| {
+        matches!(e, Effect::Barrier(_) | Effect::FragmentExclusiveFunction(_))
+      })
+      .then(|| self.name.clone())
+  }
   /// The names of this function's const generics, which its body can read
   /// as `u32` values.
   pub fn const_generic_names(&self) -> Vec<Arc<str>> {
@@ -1807,13 +1824,27 @@ impl TopLevelFunction {
   pub fn effects(&self) -> EffectType {
     self.effects_with(&mut EffectsMemo::default())
   }
-  /// [`Self::effects`], reusing `memo`'s callee effects.
+  /// [`Self::effects`], reusing `memo`'s callee effects. A uniformity
+  /// requirement on a parameter becomes one on the argument at its index,
+  /// which each call resolves into what it passes.
   pub fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
-    if let ExpKind::Function(..) = &self.expression.kind {
-      self.expression.effects_with(memo)
-    } else {
-      EffectType::empty()
+    let ExpKind::Function(params, _) = &self.expression.kind else {
+      return EffectType::empty();
+    };
+    let mut effects = self.expression.effects_with(memo);
+    let params: HashSet<Arc<str>> =
+      params.iter().map(|(name, _)| name.clone()).collect();
+    if effects.has_uniformity_source_in(&params) {
+      effects.resolve_uniformity_sources(|source| match source {
+        UniformitySource::Var(name) => self
+          .arg_names
+          .iter()
+          .position(|(param, _)| param == name)
+          .map(|index| HashSet::from([UniformitySource::Argument(index)])),
+        UniformitySource::Argument(_) => None,
+      });
     }
+    effects
   }
   pub fn compile_to_bytecode(
     &self,

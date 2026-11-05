@@ -1,0 +1,10 @@
+; A loop some invocations leave early: after that, the others reach the
+; barrier without them.
+@compute
+@{workgroup-size 64}
+(defn work []
+  (let [id (local-invocation-index)]
+    (for [i 8u]
+      (workgroup-barrier)
+      (when (== i id)
+        (break)))))

@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// The implicit `@local` var `(workgroup-size)` reads.
-const WORKGROUP_SIZE_VAR: &str = "easl_workgroup_size";
+pub(crate) const WORKGROUP_SIZE_VAR: &str = "easl_workgroup_size";
 
 /// Whether `size` fits WebGPU's default compute limits: every dimension at
 /// least 1, x and y at most 256, z at most 64, and at most 256 invocations

@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
 
 use crate::compiler::{
   entry::BuiltinIOAttribute,
+  error::SourceTrace,
   program::Program,
   vars::{TopLevelVariableKind, VariableAddressSpace},
 };
@@ -134,6 +135,94 @@ impl WindowInfoKind {
   }
 }
 
+/// A call that WGSL requires to be in uniform control flow: every invocation
+/// of its group (a compute shader's workgroup for a barrier, a fragment's
+/// 2x2 quad for a derivative) reaches it together, or none does.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UniformControlRequirement {
+  /// The builtin called: a barrier, or one taking derivatives.
+  pub builtin: Arc<str>,
+  pub call: SourceTrace,
+}
+
+/// What a value's uniformity depends on, in a uniformity requirement (see
+/// `Effect::RequiresUniformValue`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum UniformitySource {
+  /// A variable: a global, or a local or parameter not yet resolved to
+  /// what it holds.
+  Var(Arc<str>),
+  /// The function's argument at this index: its caller's concern.
+  Argument(usize),
+}
+
+impl UniformitySource {
+  /// What `source` holds, when it's one of the variables `held` gives the
+  /// sources of: those sources, with any of `held`'s variables among them
+  /// resolved in turn. A variable named in its own sources stands for its
+  /// value on entry (a parameter's), and stays.
+  pub fn resolve_held(
+    source: &UniformitySource,
+    held: &HashMap<Arc<str>, HashSet<UniformitySource>>,
+  ) -> Option<HashSet<UniformitySource>> {
+    let UniformitySource::Var(name) = source else {
+      return None;
+    };
+    if !held.contains_key(name) {
+      return None;
+    }
+    let mut resolved = HashSet::new();
+    let mut visited = HashSet::from([name.clone()]);
+    let mut pending = vec![name.clone()];
+    while let Some(name) = pending.pop() {
+      for source in held[&name].iter() {
+        match source {
+          UniformitySource::Var(var)
+            if var != &name && held.contains_key(var) =>
+          {
+            if visited.insert(var.clone()) {
+              pending.push(var.clone());
+            }
+          }
+          _ => {
+            resolved.insert(source.clone());
+          }
+        }
+      }
+    }
+    Some(resolved)
+  }
+}
+
+/// A uniform-control requirement that holds only if `source` is uniform:
+/// whether the call runs depends on it, through `condition`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UniformValueRequirement {
+  pub source: UniformitySource,
+  pub requirement: Arc<UniformControlRequirement>,
+  pub condition: SourceTrace,
+}
+
+/// The exit an `Effect::ExitDependsOn` is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExitKind {
+  Return,
+  Break,
+  Continue,
+}
+
+impl ExitKind {
+  pub const ALL: [ExitKind; 3] =
+    [ExitKind::Return, ExitKind::Break, ExitKind::Continue];
+  pub fn effect(self) -> Effect {
+    match self {
+      ExitKind::Return => Effect::Return,
+      ExitKind::Break => Effect::Break,
+      ExitKind::Continue => Effect::Continue,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
   ReadsVar(Arc<str>),
@@ -189,6 +278,23 @@ pub enum Effect {
   Window,
   LookupBuiltinAttribute(BuiltinIOAttribute),
   InvokesUnknownFunction,
+  /// A call that must be in uniform control flow (a barrier, or a builtin
+  /// taking derivatives). Branches, loops, and early exits the call depends
+  /// on turn it into `RequiresUniformValue`s on what they depend on.
+  RequiresUniformControl(Arc<UniformControlRequirement>),
+  /// A uniform-control requirement that depends on a value. Bindings
+  /// resolve a local's into what it holds, and calls an argument's into the
+  /// argument's sources; one left on a value that varies between
+  /// invocations is an error (`Program::validate_uniformity`).
+  RequiresUniformValue(Arc<UniformValueRequirement>),
+  /// For uniformity: a write of a local variable (alongside its
+  /// `ModifiesLocalVar`) whose value, or whether it happens, depends on a
+  /// source. The variable's binding resolves requirements on it into these.
+  LocalWriteDependsOn(Arc<str>, UniformitySource),
+  /// For uniformity: an exit (alongside its `Return`, `Break`, or
+  /// `Continue`) whose happening depends on a source. What follows it, and
+  /// the loop it leaves, run only in the invocations it didn't take.
+  ExitDependsOn(ExitKind, UniformitySource),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,11 +329,219 @@ impl EffectType {
         | Effect::FragmentExclusiveFunction(_)
         | Effect::CPUExclusiveFunction(_)
         | Effect::CPUExclusiveType(_)
-        | Effect::WindowInfo(_) => {}
+        | Effect::WindowInfo(_)
+        | Effect::RequiresUniformControl(_)
+        | Effect::RequiresUniformValue(_)
+        | Effect::LocalWriteDependsOn(..)
+        | Effect::ExitDependsOn(..) => {}
         _ => return false,
       }
     }
     true
+  }
+  /// The uniform-control requirements among these effects.
+  pub fn uniform_control_requirements(
+    &self,
+  ) -> Vec<Arc<UniformControlRequirement>> {
+    self
+      .0
+      .iter()
+      .filter_map(|e| match e {
+        Effect::RequiresUniformControl(requirement) => {
+          Some(requirement.clone())
+        }
+        _ => None,
+      })
+      .collect()
+  }
+  /// The source an effect carrying one for uniformity depends on.
+  fn uniformity_source(effect: &Effect) -> Option<&UniformitySource> {
+    match effect {
+      Effect::RequiresUniformValue(requirement) => Some(&requirement.source),
+      Effect::LocalWriteDependsOn(_, source)
+      | Effect::ExitDependsOn(_, source) => Some(source),
+      _ => None,
+    }
+  }
+  /// Whether one of these effects depends on one of `names` for
+  /// uniformity.
+  pub fn has_uniformity_source_in(&self, names: &HashSet<Arc<str>>) -> bool {
+    self.0.iter().any(|e| {
+      matches!(Self::uniformity_source(e), Some(UniformitySource::Var(name))
+        if names.contains(name))
+    })
+  }
+  /// Whether these effects include a uniformity requirement on an argument.
+  pub fn has_uniformity_requirement_on_arguments(&self) -> bool {
+    self.0.iter().any(|e| {
+      matches!(
+        e,
+        Effect::RequiresUniformValue(requirement)
+          if matches!(requirement.source, UniformitySource::Argument(_))
+      )
+    })
+  }
+  /// Whether these effects include an exit from the enclosing function or
+  /// loop: a `return`, `break`, or `continue`.
+  pub fn exits(&self) -> bool {
+    ExitKind::ALL
+      .into_iter()
+      .any(|kind| self.0.contains(&kind.effect()))
+  }
+  /// What decides whether these effects' exits happen.
+  pub fn exit_sources(&self) -> HashSet<UniformitySource> {
+    self
+      .0
+      .iter()
+      .filter_map(|e| match e {
+        Effect::ExitDependsOn(_, source) => Some(source.clone()),
+        _ => None,
+      })
+      .collect()
+  }
+  /// Whether these effects include something whose uniformity a condition
+  /// they run under decides (see `Self::condition_on`).
+  pub fn depend_on_conditions(&self) -> bool {
+    self.0.iter().any(|e| {
+      matches!(
+        e,
+        Effect::RequiresUniformControl(_)
+          | Effect::ModifiesLocalVar(_)
+          | Effect::Return
+          | Effect::Break
+          | Effect::Continue
+      )
+    })
+  }
+  /// Records that these effects happen only where `condition` lets them,
+  /// whose uniformity depends on `sources`: each uniform-control
+  /// requirement then also requires `sources` to be uniform, and each local
+  /// write and exit depends on them.
+  pub fn condition_on(
+    &mut self,
+    sources: &HashSet<UniformitySource>,
+    condition: &SourceTrace,
+  ) {
+    if sources.is_empty() {
+      return;
+    }
+    let mut conditioned = vec![];
+    for e in self.0.iter() {
+      match e {
+        Effect::RequiresUniformControl(requirement) => {
+          conditioned.extend(sources.iter().map(|source| {
+            Effect::RequiresUniformValue(Arc::new(UniformValueRequirement {
+              source: source.clone(),
+              requirement: requirement.clone(),
+              condition: condition.clone(),
+            }))
+          }))
+        }
+        Effect::ModifiesLocalVar(var) => {
+          conditioned.extend(sources.iter().map(|source| {
+            Effect::LocalWriteDependsOn(var.clone(), source.clone())
+          }))
+        }
+        _ => {}
+      }
+    }
+    for kind in ExitKind::ALL {
+      if self.0.contains(&kind.effect()) {
+        conditioned.extend(
+          sources
+            .iter()
+            .map(|source| Effect::ExitDependsOn(kind, source.clone())),
+        );
+      }
+    }
+    self.0.extend(conditioned);
+  }
+  /// Replaces each dependence on a source `resolve` knows with dependences
+  /// on what that source holds.
+  pub fn resolve_uniformity_sources(
+    &mut self,
+    mut resolve: impl FnMut(&UniformitySource) -> Option<HashSet<UniformitySource>>,
+  ) {
+    let resolved: Vec<(Effect, HashSet<UniformitySource>)> = self
+      .0
+      .iter()
+      .filter_map(|e| Some((e.clone(), resolve(Self::uniformity_source(e)?)?)))
+      .collect();
+    for (effect, sources) in resolved {
+      self.0.remove(&effect);
+      self
+        .0
+        .extend(sources.into_iter().map(|source| match &effect {
+          Effect::RequiresUniformValue(requirement) => {
+            Effect::RequiresUniformValue(Arc::new(UniformValueRequirement {
+              source,
+              requirement: requirement.requirement.clone(),
+              condition: requirement.condition.clone(),
+            }))
+          }
+          Effect::LocalWriteDependsOn(var, _) => {
+            Effect::LocalWriteDependsOn(var.clone(), source)
+          }
+          Effect::ExitDependsOn(kind, _) => {
+            Effect::ExitDependsOn(*kind, source)
+          }
+          _ => unreachable!(),
+        }));
+    }
+  }
+  /// Resolves dependences on each variable `bindings` binds into what it
+  /// holds: the sources of its value on entry, given, and of every write
+  /// to it among these effects.
+  pub fn bind_uniformity_sources(
+    &mut self,
+    bindings: impl IntoIterator<Item = (Arc<str>, HashSet<UniformitySource>)>,
+  ) {
+    let mut held: HashMap<Arc<str>, HashSet<UniformitySource>> =
+      bindings.into_iter().collect();
+    for e in self.0.iter() {
+      if let Effect::LocalWriteDependsOn(var, source) = e
+        && let Some(sources) = held.get_mut(var)
+        && source != &UniformitySource::Var(var.clone())
+      {
+        sources.insert(source.clone());
+      }
+    }
+    self.resolve_uniformity_sources(|source| {
+      UniformitySource::resolve_held(source, &held)
+    });
+  }
+  /// Leaves the scope of the local variables `names`: what concerns only
+  /// them (reading or writing them) doesn't concern anything outside.
+  pub fn leave_scope(&mut self, names: &HashSet<Arc<str>>) {
+    self.0.retain(|e| match e {
+      Effect::ReadsVar(name)
+      | Effect::ReadsArrayLength(name)
+      | Effect::ModifiesLocalVar(name)
+      | Effect::LocalWriteDependsOn(name, _) => !names.contains(name),
+      _ => true,
+    });
+  }
+  /// Leaves a function with the parameters `params`: its own parameters
+  /// are out of scope, and its `return`s end there.
+  pub fn leave_function(&mut self, params: &HashSet<Arc<str>>) {
+    self.leave_scope(params);
+    self.0.retain(|e| {
+      !matches!(
+        e,
+        Effect::Return | Effect::ExitDependsOn(ExitKind::Return, _)
+      )
+    });
+  }
+  /// Leaves a loop: its `break`s and `continue`s end there.
+  pub fn leave_loop(&mut self) {
+    self.0.retain(|e| {
+      !matches!(
+        e,
+        Effect::Break
+          | Effect::Continue
+          | Effect::ExitDependsOn(ExitKind::Break | ExitKind::Continue, _)
+      )
+    });
   }
   /// Whether these effects include a builtin only shaders have, which no
   /// CPU or audio code can run.

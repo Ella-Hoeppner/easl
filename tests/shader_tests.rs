@@ -1595,6 +1595,118 @@ error_test!(
   workgroup_uniform_load_non_workgroup_failure,
   CompileErrorKind::WorkgroupUniformLoadOfNonWorkgroupVar("shared".into())
 );
+// Uniformity: each `uniformity_*_failure` is a case Chrome's WGSL compiler
+// rejects, and `uniformity_accepted` holds ones it accepts.
+success_test!(uniformity_accepted);
+error_test!(
+  uniformity_invocation_id_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_storage_write_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`flag`, a storage-write variable, which invocations can see different values of (a `@uniform` or read-only `@storage` variable is the same for all of them)".into()
+  )
+);
+error_test!(
+  uniformity_workgroup_var_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`flag`, a `@workgroup` variable, which invocations can see different values of (`workgroup-uniform-load` reads it as a value every invocation shares)".into()
+  )
+);
+error_test!(
+  uniformity_loop_bound_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_loop_break_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_early_return_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_helper_in_branch_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_helper_argument_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_local_variable_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_short_circuit_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  ),
+  CompileErrorKind::NonUniformControlFlow(
+    "storage-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_unused_function_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`flag`, a storage-write variable, which invocations can see different values of (a `@uniform` or read-only `@storage` variable is the same for all of them)".into()
+  )
+);
+error_test!(
+  uniformity_conditional_write_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_loop_write_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "workgroup-barrier".into(),
+    "`(local-invocation-index)`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_derivative_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "dpdx".into(),
+    "`position`, which differs between invocations".into()
+  )
+);
+error_test!(
+  uniformity_texture_sample_failure,
+  CompileErrorKind::NonUniformControlFlow(
+    "texture-sample".into(),
+    "`(position)`, which differs between invocations".into()
+  )
+);
 error_test!(texture_let_failure, CompileErrorKind::LocalTextureOrSampler);
 error_test!(
   ambiguous_overload_failure,

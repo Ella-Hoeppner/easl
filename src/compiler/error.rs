@@ -233,6 +233,11 @@ pub enum CompileErrorKind {
   #[error("`{0}` can only be called from compute shaders")]
   BarrierOutsideCompute(String),
   #[error(
+    "`{0}` must be called in uniform control flow, where every invocation \
+     reaches it together, but whether this call runs depends on {1}"
+  )]
+  NonUniformControlFlow(String, String),
+  #[error(
     "`workgroup-uniform-load` reads a `@workgroup` var, or part of one, but \
      `{0}` isn't one"
   )]
@@ -1095,6 +1100,10 @@ impl PartialEq for CompileErrorKind {
       (Self::BarrierOutsideCompute(l0), Self::BarrierOutsideCompute(r0)) => {
         l0 == r0
       }
+      (
+        Self::NonUniformControlFlow(l0, l1),
+        Self::NonUniformControlFlow(r0, r1),
+      ) => l0 == r0 && l1 == r1,
       (
         Self::WorkgroupUniformLoadOfNonWorkgroupVar(l0),
         Self::WorkgroupUniformLoadOfNonWorkgroupVar(r0),

@@ -431,7 +431,7 @@ impl<D: Debug + Clone + PartialEq> ExpKind<D> {
 }
 
 use super::{
-  effects::Effect,
+  effects::{Effect, UniformControlRequirement, UniformitySource},
   error::{CompileErrorKind, ErrorLog, SourceTrace},
   functions::FunctionImplementationKind,
   structs::{compiled_vec_or_mat_name, vec_and_mat_compile_names},
@@ -5523,7 +5523,28 @@ impl TypedExp {
   pub fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
     let mut e = match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
-      Block(exps) | ArrayLiteral(exps) => exps
+      // A statement after one that can exit only runs in the invocations
+      // that didn't, so it's conditioned on what the earlier exits depend
+      // on.
+      Block(exps) => {
+        let mut effects = EffectType::empty();
+        let mut exiting: Vec<(&SourceTrace, HashSet<UniformitySource>)> =
+          vec![];
+        for exp in exps {
+          let mut exp_effects = exp.effects_with(memo);
+          if exp_effects.depend_on_conditions() {
+            for (trace, sources) in exiting.iter() {
+              exp_effects.condition_on(sources, trace);
+            }
+          }
+          if exp_effects.exits() {
+            exiting.push((&exp.source_trace, exp_effects.exit_sources()));
+          }
+          effects.merge(exp_effects);
+        }
+        effects
+      }
+      ArrayLiteral(exps) => exps
         .into_iter()
         .map(|exp| exp.effects_with(memo))
         .reduce(|mut a, b| {
@@ -5533,7 +5554,7 @@ impl TypedExp {
         .unwrap_or_else(|| EffectType::empty())
         .into(),
       Let(items, exp) => {
-        let effects = items.iter().fold(
+        let mut effects = items.iter().fold(
           exp.effects_with(memo),
           |mut e, (_, _, _, value_exp)| {
             e.merge(value_exp.effects_with(memo));
@@ -5542,19 +5563,17 @@ impl TypedExp {
         );
         let bound_names: HashSet<Arc<str>> =
           items.iter().map(|(name, _, _, _)| name.clone()).collect();
+        if effects.has_uniformity_source_in(&bound_names) {
+          let bindings = items
+            .iter()
+            .map(|(name, _, _, value)| {
+              (name.clone(), value.uniformity_sources(memo))
+            })
+            .collect::<Vec<_>>();
+          effects.bind_uniformity_sources(bindings);
+        }
+        effects.leave_scope(&bound_names);
         effects
-          .0
-          .into_iter()
-          .filter_map(|e| match &e {
-            Effect::ModifiesLocalVar(name)
-            | Effect::ReadsVar(name)
-            | Effect::ReadsArrayLength(name) => {
-              (!bound_names.contains(name)).then(|| e)
-            }
-            _ => Some(e),
-          })
-          .collect::<HashSet<Effect>>()
-          .into()
       }
       Application(f, args) => match f.data.kind.with_dereferenced(|t| match t {
         TypeState::Known(Type::Function(function_signature)) => {
@@ -5571,6 +5590,47 @@ impl TypedExp {
         Some(abstract_ancestor) => {
           let mut effects =
             FunctionSignature::callee_effects(&abstract_ancestor, memo);
+          let writes = self.argument_writes();
+          // A local's new value is computed from what the call reads.
+          if writes
+            .0
+            .iter()
+            .any(|e| matches!(e, Effect::ModifiesLocalVar(_)))
+          {
+            let sources = self.uniformity_sources(memo);
+            for e in writes.0.iter() {
+              if let Effect::ModifiesLocalVar(var) = e {
+                effects.0.extend(sources.iter().map(|source| {
+                  Effect::LocalWriteDependsOn(var.clone(), source.clone())
+                }));
+              }
+            }
+          }
+          if let Some(builtin) =
+            abstract_ancestor.as_ref().and_then(|ancestor| {
+              ancestor.read().unwrap().uniform_control_builtin()
+            })
+          {
+            effects.merge(Effect::RequiresUniformControl(Arc::new(
+              UniformControlRequirement {
+                builtin,
+                call: self.source_trace.clone(),
+              },
+            )));
+          }
+          // The callee's requirements on its arguments are requirements on
+          // what this call passes.
+          if effects.has_uniformity_requirement_on_arguments() {
+            effects.resolve_uniformity_sources(|source| match source {
+              UniformitySource::Argument(index) => Some(
+                args
+                  .get(*index)
+                  .map(|arg| arg.uniformity_sources(memo))
+                  .unwrap_or_default(),
+              ),
+              _ => None,
+            });
+          }
           effects.merge(f.effects_with(memo));
           // `array-length` only inspects its argument's length, which the
           // GPU can never change — so an array variable passed to it
@@ -5579,14 +5639,26 @@ impl TypedExp {
             .as_ref()
             .map(|ancestor| &*ancestor.read().unwrap().name == "array-length")
             .unwrap_or(false);
-          for arg in args {
+          let is_short_circuit = matches!(&f.kind, Name(name)
+            if short_circuit_deciding_value(name).is_some());
+          for (i, arg) in args.iter().enumerate() {
             if is_array_length && let ExpKind::Name(name) = &arg.kind {
               effects.merge(Effect::ReadsArrayLength(name.clone()));
               continue;
             }
-            effects.merge(arg.effects_with(memo));
+            let mut arg_effects = arg.effects_with(memo);
+            // `&&` and `||` evaluate their second operand only when the
+            // first doesn't decide the result.
+            if is_short_circuit && i == 1 && arg_effects.depend_on_conditions()
+            {
+              arg_effects.condition_on(
+                &args[0].uniformity_sources(memo),
+                &args[0].source_trace,
+              );
+            }
+            effects.merge(arg_effects);
           }
-          effects.merge(self.argument_writes());
+          effects.merge(writes);
           effects
         }
         // Indexing an array, vector, or matrix.
@@ -5605,9 +5677,37 @@ impl TypedExp {
       }
       Match(exp, items) => {
         let mut effects = exp.effects_with(memo);
+        let mut arm_effects = EffectType::empty();
         for (_, arm) in items {
-          effects.merge(arm.effects_with(memo));
+          arm_effects.merge(arm.effects_with(memo));
         }
+        // Which arm runs, and what a payload binding holds, depend on the
+        // scrutinee.
+        let payloads: HashSet<Arc<str>> = items
+          .iter()
+          .filter_map(|(pattern, _)| match &pattern.kind {
+            Application(_, args) => Some(args),
+            _ => None,
+          })
+          .flatten()
+          .filter_map(|arg| match &arg.kind {
+            Name(name) => Some(name.clone()),
+            _ => None,
+          })
+          .collect();
+        if arm_effects.depend_on_conditions()
+          || arm_effects.has_uniformity_source_in(&payloads)
+        {
+          let sources = exp.uniformity_sources(memo);
+          arm_effects.condition_on(&sources, &exp.source_trace);
+          arm_effects.bind_uniformity_sources(
+            payloads
+              .iter()
+              .map(|payload| (payload.clone(), sources.clone())),
+          );
+        }
+        arm_effects.leave_scope(&payloads);
+        effects.merge(arm_effects);
         effects
       }
       ForLoop {
@@ -5618,30 +5718,53 @@ impl TypedExp {
         body_expression,
         ..
       } => {
+        let body_effects = body_expression.effects_with(memo);
+        let exit_sources = body_effects.exit_sources();
+        let mut loop_effects = continue_condition_expression.effects_with(memo);
+        if let Some(update_expression) = update_expression {
+          loop_effects.merge(update_expression.effects_with(memo));
+        }
+        loop_effects.merge(body_effects);
+        // Every iteration runs only for the invocations still looping: the
+        // ones its condition and its exits kept.
+        if loop_effects.depend_on_conditions() {
+          let mut sources =
+            continue_condition_expression.uniformity_sources(memo);
+          sources.extend(exit_sources);
+          loop_effects.condition_on(
+            &sources,
+            &continue_condition_expression.source_trace,
+          );
+        }
+        let counter = HashSet::from([increment_variable_name.0.clone()]);
+        if loop_effects.has_uniformity_source_in(&counter) {
+          loop_effects.bind_uniformity_sources([(
+            increment_variable_name.0.clone(),
+            increment_variable_initial_value_expression
+              .uniformity_sources(memo),
+          )]);
+        }
         let mut effects =
           increment_variable_initial_value_expression.effects_with(memo);
-        effects.merge(continue_condition_expression.effects_with(memo));
-        if let Some(update_expression) = update_expression {
-          effects.merge(update_expression.effects_with(memo));
-        }
-        effects.merge(body_expression.effects_with(memo));
-        effects
-          .remove(&Effect::ModifiesLocalVar(increment_variable_name.0.clone()));
-        effects.remove(&Effect::ReadsVar(increment_variable_name.0.clone()));
-        effects
-          .remove(&Effect::ReadsArrayLength(increment_variable_name.0.clone()));
-        effects.remove(&Effect::Break);
-        effects.remove(&Effect::Continue);
+        effects.merge(loop_effects);
+        effects.leave_scope(&counter);
+        effects.leave_loop();
         effects
       }
       WhileLoop {
         condition_expression,
         body_expression,
       } => {
+        let body_effects = body_expression.effects_with(memo);
+        let exit_sources = body_effects.exit_sources();
         let mut effects = condition_expression.effects_with(memo);
-        effects.merge(body_expression.effects_with(memo));
-        effects.remove(&Effect::Break);
-        effects.remove(&Effect::Continue);
+        effects.merge(body_effects);
+        if effects.depend_on_conditions() {
+          let mut sources = condition_expression.uniformity_sources(memo);
+          sources.extend(exit_sources);
+          effects.condition_on(&sources, &condition_expression.source_trace);
+        }
+        effects.leave_loop();
         effects
       }
       Break => Effect::Break.into(),
@@ -5654,14 +5777,20 @@ impl TypedExp {
       // for a top-level function (`TopLevelFunction::effects`): reads and
       // writes of its own parameters, and `return`, which exits this
       // function rather than the enclosing one.
+      // A parameter holds its value on entry and what's written to it.
       Function(arg_names, body) => {
         let mut effects = body.effects_with(memo);
-        for (arg, _) in arg_names {
-          effects.remove(&Effect::ReadsVar(arg.clone()));
-          effects.remove(&Effect::ReadsArrayLength(arg.clone()));
-          effects.remove(&Effect::ModifiesLocalVar(arg.clone()));
+        let params: HashSet<Arc<str>> =
+          arg_names.iter().map(|(name, _)| name.clone()).collect();
+        if effects.has_uniformity_source_in(&params) {
+          effects.bind_uniformity_sources(params.iter().map(|param| {
+            (
+              param.clone(),
+              HashSet::from([UniformitySource::Var(param.clone())]),
+            )
+          }));
         }
-        effects.remove(&Effect::Return);
+        effects.leave_function(&params);
         effects
       }
       Continue => Effect::Continue.into(),
@@ -5674,6 +5803,90 @@ impl TypedExp {
       e.merge(Effect::CPUExclusiveType("String".into()));
     }
     e
+  }
+  /// What this expression's value is computed from, for uniformity: the
+  /// variables it reads, and the globals its callees read, since a callee's
+  /// result may depend on any of them. A `workgroup-uniform-load`'s result
+  /// is uniform, whatever it reads. A value computed by statements (a
+  /// block, a `let`, a `match`, a loop) depends on everything they read,
+  /// which covers what its locals hold and the conditions it's computed
+  /// under.
+  pub fn uniformity_sources(
+    &self,
+    memo: &mut EffectsMemo,
+  ) -> HashSet<UniformitySource> {
+    let mut sources = HashSet::new();
+    self.collect_uniformity_sources(memo, &mut sources);
+    sources
+  }
+  /// The sources of everything `effects` reads, for uniformity.
+  fn add_read_sources(
+    effects: &EffectType,
+    sources: &mut HashSet<UniformitySource>,
+  ) {
+    for effect in effects.0.iter() {
+      match effect {
+        Effect::ReadsVar(name) => {
+          sources.insert(UniformitySource::Var(name.clone()));
+        }
+        // Shaders read a builtin input from the variable each entry copies
+        // it into.
+        Effect::LookupBuiltinAttribute(attribute) => {
+          sources
+            .insert(UniformitySource::Var(attribute.compiled_name().into()));
+        }
+        _ => {}
+      }
+    }
+  }
+  fn collect_uniformity_sources(
+    &self,
+    memo: &mut EffectsMemo,
+    sources: &mut HashSet<UniformitySource>,
+  ) {
+    self
+      .walk(&mut |exp| {
+        Ok::<bool, Never>(match &exp.kind {
+          Name(name) => {
+            if !matches!(exp.data.kind, TypeState::Known(Type::Function(_))) {
+              sources.insert(UniformitySource::Var(name.clone()));
+            }
+            false
+          }
+          Function(..) => false,
+          Application(f, args)
+            if let TypeState::Known(Type::Function(signature)) =
+              &f.data.kind =>
+          {
+            if let Some(ancestor) = &signature.abstract_ancestor {
+              if &*ancestor.read().unwrap().name == "workgroup-uniform-load" {
+                return Ok(false);
+              }
+              Self::add_read_sources(
+                &FunctionSignature::callee_effects(
+                  &signature.abstract_ancestor,
+                  memo,
+                ),
+                sources,
+              );
+            }
+            for arg in args {
+              arg.collect_uniformity_sources(memo, sources);
+            }
+            false
+          }
+          Block(_)
+          | Let(..)
+          | Match(..)
+          | ForLoop { .. }
+          | WhileLoop { .. } => {
+            Self::add_read_sources(&exp.effects_with(memo), sources);
+            false
+          }
+          _ => true,
+        })
+      })
+      .unwrap();
   }
   fn replace_internal_names(
     &mut self,

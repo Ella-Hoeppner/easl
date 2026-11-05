@@ -27,7 +27,10 @@ use crate::{
   compiler::{
     annotation::extract_annotation,
     builtins::built_in_functions,
-    effects::{Effect, EffectType, WindowInfoBindingSource, WindowInfoKind},
+    effects::{
+      Effect, EffectType, UniformitySource, WindowInfoBindingSource,
+      WindowInfoKind,
+    },
     entry::{
       BuiltinIOAttribute, EntryPoint, IOAttribute, IOAttributeKind,
       IOAttributes, InputOrOutput,
@@ -56,6 +59,7 @@ use crate::{
     util::{compile_word, is_valid_name, is_valid_qualified_name},
     vars::TopLevelVariableKind,
     wgsl::{FRAGMENT_POSITION_OFFSET_VAR, MIDI_VARS, is_easl_reserved_word},
+    workgroups::WORKGROUP_SIZE_VAR,
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -4730,7 +4734,10 @@ impl Program {
                           // (removed from its effects), and a `break` or
                           // `continue` escaping one is a control-flow error
                           // reported before extraction.
-                          Effect::Break | Effect::Continue | Effect::Return => {
+                          Effect::Break
+                          | Effect::Continue
+                          | Effect::Return
+                          | Effect::ExitDependsOn(..) => {
                             unreachable!("{e:?} escaped a function boundary")
                           }
                           // Everything else a closure does is fine to do;
@@ -4749,7 +4756,10 @@ impl Program {
                           | Effect::MidiOut
                           | Effect::Window
                           | Effect::LookupBuiltinAttribute(_)
-                          | Effect::InvokesUnknownFunction => None,
+                          | Effect::InvokesUnknownFunction
+                          | Effect::RequiresUniformControl(_)
+                          | Effect::RequiresUniformValue(_)
+                          | Effect::LocalWriteDependsOn(..) => None,
                         })
                         .collect();
                     // A variable read both by element access and by
@@ -7950,11 +7960,147 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.validate_uniformity(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.plan_storage_read_views();
     self.mark_value_names_owned();
     self.track_emulated_builtins(target);
     self.has_been_validated = true;
     errors
+  }
+  /// Reports every uniform-control requirement (see
+  /// `Effect::RequiresUniformControl`) left depending on a value that can
+  /// differ between invocations, in every function the WGSL output holds:
+  /// WGSL rejects the whole module for one, called or not. Runs on the
+  /// final functions, whose control flow is the WGSL's.
+  fn validate_uniformity(&self, errors: &mut ErrorLog) {
+    let functions = self.emitted_function_closure(CompilerTarget::WGSL);
+    let mut memo = EffectsMemo::default();
+    for (name, implementation) in functions.ordered.iter() {
+      if !functions.emitted.contains(name) {
+        continue;
+      }
+      let implementation = implementation.read().unwrap();
+      for effect in implementation.effects_with(&mut memo).0 {
+        let Effect::RequiresUniformValue(requirement) = effect else {
+          continue;
+        };
+        if let Some(reason) =
+          self.non_uniform_reason(&requirement.source, &implementation)
+        {
+          errors.log(CompileError::new(
+            NonUniformControlFlow(
+              requirement.requirement.builtin.to_string(),
+              reason,
+            ),
+            requirement
+              .requirement
+              .call
+              .clone()
+              .insert_as_secondary(requirement.condition.clone()),
+          ));
+        }
+      }
+    }
+  }
+  /// Why `source`, in `function`, can differ between invocations, if it
+  /// can: what WGSL's uniformity analysis treats as non-uniform.
+  fn non_uniform_reason(
+    &self,
+    source: &UniformitySource,
+    function: &TopLevelFunction,
+  ) -> Option<String> {
+    let index = match source {
+      UniformitySource::Var(name) => {
+        let Some(var) = self.top_level_vars.iter().find(|v| &v.name == name)
+        else {
+          // A function, as a value, is the same everywhere; anything else
+          // is a local the analysis couldn't follow.
+          return (!self.abstract_functions.contains_key(name))
+            .then(|| format!("`{}`", display_name(name)));
+        };
+        let TopLevelVariableKind::Var { address_space, .. } = var.kind else {
+          return None;
+        };
+        let name = display_name(name);
+        return match address_space {
+          VariableAddressSpace::StorageReadWrite => Some(format!(
+            "`{name}`, a storage-write variable, which invocations can see \
+             different values of (a `@uniform` or read-only `@storage` \
+             variable is the same for all of them)"
+          )),
+          VariableAddressSpace::Workgroup => Some(format!(
+            "`{name}`, a `@workgroup` variable, which invocations can see \
+             different values of (`workgroup-uniform-load` reads it as a \
+             value every invocation shares)"
+          )),
+          VariableAddressSpace::Local | VariableAddressSpace::Function => {
+            if var.directly_user_written {
+              Some(format!(
+                "`{name}`, a `@local` variable, which each invocation has \
+                 its own copy of"
+              ))
+            } else if let Some(attribute) = BuiltinIOAttribute::all()
+              .into_iter()
+              .find(|attribute| attribute.compiled_name() == name)
+            {
+              Some(match attribute {
+                // The same for a whole workgroup, but read from a variable
+                // each invocation copies it into, which WGSL can't see is.
+                BuiltinIOAttribute::WorkgroupId
+                | BuiltinIOAttribute::NumWorkgroups => format!(
+                  "`({})`, which shaders read from a variable each \
+                   invocation has its own copy of",
+                  attribute.name()
+                ),
+                _ => format!(
+                  "`({})`, which differs between invocations",
+                  attribute.name()
+                ),
+              })
+            } else if name == WORKGROUP_SIZE_VAR {
+              Some(
+                "`(workgroup-size)`, which shaders read from a variable each \
+                 invocation has its own copy of"
+                  .to_string(),
+              )
+            } else {
+              Some(format!(
+                "`{name}`, a variable each invocation has its own copy of"
+              ))
+            }
+          }
+          VariableAddressSpace::Uniform
+          | VariableAddressSpace::StorageRead
+          | VariableAddressSpace::Handle => None,
+        };
+      }
+      UniformitySource::Argument(index) => *index,
+    };
+    // A non-entry function's arguments are its callers' to make uniform.
+    function.entry_point?;
+    let (param, _) = function.arg_names.get(index)?;
+    Some(
+      match function
+        .arg_annotations
+        .get(index)
+        .and_then(|annotation| annotation.attributes.builtin())
+      {
+        Some((
+          BuiltinIOAttribute::WorkgroupId | BuiltinIOAttribute::NumWorkgroups,
+          _,
+        )) => return None,
+        Some((attribute, _)) => {
+          format!("`{}`, which differs between invocations", attribute.name())
+        }
+        None => format!(
+          "the shader input `{}`, which differs between invocations",
+          display_name(param)
+        ),
+      },
+    )
   }
   /// Orders `top_level_vars` so each initializer comes after every
   /// top-level variable it reads, directly or through the functions it
