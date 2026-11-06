@@ -201,9 +201,13 @@ pub fn query_output_sample_rate() -> Option<f32> {
 
 /// Set up a cpal output stream whose callback hands the whole interleaved
 /// output buffer to `batch_fn` as `(output, channels, rate)`, opened on
-/// the device's preferred config. Returns the `Stream` for storage in
-/// `AUDIO_STATE` (must be kept alive).
-fn build_audio_stream_batched<F>(batch_fn: F) -> Result<cpal::Stream, String>
+/// the device's preferred config (whose rate `query_output_sample_rate`
+/// reports). Returns the playing `Stream`, which must be kept alive: here
+/// it's stored in `AUDIO_STATE`, and embedders running their own audio
+/// engine on easl's device handling (like easl-studio) keep it themselves.
+pub fn build_audio_stream_batched<F>(
+  batch_fn: F,
+) -> Result<cpal::Stream, String>
 where
   F: FnMut(&mut [f32], usize, f32) + Send + 'static,
 {
