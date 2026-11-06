@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{
   collections::{HashMap, HashSet},
   ops::Range,
@@ -47,6 +48,7 @@ use crate::compiler::{
 use crate::external::ExternalVars;
 use crate::midi_out::{MidiMessage, MidiOutKind, sysex_message};
 use crate::parse::EaslMultiDocument;
+use crate::precompiled::PrecompiledProgram;
 use crate::render_settings::{RenderSetting, RenderSettings};
 use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, participant,
@@ -3761,7 +3763,7 @@ pub enum WindowEvent {
 /// `WindowEvent` carries. Each pipeline's bind group layouts are built from
 /// exactly these sets, so a pipeline's per-stage binding budget only pays
 /// for what its own entry points use.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpuEntryInfo {
   pub name: String,
   pub used_bindings: Vec<(u8, u8)>,
@@ -4050,7 +4052,9 @@ pub fn window_info_words<IO: IOManager>(
 /// genuinely-used stages matters because per-stage binding budgets are
 /// limited (Metal caps the vertex stage at 16 buffer slots total, counting
 /// every vertex-visible layout binding whether or not the shader uses it).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct BindingStages {
   pub vertex: bool,
   pub fragment: bool,
@@ -4059,7 +4063,7 @@ pub struct BindingStages {
 
 /// Everything `window.rs` needs to create and validate the wgpu binding for
 /// one GPU-bound top-level variable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuBindingInfo {
   pub group: u8,
   pub binding: u8,
@@ -4078,7 +4082,7 @@ pub struct GpuBindingInfo {
 
 /// Describes the GPU buffer type for a top-level variable binding.
 /// Used by `window.rs` to create the correct wgpu binding.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum GpuBufferKind {
   Uniform,
   StorageReadOnly,
@@ -4108,6 +4112,7 @@ pub enum SharedBufferState {
 /// embedders that create the `GpuCore` themselves before spawning the
 /// runtime (e.g. easl_studio) can never diverge from the runtime's own
 /// derivation.
+#[derive(Serialize, Deserialize)]
 pub struct DerivedGpuInterface {
   pub binding_vars:
     Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>,
@@ -5920,6 +5925,82 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   documents: Arc<EaslMultiDocument>,
 }
 
+/// What an `EvaluationEnvironment` for running a program on the bytecode
+/// VM is built from, derived from the validated program: its WGSL and GPU
+/// interface, the implicit bindings the runtime refreshes, the lifted
+/// closure captures, the thread-shared globals, and the variables that
+/// start without initializers. It serializes as part of a precompiled
+/// program (see `crate::precompiled`), without the documents, so errors
+/// from a precompiled program have no source locations.
+#[derive(Serialize, Deserialize)]
+pub struct EnvironmentSpec {
+  wgsl: String,
+  gpu_interface: DerivedGpuInterface,
+  window_info_bindings: Vec<(WindowInfoBindingSource, Arc<str>, Type)>,
+  lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  shared_globals: Vec<(Arc<str>, Type, u32)>,
+  /// Each top-level variable without an initializer, with whether it's in
+  /// the handle space (a texture or sampler).
+  unassigned_vars: Vec<(Arc<str>, Type, bool)>,
+  #[serde(skip, default = "no_documents")]
+  documents: Arc<EaslMultiDocument>,
+}
+
+fn no_documents() -> Arc<EaslMultiDocument> {
+  Arc::new(EaslMultiDocument::empty())
+}
+
+impl EnvironmentSpec {
+  pub fn of(program: Program) -> Result<Self, EvalError> {
+    let mut spec = Self::without_wgsl(&program);
+    spec.wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
+    Ok(spec)
+  }
+  /// The spec with its WGSL left empty, for an environment that compiles
+  /// it after it's done with the program.
+  fn without_wgsl(program: &Program) -> Self {
+    let var_type = |name: &Arc<str>| {
+      program
+        .top_level_vars
+        .iter()
+        .find(|v| &v.name == name)
+        .map(|v| v.var_type.clone())
+    };
+    Self {
+      wgsl: String::new(),
+      gpu_interface: derive_gpu_interface(program),
+      window_info_bindings: program
+        .window_info_bindings
+        .iter()
+        .map(|(source, name)| {
+          let ty = var_type(name)
+            .expect("window-info binding without a top-level var");
+          (source.clone(), name.clone(), ty)
+        })
+        .collect(),
+      lifted_audio_captures: program.lifted_audio_captures.clone(),
+      lifted_gpu_captures: program.lifted_gpu_captures.clone(),
+      shared_globals: program
+        .thread_shared_globals()
+        .into_iter()
+        .map(|(name, audience)| {
+          let ty = var_type(&name)
+            .expect("thread-shared global missing from top-level vars");
+          (name, ty, audience)
+        })
+        .collect(),
+      unassigned_vars: program
+        .top_level_vars
+        .iter()
+        .filter(|var| var.value.is_none())
+        .map(|var| (var.name.clone(), var.var_type.clone(), var.is_handle()))
+        .collect(),
+      documents: program.documents.clone(),
+    }
+  }
+}
+
 impl<IO: IOManager> EvaluationEnvironment<IO> {
   pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
     #[cfg(feature = "window")]
@@ -5950,107 +6031,20 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
-    let DerivedGpuInterface {
-      binding_vars,
-      binding_stages,
-      gpu_entries,
-      gpu_entry_ids,
-      read_view_infos,
-    } = derive_gpu_interface(&program);
-    let shared_globals: Vec<(Arc<str>, Type, u32)> = program
-      .thread_shared_globals()
-      .into_iter()
-      .map(|(name, audience)| {
-        let ty = program
-          .top_level_vars
-          .iter()
-          .find(|v| v.name == name)
-          .expect("thread-shared global missing from top-level vars")
-          .var_type
-          .clone();
-        (name, ty, audience)
-      })
-      .collect();
-    let shared_indices: HashMap<Arc<str>, usize> = shared_globals
-      .iter()
-      .enumerate()
-      .map(|(index, (name, _, _))| (name.clone(), index))
-      .collect();
-    let shared_table = external_vars
-      .as_ref()
-      .map(|handle| handle.table_for_env(shared_globals.len()))
-      .unwrap_or_else(|| {
-        Arc::new(crate::thread_sync::ThreadSharedTable::new(
-          shared_globals.len(),
-        ))
-      });
-    let buffer_states = binding_vars
-      .iter()
-      .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
-      .collect();
-    let mut io = io;
-    let shared_atomics = shared_globals
-      .iter()
-      .enumerate()
-      .map(|(index, (_, ty, _))| {
-        ty.involves_atomic().then(|| {
-          let words = vm_words_of(ty);
-          SharedAtomic {
-            words: shared_table.slots[index]
-              .atomic_words(words, || io.shared_atomic_words(index, words)),
-            shadow: vec![0; words],
-          }
-        })
-      })
-      .collect();
-    let mut env = Self {
-      wgsl: String::new(),
-      bindings: HashMap::new(),
-      structs: program
-        .typedefs
-        .structs
-        .iter()
-        .map(|s| (s.name.0.clone(), (&*s).clone()))
-        .collect(),
+    let spec = EnvironmentSpec::without_wgsl(&program);
+    let mut env = Self::from_spec(
+      spec,
       io,
-      binding_vars,
-      binding_stages,
-      gpu_entries,
-      gpu_entry_ids,
-      read_view_infos,
-      last_midi_generation: None,
-      last_vm_midi_generation: None,
-      window_info_bindings: program
-        .window_info_bindings
-        .iter()
-        .map(|(source, name)| {
-          let ty = program
-            .top_level_vars
-            .iter()
-            .find(|v| v.name == *name)
-            .map(|v| v.var_type.clone())
-            .expect("window-info binding without a top-level var");
-          (source.clone(), name.clone(), ty)
-        })
-        .collect(),
-      buffer_states,
-      current_render_target: None,
-      render_settings: RenderSettings::default(),
-      video: VideoRegistry::new(),
       #[cfg(feature = "window")]
       audio_source,
-      #[cfg(feature = "window")]
-      #[cfg(feature = "window")]
-      lifted_audio_captures: program.lifted_audio_captures.clone(),
-      lifted_gpu_captures: program.lifted_gpu_captures.clone(),
-      shared_dirty: vec![false; shared_globals.len()],
-      shared_adopted: vec![0; shared_globals.len()],
-      shared_atomics,
-      shared_globals,
-      shared_table,
-      shared_indices,
-      documents: program.documents.clone(),
-    };
+      external_vars,
+    );
+    env.structs = program
+      .typedefs
+      .structs
+      .iter()
+      .map(|s| (s.name.0.clone(), (&*s).clone()))
+      .collect();
     // Enum unit-variant names are bound before global initializers are
     // evaluated, since an initializer may reference one (a function-union
     // member constant, say).
@@ -6090,50 +6084,168 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       let value = match &var.value {
         Some(exp) => eval(exp.clone(), &mut env)
           .map_err(|e| EvalError::from(e).described(&env.documents))?,
-        None => {
-          // A texture starts as its own blank 1×1 texture, and a sampler
-          // with the default settings.
-          let is_handle = matches!(
-            var.kind,
-            TopLevelVariableKind::Var {
-              address_space: VariableAddressSpace::Handle,
-              ..
-            }
-          );
-          if var.var_type.is_sampler() {
-            Value::Sampler(SamplerSettings::default())
-          } else if is_handle {
-            Value::Texture(TextureValue::new(1, 1, TextureInit::Blank))
-          } else {
-            // Unsized arrays and other unzeroable types fall back to
-            // Uninitialized; the user must assign before use.
-            Value::zeroed(var.var_type.clone(), &env)
-              .unwrap_or(Value::Uninitialized)
-          }
-        }
+        None => env.unassigned_value(&var.var_type, var.is_handle()),
       };
-      // Main's copy of the implicit `easl_sample_rate` local (see
-      // `Program::extract_audio_info`): the stream rate is fixed and
-      // knowable before any stream exists, so main-thread `(sample-rate)`
-      // calls, including in the initializers after this one and closure
-      // constructors sizing delay buffers during `start-audio` argument
-      // evaluation, read a real value. The audio thread's own copy is
-      // written by the driver instead.
-      let value = if &*var.name == "easl_sample_rate" {
-        Value::Prim(Primitive::F32(env.io.sample_rate()))
-      } else {
-        value
-      };
-      env.bind(var.name.clone(), value, var.var_type.clone());
+      env.bind_top_level_var(var.name.clone(), value, var.var_type.clone());
     }
-    // Initial window-info values: dispatches that happen outside a frame
-    // loop should see the IO manager's defaults rather than zeros.
-    env.refresh_window_info_bindings();
-    // Initial MIDI values, so pre-frame code sees the live state.
-    env.refresh_midi_state();
-    let wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
-    env.wgsl = wgsl;
+    env.refresh_frame_inputs();
+    env.wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
     Ok(env)
+  }
+
+  /// The environment a precompiled program runs in (see
+  /// `crate::precompiled`): everything the bytecode VM's host side needs,
+  /// without the program. Only the variables without initializers are
+  /// bound, to their starting values: the VM computes the rest itself.
+  pub fn from_precompiled(
+    mut spec: EnvironmentSpec,
+    io: IO,
+    #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
+    external_vars: Option<Arc<ExternalVars>>,
+  ) -> Self {
+    let unassigned_vars = std::mem::take(&mut spec.unassigned_vars);
+    let mut env = Self::from_spec(
+      spec,
+      io,
+      #[cfg(feature = "window")]
+      audio_source,
+      external_vars,
+    );
+    for (name, var_type, is_handle) in unassigned_vars {
+      let value = env.unassigned_value(&var_type, is_handle);
+      env.bind_top_level_var(name, value, var_type);
+    }
+    env.refresh_frame_inputs();
+    env
+  }
+
+  /// An environment with no bindings yet, from `spec`.
+  fn from_spec(
+    spec: EnvironmentSpec,
+    io: IO,
+    #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
+    external_vars: Option<Arc<ExternalVars>>,
+  ) -> Self {
+    let EnvironmentSpec {
+      wgsl,
+      gpu_interface:
+        DerivedGpuInterface {
+          binding_vars,
+          binding_stages,
+          gpu_entries,
+          gpu_entry_ids,
+          read_view_infos,
+        },
+      window_info_bindings,
+      #[cfg(feature = "window")]
+      lifted_audio_captures,
+      lifted_gpu_captures,
+      shared_globals,
+      documents,
+      ..
+    } = spec;
+    let shared_indices: HashMap<Arc<str>, usize> = shared_globals
+      .iter()
+      .enumerate()
+      .map(|(index, (name, _, _))| (name.clone(), index))
+      .collect();
+    let shared_table = external_vars
+      .as_ref()
+      .map(|handle| handle.table_for_env(shared_globals.len()))
+      .unwrap_or_else(|| {
+        Arc::new(crate::thread_sync::ThreadSharedTable::new(
+          shared_globals.len(),
+        ))
+      });
+    let buffer_states = binding_vars
+      .iter()
+      .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
+      .collect();
+    let mut io = io;
+    let shared_atomics = shared_globals
+      .iter()
+      .enumerate()
+      .map(|(index, (_, ty, _))| {
+        ty.involves_atomic().then(|| {
+          let words = vm_words_of(ty);
+          SharedAtomic {
+            words: shared_table.slots[index]
+              .atomic_words(words, || io.shared_atomic_words(index, words)),
+            shadow: vec![0; words],
+          }
+        })
+      })
+      .collect();
+    Self {
+      wgsl,
+      bindings: HashMap::new(),
+      structs: HashMap::new(),
+      io,
+      binding_vars,
+      binding_stages,
+      gpu_entries,
+      gpu_entry_ids,
+      read_view_infos,
+      last_midi_generation: None,
+      last_vm_midi_generation: None,
+      window_info_bindings,
+      buffer_states,
+      current_render_target: None,
+      render_settings: RenderSettings::default(),
+      video: VideoRegistry::new(),
+      #[cfg(feature = "window")]
+      audio_source,
+      #[cfg(feature = "window")]
+      lifted_audio_captures,
+      lifted_gpu_captures,
+      shared_dirty: vec![false; shared_globals.len()],
+      shared_adopted: vec![0; shared_globals.len()],
+      shared_atomics,
+      shared_globals,
+      shared_table,
+      shared_indices,
+      documents,
+    }
+  }
+
+  /// What a top-level variable without an initializer starts holding: a
+  /// texture its own blank 1×1 texture, a sampler the default settings,
+  /// anything else zero.
+  fn unassigned_value(&self, var_type: &Type, is_handle: bool) -> Value {
+    if var_type.is_sampler() {
+      Value::Sampler(SamplerSettings::default())
+    } else if is_handle {
+      Value::Texture(TextureValue::new(1, 1, TextureInit::Blank))
+    } else {
+      // Unsized arrays and other unzeroable types fall back to
+      // Uninitialized; the user must assign before use.
+      Value::zeroed(var_type.clone(), self).unwrap_or(Value::Uninitialized)
+    }
+  }
+
+  /// Binds a top-level variable to its starting value.
+  fn bind_top_level_var(&mut self, name: Arc<str>, value: Value, ty: Type) {
+    // Main's copy of the implicit `easl_sample_rate` local (see
+    // `Program::extract_audio_info`): the stream rate is fixed and
+    // knowable before any stream exists, so main-thread `(sample-rate)`
+    // calls, including in the initializers after this one and closure
+    // constructors sizing delay buffers during `start-audio` argument
+    // evaluation, read a real value. The audio thread's own copy is
+    // written by the driver instead.
+    let value = if &*name == "easl_sample_rate" {
+      Value::Prim(Primitive::F32(self.io.sample_rate()))
+    } else {
+      value
+    };
+    self.bind(name, value, ty);
+  }
+
+  /// Initial window-info and MIDI values: dispatches and code that run
+  /// outside a frame loop see the IO manager's defaults and the live MIDI
+  /// state rather than zeros.
+  fn refresh_frame_inputs(&mut self) {
+    self.refresh_window_info_bindings();
+    self.refresh_midi_state();
   }
   pub fn wgsl(&self) -> &str {
     &self.wgsl
@@ -10691,9 +10803,9 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
 
 impl<IO: IOManager> VmCpuRuntime<IO> {
   /// Builds the VM CPU runtime from an already-validated `Program`. The
-  /// program is compiled twice from the same validated form: once to WGSL +
-  /// an `EvaluationEnvironment` (for all GPU/host machinery) and once to
-  /// CPU-mode bytecode (for execution).
+  /// program is compiled twice from the same validated form: once to WGSL
+  /// and what the `EvaluationEnvironment` (all GPU/host machinery) needs,
+  /// and once to CPU-mode bytecode (for execution).
   pub fn new(
     program: Program,
     io: IO,
@@ -10716,20 +10828,71 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
-    let env_program = program.clone();
-    #[cfg(feature = "window")]
-    let mut env =
-      EvaluationEnvironment::from_program_with_audio_source_and_external(
-        env_program,
-        io,
-        audio_source,
-        external_vars,
-      )?;
-    #[cfg(not(feature = "window"))]
-    let mut env =
-      EvaluationEnvironment::build_inner(env_program, io, external_vars)?;
-    let (mut vm_program, function_names) =
+    let spec = EnvironmentSpec::of(program.clone())?;
+    let (vm_program, function_names) =
       program.compile_to_bytecode_program_cpu();
+    Self::from_parts(
+      spec,
+      vm_program,
+      function_names,
+      io,
+      #[cfg(feature = "window")]
+      audio_source,
+      external_vars,
+    )
+  }
+
+  /// Builds the runtime for a precompiled program (see
+  /// `crate::precompiled`), which needs no compiler.
+  pub fn from_precompiled(
+    precompiled: PrecompiledProgram,
+    io: IO,
+    external_vars: Option<Arc<ExternalVars>>,
+  ) -> Result<Self, EvalError> {
+    let PrecompiledProgram {
+      cpu,
+      cpu_function_names,
+      audio,
+      environment,
+      ..
+    } = precompiled;
+    #[cfg(feature = "window")]
+    let audio_source =
+      audio.map(
+        |(code, function_names)| crate::audio::AudioSource::Bytecode {
+          program: BytecodeProgram::from_code(code),
+          function_names,
+          shared_table: None,
+        },
+      );
+    #[cfg(not(feature = "window"))]
+    drop(audio);
+    Self::from_parts(
+      environment,
+      BytecodeProgram::without_initializing(cpu),
+      cpu_function_names,
+      io,
+      #[cfg(feature = "window")]
+      audio_source,
+      external_vars,
+    )
+  }
+
+  fn from_parts(
+    spec: EnvironmentSpec,
+    mut vm_program: BytecodeProgram,
+    function_names: Vec<Arc<str>>,
+    io: IO,
+    #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
+    external_vars: Option<Arc<ExternalVars>>,
+  ) -> Result<Self, EvalError> {
+    let mut env = EvaluationEnvironment::from_precompiled(
+      spec,
+      io,
+      #[cfg(feature = "window")]
+      audio_source,
+      external_vars,
+    );
     vm_program.attach_shared_atomics(&env.shared_table);
     // Main's copy of the implicit `easl_sample_rate` local (see
     // `Program::extract_audio_info`) — the tree-walker env's copy is

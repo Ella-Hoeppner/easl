@@ -16,7 +16,10 @@ use std::{
 
 use easl::{
   compile_easl_file_to_wgsl,
-  web_bundle::{bundle_program, RUNTIME_SUPPORT_FILES},
+  web_bundle::{
+    bundle_program, PROGRAM_DATA_FILE, PROGRAM_JS_FILE, RUNTIME_FILES,
+    RUNTIME_SUPPORT_FILES,
+  },
 };
 use pulldown_cmark::{html::push_html, Event, Parser, Tag, TagEnd};
 
@@ -90,11 +93,16 @@ fn package_hero_program(program_path: &Path, web_dir: &Path, out_dir: &Path) {
   }
   let dist = build_web_runtime(web_dir);
   fs::create_dir_all(out_dir).unwrap();
-  fs::write(out_dir.join("easl-program.js"), bundle.program_js).unwrap();
+  fs::write(
+    out_dir.join(PROGRAM_JS_FILE),
+    bundle.program_js(PROGRAM_DATA_FILE),
+  )
+  .unwrap();
+  fs::write(out_dir.join(PROGRAM_DATA_FILE), bundle.program_data).unwrap();
   for (name, contents) in RUNTIME_SUPPORT_FILES {
     fs::write(out_dir.join(name), contents).unwrap();
   }
-  for name in ["easl_web.js", "easl_web_bg.wasm"] {
+  for name in RUNTIME_FILES {
     fs::copy(dist.join(name), out_dir.join(name)).unwrap_or_else(|e| {
       panic!("couldn't copy {name} from {}: {e}", dist.display())
     });

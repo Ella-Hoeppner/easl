@@ -5,6 +5,8 @@
 //! builtin enums are built from `NAMES` (so a value's discriminant indexes
 //! them), and both runtimes decode discriminants with `from_discriminant`.
 
+use serde::{Deserialize, Serialize};
+
 /// Defines a render-setting enum whose first variant is its default, with
 /// its variants' names in declaration (discriminant) order.
 macro_rules! setting_enum {
@@ -273,7 +275,7 @@ impl RenderSettings {
 }
 
 /// One render setting, as its setter names it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderSetting {
   Blend,
   BlendConstant,

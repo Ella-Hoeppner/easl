@@ -1,0 +1,10 @@
+integer division by zero
+runtime_error_located.easl
+3 | (defn share [total: u32 people: u32]: u32
+4 |   (/ total people))
+      ^^^^^^^^^^^^^^^^
+called from:
+runtime_error_located.easl
+7 | (defn main []
+8 |   (print (share 120u 0u)))
+             ^^^^^^^^^^^^^^^

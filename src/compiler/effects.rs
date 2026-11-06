@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use crate::midi_out::MidiOutKind;
 /// `extract_gpu_window_info` pass rewrites each use into a read of an
 /// implicit uniform binding that the runtime refreshes at the start of
 /// every frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WindowInfoKind {
   Resolution,
   Time,
@@ -46,7 +47,7 @@ pub enum WindowInfoKind {
 /// What an implicit window-info binding is populated from: either one of
 /// the zero-arg queries, or a key query for one specific compile-time key
 /// string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WindowInfoBindingSource {
   Simple(WindowInfoKind),
   KeyDown(Arc<str>),

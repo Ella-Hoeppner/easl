@@ -3,12 +3,18 @@ name = "easl_web"
 version = "0.0.0"
 edition = "2024"
 
-# The easl web runtime: compiled once to WebAssembly, it compiles an easl
-# program in the browser and runs it on the bytecode VM, rendering through
-# WebGPU. Build with `web/build.sh`.
+# The easl web runtime: compiled once to WebAssembly, it runs a
+# precompiled easl program on the bytecode VM, rendering through WebGPU.
+# Build with `web/build.sh`.
 
 [lib]
 crate-type = ["cdylib"]
+
+[features]
+# Also compile programs from their sources in the browser
+# (`startProgramFromSources`), for pages that change them as they run. This
+# links the whole compiler into the runtime.
+compiler = []
 
 [dependencies]
 easl = { path = "..", features = ["window"] }
@@ -44,5 +50,16 @@ features = [
   "Worklet",
 ]
 
+# Optimized for size: the runtime is a download. Natively, the bytecode
+# VM runs as fast at this level as at `opt-level = 3`.
 [profile.release]
-opt-level = 3
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+# The runtime built with the compiler (`--features compiler`). The compiler
+# runs about 1.7x slower at `opt-level = "z"`, and only slightly slower at
+# "s", which matters to pages that recompile programs as they run.
+[profile.release-compiler]
+inherits = "release"
+opt-level = "s"

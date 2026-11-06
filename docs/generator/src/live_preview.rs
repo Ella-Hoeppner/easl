@@ -10,7 +10,7 @@
 //!
 //! Markdown viewers like GitHub hide the comment. `console` shows the
 //! program's `print` output under the canvas. The build fails if a program
-//! doesn't compile, and packages each one as `easl compile --web` would;
+//! doesn't compile, and precompiles each one as `easl compile --web` would;
 //! `assets/live-previews.js` starts each preview when it first nears the
 //! screen.
 
@@ -26,8 +26,11 @@ const MARKER: &str = "<!-- live-preview:";
 pub struct LivePreview {
   /// The program's main file, relative to `pages/`.
   source: PathBuf,
-  /// The packaged program's file name in the runtime directory.
+  /// The packaged program's module's file name in the runtime directory.
   module: String,
+  /// The precompiled program's file name in the runtime directory, which
+  /// the module loads.
+  data: String,
   /// Whether the program's `print` output is shown under the canvas.
   console: bool,
 }
@@ -49,8 +52,8 @@ impl LivePreview {
       }
     }
     let source = page_dir.join(path);
-    let module = format!(
-      "preview-{}.js",
+    let name = format!(
+      "preview-{}",
       source
         .with_extension("")
         .to_string_lossy()
@@ -58,7 +61,8 @@ impl LivePreview {
     );
     Some(LivePreview {
       source,
-      module,
+      module: format!("{name}.js"),
+      data: format!("{name}.bin"),
       console,
     })
   }
@@ -95,6 +99,11 @@ impl LivePreview {
         path.display()
       )
     });
-    fs::write(runtime_dir.join(&self.module), bundle.program_js).unwrap();
+    fs::write(
+      runtime_dir.join(&self.module),
+      bundle.program_js(&self.data),
+    )
+    .unwrap();
+    fs::write(runtime_dir.join(&self.data), bundle.program_data).unwrap();
   }
 }

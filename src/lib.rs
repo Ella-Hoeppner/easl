@@ -12,6 +12,7 @@ pub mod midi;
 pub mod midi;
 pub mod midi_out;
 pub mod parse;
+pub mod precompiled;
 pub mod render_settings;
 pub mod thread_sync;
 pub mod video;

@@ -14,6 +14,7 @@
 //! runtime-sized array, so those are split out into globals of their own
 //! (`SplitGlobal`).
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::iter;
 use std::sync::{Arc, RwLock};
@@ -398,7 +399,7 @@ impl Program {
 /// passed to by reference, once storage-ref inlining has substituted it for
 /// the parameter. Nothing about this is specific to closures: it applies to
 /// any struct-typed global.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SplitGlobal {
   /// The type of what the global itself holds, if anything's left.
   pub rest_type: Option<Type>,
@@ -406,7 +407,7 @@ pub struct SplitGlobal {
 }
 
 /// One runtime-sized array split out of a `SplitGlobal`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SplitPart {
   /// The field names leading to it from the global's value.
   pub path: Vec<Arc<str>>,
@@ -417,7 +418,7 @@ pub struct SplitPart {
 /// Where one capture of a lifted closure lives: the global holding its
 /// value (a captured closure's value is its scope), split when the GPU
 /// requires it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiftedCapture {
   pub global: Arc<str>,
   /// The captured value's type, a closure's as its scope struct.
@@ -442,7 +443,7 @@ impl LiftedCapture {
 /// read by the runtimes, which write each capture's value into its globals
 /// at every dispatch (GPU) or `start-audio` handoff (audio). Positionally
 /// aligned with the entry's scope struct fields.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiftedCaptures {
   pub fields: Vec<LiftedCapture>,
 }

@@ -1,7 +1,13 @@
-//! The easl web runtime. Compiled once to WebAssembly, it compiles an easl
-//! program in the browser and runs its `@cpu` entry on the bytecode VM,
-//! rendering into a canvas through WebGPU. Frames come from
-//! `requestAnimationFrame` rather than a native window loop.
+//! The easl web runtime, compiled to WebAssembly: it runs an easl
+//! program's `@cpu` entry on the bytecode VM, rendering into a canvas
+//! through WebGPU. Frames come from `requestAnimationFrame` rather than a
+//! native window loop.
+//!
+//! The default build runs programs `easl compile --web` precompiled (see
+//! `easl::precompiled`), so it holds no compiler. The `compiler` feature
+//! builds a runtime that can also compile programs from their sources in
+//! the browser, for pages that change them as they run (a playground); its
+//! errors describe where in the sources they happened.
 
 mod atomics;
 mod audio;
@@ -11,20 +17,21 @@ mod io;
 use std::{
   cell::{Cell, RefCell},
   collections::HashMap,
-  path::{Path, PathBuf},
+  fmt::Display,
+  future::Future,
   rc::Rc,
   sync::{Arc, RwLock},
 };
 
+#[cfg(feature = "compiler")]
+use std::path::{Path, PathBuf};
+
 use audio::AudioHost;
+#[cfg(feature = "compiler")]
+use easl::{CompilerTarget, load_easl_program_from_sources};
 use easl::{
-  CompilerTarget,
-  audio::AudioSource,
-  compiler::{entry::EntryPoint, program::Program},
-  interpreter::{
-    EvalError, IOManager, VmCpuRuntime, VmRunState, pick_entry_point_name,
-  },
-  load_easl_program_from_sources,
+  interpreter::{EvalError, IOManager, VmCpuRuntime, VmRunState},
+  precompiled::PrecompiledProgram,
   window::{
     BufferRead, GpuCore, SCROLL_LINE_HEIGHT, ScreenTarget,
     install_gpu_error_handler,
@@ -36,38 +43,63 @@ use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 
-/// Starts compiling and running an easl program, rendering into `canvas`,
-/// and returns it at once, for the page to pause, resume, and wait on. The
-/// program is given as parallel lists of file paths and sources, with
-/// `main_path` naming the file holding the `@cpu` entry point. `host`
-/// carries what the page provides: `module` (this runtime's compiled wasm
-/// module) and `workletUrl` (the audio worklet script) for programs that
-/// play audio, `startMidi`, called if the program reads MIDI, and
-/// optionally `onPrint`, called with each line the program prints in place
-/// of the browser console.
+/// Starts running a precompiled easl program (the bytes `easl compile
+/// --web` writes beside the page), rendering into `canvas`, and returns it
+/// at once, for the page to pause, resume, and wait on. `host` carries
+/// what the page provides: `module` (the compiled wasm module of this
+/// runtime, which the audio worklet instantiates too, or a function
+/// returning a promise of it) and `workletUrl` (the audio worklet script)
+/// for programs that play audio, `startMidi`, called if the program reads
+/// MIDI, and optionally `onPrint`, called with each line the program
+/// prints in place of the browser console.
 #[wasm_bindgen(js_name = startProgram)]
 pub fn start_program(
+  canvas: HtmlCanvasElement,
+  program: Vec<u8>,
+  host: JsValue,
+) -> EaslProgram {
+  start(canvas, host, async move {
+    PrecompiledProgram::from_bytes(&program)
+  })
+}
+
+/// Like `startProgram`, for a program given as its sources: parallel lists
+/// of file paths and sources, with `main_path` naming the file holding the
+/// `@cpu` entry point. The program is compiled first, and a compile error
+/// rejects `finished`.
+#[cfg(feature = "compiler")]
+#[wasm_bindgen(js_name = startProgramFromSources)]
+pub fn start_program_from_sources(
   canvas: HtmlCanvasElement,
   main_path: String,
   paths: Vec<String>,
   sources: Vec<String>,
   host: JsValue,
 ) -> EaslProgram {
+  start(canvas, host, async move {
+    compile_program(&main_path, paths, sources)
+  })
+}
+
+/// Starts running the program `load` produces.
+fn start(
+  canvas: HtmlCanvasElement,
+  host: JsValue,
+  load: impl Future<Output = Result<PrecompiledProgram, String>> + 'static,
+) -> EaslProgram {
   let control = Rc::new(ProgramControl::default());
   let run_control = Rc::clone(&control);
+  let load = RefCell::new(Some(load));
   let finished = Promise::new(&mut |resolve, reject| {
     let control = Rc::clone(&run_control);
-    let (canvas, main_path, paths, sources, host) = (
-      canvas.clone(),
-      main_path.clone(),
-      paths.clone(),
-      sources.clone(),
-      host.clone(),
-    );
+    let (canvas, host) = (canvas.clone(), host.clone());
+    let load = load.borrow_mut().take().unwrap();
     spawn_local(async move {
-      match run_program(canvas, main_path, paths, sources, host, &control)
-        .await
-      {
+      let result = match load.await {
+        Ok(program) => run_program(canvas, program, host, &control).await,
+        Err(message) => Err(message),
+      };
+      match result {
         Ok(()) => resolve.call0(&JsValue::NULL),
         Err(message) => reject.call1(
           &JsValue::NULL,
@@ -156,31 +188,13 @@ impl ProgramControl {
 
 async fn run_program(
   canvas: HtmlCanvasElement,
-  main_path: String,
-  paths: Vec<String>,
-  sources: Vec<String>,
+  program: PrecompiledProgram,
   host: JsValue,
   control: &ProgramControl,
 ) -> Result<(), String> {
   console_error_panic_hook::set_once();
-  let source_map: HashMap<PathBuf, String> =
-    paths.into_iter().map(PathBuf::from).zip(sources).collect();
-  let program = compile_program(Path::new(&main_path), &source_map)?;
-  let audio_source = (!program
-    .find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
-    .is_empty())
-  .then(|| {
-    let (program, function_names) =
-      program.clone().compile_to_bytecode_program();
-    AudioSource::Bytecode {
-      program,
-      function_names,
-      shared_table: None,
-    }
-  });
-  let entry_name =
-    pick_entry_point_name(&program, None).map_err(describe_error)?;
-  if audio_source.is_some() {
+  let entry_name = program.entry_name.clone();
+  if program.audio.is_some() {
     control.plays_audio.set(true);
     audio::configure(AudioHost {
       module: Reflect::get(&host, &"module".into()).unwrap_or_default(),
@@ -189,15 +203,12 @@ async fn run_program(
         .and_then(|url| url.as_string())
         .unwrap_or_default(),
     })
-    .map_err(describe_error)?;
+    .map_err(describe_js_error)?;
     if control.paused.get() {
       audio::set_paused(true);
     }
   }
-  if program
-    .top_level_vars
-    .iter()
-    .any(|var| var.name.starts_with("easl_midi_"))
+  if program.reads_midi
     && let Ok(start_midi) = Reflect::get(&host, &"startMidi".into())
     && let Some(start_midi) = start_midi.dyn_ref::<Function>()
   {
@@ -205,7 +216,7 @@ async fn run_program(
   }
 
   check_shared_atomics_supported(&program)?;
-  if program.sends_midi() {
+  if program.sends_midi {
     return Err(
       "MIDI output isn't supported on the web yet: the program sends MIDI"
         .to_string(),
@@ -218,7 +229,7 @@ async fn run_program(
     .ok()
     .and_then(|on_print| on_print.dyn_into::<Function>().ok());
   let mut runtime =
-    VmCpuRuntime::new(program, WebIO::new(on_print), audio_source)
+    VmCpuRuntime::from_precompiled(program, WebIO::new(on_print), None)
       .map_err(describe_error)?;
   install_gpu_error_handler(&device);
   let gpu = GpuCore::new_from_parts(
@@ -271,18 +282,22 @@ pub fn send_midi_message(bytes: &[u8]) {
   audio::forward_midi(bytes);
 }
 
-/// Parses and validates the program.
+/// Parses, validates, and compiles the program.
+#[cfg(feature = "compiler")]
 fn compile_program(
-  main_path: &Path,
-  sources: &HashMap<PathBuf, String>,
-) -> Result<Program, String> {
-  match load_easl_program_from_sources(main_path, sources)
+  main_path: &str,
+  paths: Vec<String>,
+  sources: Vec<String>,
+) -> Result<PrecompiledProgram, String> {
+  let sources: HashMap<PathBuf, String> =
+    paths.into_iter().map(PathBuf::from).zip(sources).collect();
+  match load_easl_program_from_sources(Path::new(main_path), &sources)
     .map_err(|e| e.to_string())?
   {
     Ok((documents, Ok(mut program))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       if errors.is_empty() {
-        Ok(program)
+        PrecompiledProgram::new(program).map_err(describe_error)
       } else {
         Err(errors.describe(&documents))
       }
@@ -296,35 +311,28 @@ fn compile_program(
 /// on pages that aren't cross-origin isolated: those atomics live in
 /// `SharedArrayBuffer`s (see `atomics`), which browsers only allow on
 /// isolated pages.
-fn check_shared_atomics_supported(program: &Program) -> Result<(), String> {
-  if atomics::cross_origin_isolated() {
+fn check_shared_atomics_supported(
+  program: &PrecompiledProgram,
+) -> Result<(), String> {
+  if program.shared_atomic_globals.is_empty()
+    || atomics::cross_origin_isolated()
+  {
     return Ok(());
   }
-  let names: Vec<Arc<str>> = program
-    .thread_shared_globals()
-    .into_iter()
-    .map(|(name, _)| name)
-    .filter(|name| {
-      program
-        .top_level_vars
-        .iter()
-        .any(|var| &var.name == name && var.var_type.involves_atomic())
-    })
-    .collect();
-  if names.is_empty() {
-    Ok(())
-  } else {
-    Err(format!(
-      "the atomic variable(s) {} are used by both the main thread and the \
-       audio thread, which needs a cross-origin isolated page: serve it with \
-       the headers {}",
-      names.join(", "),
-      atomics::ISOLATION_HEADERS
-    ))
-  }
+  Err(format!(
+    "the atomic variable(s) {} are used by both the main thread and the \
+     audio thread, which needs a cross-origin isolated page: serve it with \
+     the headers {}",
+    program.shared_atomic_globals.join(", "),
+    atomics::ISOLATION_HEADERS
+  ))
 }
 
-fn describe_error(error: impl std::fmt::Debug) -> String {
+fn describe_error(error: impl Display) -> String {
+  error.to_string()
+}
+
+fn describe_js_error(error: JsValue) -> String {
   format!("{error:?}")
 }
 

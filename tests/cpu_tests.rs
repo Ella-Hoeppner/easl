@@ -1,11 +1,13 @@
 mod common;
 
 use easl::compiler::core::load_easl_program_from_file;
-use easl::compiler::program::CompilerTarget;
+use easl::compiler::program::{CompilerTarget, Program};
 use easl::interpreter::{
-  CpuRuntime, IOEvent, MidiNoteState, MidiState, StringIO,
-  run_program_capturing_output_with_runtime, run_program_with_runtime,
+  CpuRuntime, EvalError, IOEvent, MidiNoteState, MidiState, StringIO,
+  VmCpuRuntime, run_program_capturing_output_with_runtime,
+  run_program_with_runtime,
 };
+use easl::precompiled::PrecompiledProgram;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -33,13 +35,24 @@ fn run_cpu_test(name: &str) {
       assert_eq!(output, expected, "{name}: output mismatch (tree-walking)");
 
       let vm_output = run_program_capturing_output_with_runtime(
-        program,
+        program.clone(),
         CpuRuntime::BytecodeVm,
       )
       .unwrap_or_else(|e| {
         panic!("{name}: evaluation error (bytecode VM): {e:#?}");
       });
       assert_eq!(vm_output, expected, "{name}: output mismatch (bytecode VM)");
+
+      // And on the VM again, precompiled and read back from its encoding,
+      // as the web runtime runs it.
+      let precompiled_output = run_precompiled_capturing_output(program)
+        .unwrap_or_else(|e| {
+          panic!("{name}: evaluation error (precompiled): {e:#?}");
+        });
+      assert_eq!(
+        precompiled_output, expected,
+        "{name}: output mismatch (precompiled)"
+      );
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
@@ -69,6 +82,27 @@ fn run_cpu_test(name: &str) {
     }
     Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
   }
+}
+
+/// Precompiles `program`, encodes it and reads it back, and runs it on the
+/// bytecode VM, returning what it prints.
+fn run_precompiled_capturing_output(
+  program: Program,
+) -> Result<String, EvalError> {
+  let bytes = PrecompiledProgram::new(program)?.to_bytes();
+  let precompiled = PrecompiledProgram::from_bytes(&bytes).unwrap();
+  let entry_name = precompiled.entry_name.clone();
+  let mut runtime =
+    VmCpuRuntime::from_precompiled(precompiled, StringIO::new(), None)?;
+  runtime.run(&entry_name)?;
+  let mut output = String::new();
+  for event in &runtime.env.io.events {
+    if let IOEvent::Print(s) = event {
+      output.push_str(s);
+      output.push('\n');
+    }
+  }
+  Ok(output)
 }
 
 /// Runs a program expected to fail with a runtime error on both CPU

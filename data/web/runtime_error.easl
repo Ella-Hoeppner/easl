@@ -1,0 +1,10 @@
+; A runtime error in a precompiled program: its message, which says
+; nothing of where it happened (the program has no source map). Its own
+; run from sources, on the runtime built with the compiler, is
+; `runtime_error_located`.
+(defn share [total: u32 people: u32]: u32
+  (/ total people))
+
+@cpu
+(defn main []
+  (print (share 120u 0u)))

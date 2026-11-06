@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Display;
 
@@ -26,7 +27,7 @@ use super::{
 };
 use crate::midi_out::MidiOutKind;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum VariableAddressSpace {
   Local,
   Function,
@@ -108,7 +109,7 @@ impl Display for VariableAddressSpace {
     write!(f, "{}", self.name())
   }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GroupAndBinding {
   pub group: u8,
   pub binding: u8,
@@ -185,6 +186,16 @@ pub struct TopLevelVar {
 }
 
 impl TopLevelVar {
+  /// Whether this is in the handle space: a texture or a sampler.
+  pub fn is_handle(&self) -> bool {
+    matches!(
+      self.kind,
+      TopLevelVariableKind::Var {
+        address_space: VariableAddressSpace::Handle,
+        ..
+      }
+    )
+  }
   pub fn from_ast(
     var_kind_name: &str,
     parens_source_trace: &SourceTrace,

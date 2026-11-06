@@ -19,6 +19,7 @@
 //! `@{location}`s written on it or its fields, counting up across a
 //! composite, and otherwise the lowest free locations.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -43,7 +44,7 @@ use crate::compiler::{
 pub const MAX_VERTEX_ATTRIBUTES: usize = 16;
 
 /// The scalar type of a vertex attribute's components.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VertexScalar {
   F32,
   U32,
@@ -52,7 +53,7 @@ pub enum VertexScalar {
 
 /// One vertex attribute: a scalar or vector at `offset` bytes into each
 /// element, read at the shader input `location`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VertexAttribute {
   pub scalar: VertexScalar,
   /// 1 to 4.
@@ -62,7 +63,7 @@ pub struct VertexAttribute {
 }
 
 /// How one data parameter's values sit in its array's buffer.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VertexInputLayout {
   /// Bytes from one element to the next.
   pub stride: u32,

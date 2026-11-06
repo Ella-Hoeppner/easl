@@ -705,7 +705,7 @@ pub struct Function {
 }
 
 /// How the CPU-side value of a GPU-bound global is stored in the VM runtime.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum HostBindingStorage {
   /// Fixed-size value living directly in VM stack slots.
   Slots { position: u16, size: u16 },
@@ -839,7 +839,7 @@ impl DynMemory {
 /// arrays / textures live host-side even without a GPU binding). The name is
 /// kept only for logging and sync-trace parity with the tree-walking
 /// interpreter — the runtime addresses entries exclusively by table index.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostBinding {
   pub name: Arc<str>,
   pub ty: Type,
@@ -851,7 +851,7 @@ pub struct HostBinding {
 
 /// Read/write binding-index sets for one GPU dispatch site, resolved from
 /// the dispatched entry point's effects at compile time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostDispatch {
   /// Bindings the dispatched shader(s) read (including length-only reads —
   /// `arrayLength()` derives from buffer size, so uploads must count them).
@@ -860,7 +860,7 @@ pub struct HostDispatch {
   pub writes: Vec<u16>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowQueryKind {
   /// vec2f, 2 slots.
   Resolution,
@@ -885,7 +885,7 @@ pub enum WindowQueryKind {
 /// (`*_slot`, `dest`) or indices into the `Code` metadata tables (`ty` →
 /// `host_types`, string-ish fields → `host_strings`, `binding` →
 /// `host_bindings`, `sets` → `host_dispatches`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostOp {
   /// Print the value starting at `slot`, of type `host_types[ty]`, with the
   /// same formatting as the tree-walking interpreter.
@@ -1353,10 +1353,11 @@ impl VmHost for AudioHost<'_> {
   }
 }
 
-/// A compiled program. Audio-mode code (which never makes host calls)
-/// serializes with [`Code::to_bytes`], so another runtime instance can run
-/// the same program without compiling it again: the web runtime's audio
-/// worklet shares no memory with its page.
+/// A compiled program. It serializes with [`Code::to_bytes`] (without its
+/// source map), so another runtime instance can run the same program
+/// without compiling it: the web runtime's audio worklet shares no memory
+/// with its page, and a precompiled program (`crate::precompiled`) runs
+/// without the compiler.
 #[derive(Serialize, Deserialize)]
 pub struct Code {
   pub function_instructions: Vec<Instruction>,
@@ -1380,15 +1381,10 @@ pub struct Code {
   pub min_stack_size: usize,
   /// Cold metadata for `Op::HostCall` (CPU-runtime mode; all empty for
   /// audio-mode programs).
-  #[serde(skip)]
   pub host_ops: Vec<HostOp>,
-  #[serde(skip)]
   pub host_types: Vec<Type>,
-  #[serde(skip)]
   pub host_strings: Vec<Arc<str>>,
-  #[serde(skip)]
   pub host_bindings: Vec<HostBinding>,
-  #[serde(skip)]
   pub host_dispatches: Vec<HostDispatch>,
   /// Number of runtime-sized array globals; sizes
   /// `BytecodeProgram::dyn_memory`.
@@ -1452,18 +1448,8 @@ impl Code {
       .iter()
       .any(|instruction| instruction.op == Op::SendMidi)
   }
-  /// This program's encoding, for [`Code::from_bytes`]. Only audio-mode
-  /// programs serialize: CPU-mode programs' host-call metadata refers to
-  /// compiler types.
+  /// This program's encoding, for [`Code::from_bytes`].
   pub fn to_bytes(&self) -> Vec<u8> {
-    assert!(
-      self.host_ops.is_empty()
-        && self.host_types.is_empty()
-        && self.host_strings.is_empty()
-        && self.host_bindings.is_empty()
-        && self.host_dispatches.is_empty(),
-      "only audio-mode programs can be serialized"
-    );
     postcard::to_allocvec(self).expect("serializing bytecode failed")
   }
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {

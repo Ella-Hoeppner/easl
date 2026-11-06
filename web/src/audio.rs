@@ -22,7 +22,8 @@ use std::{
 
 use easl::{audio::AudioSource, thread_sync::ThreadSharedTable};
 use js_sys::{
-  Array, Object, Reflect, SharedArrayBuffer, Uint8Array, Uint32Array,
+  Array, Function, Object, Promise, Reflect, SharedArrayBuffer, Uint8Array,
+  Uint32Array,
 };
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -34,8 +35,10 @@ use web_sys::{
 /// Name the worklet script registers its processor under.
 const PROCESSOR_NAME: &str = "easl-audio";
 
-/// What the page provides for audio: the compiled wasm module (the worklet
-/// instantiates its own copy) and the worklet script's URL.
+/// What the page provides for audio: the compiled wasm module of the
+/// precompiled-program runtime, which the worklet instantiates (or a
+/// function returning a promise of it, called only when audio starts), and
+/// the worklet script's URL.
 pub struct AudioHost {
   pub module: JsValue,
   pub worklet_url: String,
@@ -290,20 +293,24 @@ async fn create_worklet(
     let buffers: Array = buffers.iter().map(|(_, buffer)| buffer).collect();
     (Uint32Array::from(&indices[..]), buffers)
   });
-  let (worklet_url, processor_options) = HOST.with(|h| {
+  let (worklet_url, module) = HOST.with(|h| {
     let h = h.borrow();
     let host = h.as_ref().expect("audio host configured");
-    (
-      host.worklet_url.clone(),
-      message(&[
-        ("module", host.module.clone()),
-        ("program", program.into()),
-        ("functionNames", function_names.into()),
-        ("atomicIndices", atomic_indices.into()),
-        ("atomicBuffers", atomic_buffers.into()),
-      ]),
-    )
+    (host.worklet_url.clone(), host.module.clone())
   });
+  let module = match module.dyn_ref::<Function>() {
+    Some(load) => {
+      JsFuture::from(Promise::from(load.call0(&JsValue::NULL)?)).await?
+    }
+    None => module,
+  };
+  let processor_options = message(&[
+    ("module", module),
+    ("program", program.into()),
+    ("functionNames", function_names.into()),
+    ("atomicIndices", atomic_indices.into()),
+    ("atomicBuffers", atomic_buffers.into()),
+  ]);
   JsFuture::from(context.audio_worklet()?.add_module(&worklet_url)?).await?;
   let options = AudioWorkletNodeOptions::new();
   options.set_processor_options(Some(&processor_options.unchecked_into()));

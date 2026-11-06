@@ -33,7 +33,10 @@ mod harness {
     time::{Duration, Instant},
   };
 
-  use easl::web_bundle::{RUNTIME_SUPPORT_FILES, bundle_program};
+  use easl::web_bundle::{
+    COMPILER_RUNTIME_FILES, PROGRAM_DATA_FILE, RUNTIME_FILES,
+    RUNTIME_SUPPORT_FILES, bundle_program, bundle_program_sources,
+  };
   use serde_json::{Value, json};
   use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
   use wasm_bindgen_cli_support::Bindgen;
@@ -264,6 +267,23 @@ mod harness {
   /// each line it's called with prefixed `onPrint: `.
   const CAPTURED_PRINTS: &[&str] = &["web/print_capture"];
 
+  /// Tests that also run, as `<test> (from sources)`, on the runtime built
+  /// with the compiler, given the program's sources.
+  const ALSO_FROM_SOURCES: &[&str] = &[
+    "web/print_capture",
+    "web/readback",
+    "web/pause_resume",
+    "web/audio_shared_vars",
+    "web/shared_atomics",
+    "web/runtime_error",
+    "buffer/screen_vertex_data",
+  ];
+
+  /// Tests that run only on the runtime built with the compiler: their
+  /// expected errors say where in the sources they happened, which a
+  /// precompiled program can't.
+  const ONLY_FROM_SOURCES: &[&str] = &["web/runtime_error_located"];
+
   /// How long one test may run.
   const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -293,9 +313,13 @@ mod harness {
 "#;
 
   struct Case {
-    /// `<suite>/<test>`, e.g. `web/readback`.
+    /// `<suite>/<test>`, e.g. `web/readback`, with ` (from sources)` for a
+    /// run on the runtime built with the compiler.
     name: String,
     source: PathBuf,
+    /// Whether it runs on the runtime built with the compiler, from its
+    /// sources (see `ALSO_FROM_SOURCES`), rather than precompiled.
+    from_sources: bool,
     expected: Expected,
     script: &'static [Step],
     /// Whether its page is cross-origin isolated (see `NOT_ISOLATED`).
@@ -304,6 +328,7 @@ mod harness {
     captures_prints: bool,
   }
 
+  #[derive(Clone)]
   enum Expected {
     /// What the program prints, from `<test>.txt`.
     Output(String),
@@ -425,86 +450,119 @@ mod harness {
           .iter()
           .find(|(scripted, _)| suite == "web" && *scripted == test)
           .map_or(&[][..], |(_, script)| *script);
-        cases.push(Case {
+        let case = |from_sources: bool, expected: Expected| Case {
           isolated: !NOT_ISOLATED.contains(&&*name),
           captures_prints: CAPTURED_PRINTS.contains(&&*name),
-          name,
-          source,
+          name: if from_sources && !ONLY_FROM_SOURCES.contains(&&*name) {
+            format!("{name} (from sources)")
+          } else {
+            name.clone()
+          },
+          source: source.clone(),
+          from_sources,
           expected,
           script,
-        });
+        };
+        if ONLY_FROM_SOURCES.contains(&&*name) {
+          cases.push(case(true, expected));
+          continue;
+        }
+        if ALSO_FROM_SOURCES.contains(&&*name) {
+          cases.push(case(true, expected.clone()));
+        }
+        cases.push(case(false, expected));
       }
     }
     cases
   }
 
-  /// Builds the web runtime into `scratch/runtime`, returning that
-  /// directory: `easl_web.js` and `easl_web_bg.wasm`.
+  /// Builds the web runtimes into `scratch/runtime`, returning that
+  /// directory: the one running precompiled programs (`RUNTIME_FILES`), and
+  /// the one built with the compiler (`COMPILER_RUNTIME_FILES`).
   fn build_runtime(scratch: &Path) -> PathBuf {
     let web_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
     let target_dir = scratch.join("runtime-target");
-    // The runtime is its own build, configured by `web/.cargo/config.toml`;
-    // none of the environment cargo gives this test applies to it.
-    let mut cargo = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
-    cargo
-      .current_dir(&web_dir)
-      .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
-      .arg("--target-dir")
-      .arg(&target_dir);
-    for (name, _) in env::vars_os() {
-      let name = name.to_string_lossy();
-      if name.starts_with("CARGO_") && name != "CARGO_HOME" {
-        cargo.env_remove(&*name);
-      }
-    }
-    let status = cargo.status().expect("failed to run cargo");
-    assert!(
-      status.success(),
-      "building the web runtime failed; it needs the wasm32 target \
-       (`rustup target add wasm32-unknown-unknown`)"
-    );
     let runtime_dir = scratch.join("runtime");
-    Bindgen::new()
-      .input_path(
-        target_dir.join("wasm32-unknown-unknown/release/easl_web.wasm"),
-      )
-      .web(true)
-      .unwrap()
-      .typescript(false)
-      .omit_default_module_path(false)
-      .generate(&runtime_dir)
-      .expect("generating the web runtime's JS bindings failed");
+    for (profile, features, out_name) in [
+      ("release", "", "easl_web"),
+      ("release-compiler", "compiler", "easl_web_compiler"),
+    ] {
+      // The runtime is its own build, configured by
+      // `web/.cargo/config.toml`; none of the environment cargo gives this
+      // test applies to it.
+      let mut cargo = Command::new(env::var("CARGO").unwrap_or("cargo".into()));
+      cargo
+        .current_dir(&web_dir)
+        .args(["build", "--profile", profile, "--features", features])
+        .args(["--target", "wasm32-unknown-unknown", "--target-dir"])
+        .arg(&target_dir);
+      for (name, _) in env::vars_os() {
+        let name = name.to_string_lossy();
+        if name.starts_with("CARGO_") && name != "CARGO_HOME" {
+          cargo.env_remove(&*name);
+        }
+      }
+      let status = cargo.status().expect("failed to run cargo");
+      assert!(
+        status.success(),
+        "building the web runtime failed; it needs the wasm32 target \
+         (`rustup target add wasm32-unknown-unknown`)"
+      );
+      Bindgen::new()
+        .input_path(
+          target_dir
+            .join(format!("wasm32-unknown-unknown/{profile}/easl_web.wasm")),
+        )
+        .out_name(out_name)
+        .web(true)
+        .unwrap()
+        .typescript(false)
+        .omit_default_module_path(false)
+        .generate(&runtime_dir)
+        .expect("generating the web runtime's JS bindings failed");
+    }
     runtime_dir
   }
 
-  /// Serves the runtime and each test's page and program over HTTP. Test
+  /// Serves the runtimes and each test's page and program over HTTP. Test
   /// `id` lives at `/t/<id>/`, and every test shares the runtime files at
   /// `/runtime/`, so the browser compiles the wasm once.
   struct Server {
     port: u16,
-    /// Each test's program, and whether its page is cross-origin isolated.
-    programs: Arc<Mutex<HashMap<usize, (String, bool)>>>,
+    programs: Arc<Mutex<HashMap<usize, ServedProgram>>>,
     next_id: AtomicUsize,
+  }
+
+  /// A test's program, as served.
+  struct ServedProgram {
+    js: String,
+    /// The precompiled program the module loads, for one run precompiled.
+    data: Option<Vec<u8>>,
+    /// Whether its page is cross-origin isolated.
+    isolated: bool,
   }
 
   impl Server {
     fn start(runtime_dir: &Path) -> Self {
       let listener = TcpListener::bind("127.0.0.1:0").unwrap();
       let port = listener.local_addr().unwrap().port();
-      let runtime_js = fs::read(runtime_dir.join("easl_web.js")).unwrap();
-      let runtime_wasm =
-        fs::read(runtime_dir.join("easl_web_bg.wasm")).unwrap();
-      let programs =
-        Arc::new(Mutex::new(HashMap::<usize, (String, bool)>::new()));
+      let runtime_files: HashMap<String, Vec<u8>> = RUNTIME_FILES
+        .iter()
+        .chain(&COMPILER_RUNTIME_FILES)
+        .map(|name| {
+          (name.to_string(), fs::read(runtime_dir.join(name)).unwrap())
+        })
+        .collect();
+      let programs = Arc::new(Mutex::new(HashMap::new()));
       let served_programs = Arc::clone(&programs);
-      let files = Arc::new((runtime_js, runtime_wasm));
+      let runtime_files = Arc::new(runtime_files);
       thread::spawn(move || {
         for stream in listener.incoming() {
           let Ok(stream) = stream else { continue };
           let programs = Arc::clone(&served_programs);
-          let files = Arc::clone(&files);
+          let runtime_files = Arc::clone(&runtime_files);
           thread::spawn(move || {
-            let _ = serve(stream, &programs, &files.0, &files.1);
+            let _ = serve(stream, &programs, &runtime_files);
           });
         }
       });
@@ -515,22 +573,25 @@ mod harness {
       }
     }
 
-    /// Serves `program_js` as a new test's program, returning the URL of its
-    /// page, which is cross-origin isolated if `isolated`.
+    /// Serves `program_js` (loading `data`, if any) as a new test's
+    /// program, returning the URL of its page, which is cross-origin
+    /// isolated if `isolated`.
     fn add_program(
       &self,
       program_js: String,
+      data: Option<Vec<u8>>,
       isolated: bool,
     ) -> (usize, String) {
       let id = self.next_id.fetch_add(1, Ordering::Relaxed);
       self.programs.lock().unwrap().insert(
         id,
-        (
+        ServedProgram {
           // Every runtime file the program refers to (`./easl_web.js`, the
           // wasm, the audio worklet) is served once, from `/runtime/`.
-          program_js.replace("\"./", "\"/runtime/"),
+          js: program_js.replace("\"./", "\"/runtime/"),
+          data,
           isolated,
-        ),
+        },
       );
       (
         id,
@@ -545,9 +606,8 @@ mod harness {
 
   fn serve(
     stream: TcpStream,
-    programs: &Mutex<HashMap<usize, (String, bool)>>,
-    runtime_js: &[u8],
-    runtime_wasm: &[u8],
+    programs: &Mutex<HashMap<usize, ServedProgram>>,
+    runtime_files: &HashMap<String, Vec<u8>>,
   ) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
@@ -556,8 +616,17 @@ mod harness {
     let program_body;
     let mut isolation_headers = ISOLATION_HEADERS;
     let (content_type, body): (&str, &[u8]) = match path {
-      "/runtime/easl_web.js" => ("text/javascript", runtime_js),
-      "/runtime/easl_web_bg.wasm" => ("application/wasm", runtime_wasm),
+      _ if let Some(contents) = path
+        .strip_prefix("/runtime/")
+        .and_then(|name| runtime_files.get(name)) =>
+      {
+        let content_type = if path.ends_with(".wasm") {
+          "application/wasm"
+        } else {
+          "text/javascript"
+        };
+        (content_type, contents.as_slice())
+      }
       _ if let Some((_, contents)) = RUNTIME_SUPPORT_FILES
         .iter()
         .find(|(name, _)| path.strip_prefix("/runtime/") == Some(*name)) =>
@@ -569,15 +638,35 @@ mod harness {
         let id: Option<usize> = parts.next().and_then(|id| id.parse().ok());
         match (id, parts.next()) {
           (Some(id), Some("index.html")) => {
-            if programs.lock().unwrap().get(&id).is_some_and(|p| !p.1) {
+            if programs
+              .lock()
+              .unwrap()
+              .get(&id)
+              .is_some_and(|program| !program.isolated)
+            {
               isolation_headers = "";
             }
             ("text/html", TEST_PAGE.as_bytes())
           }
           (Some(id), Some("easl-program.js")) => {
-            program_body = programs.lock().unwrap().get(&id).cloned();
+            program_body = programs
+              .lock()
+              .unwrap()
+              .get(&id)
+              .map(|program| program.js.clone().into_bytes());
             match &program_body {
-              Some((program, _)) => ("text/javascript", program.as_bytes()),
+              Some(js) => ("text/javascript", js.as_slice()),
+              None => ("", &[]),
+            }
+          }
+          (Some(id), Some(PROGRAM_DATA_FILE)) => {
+            program_body = programs
+              .lock()
+              .unwrap()
+              .get(&id)
+              .and_then(|program| program.data.clone());
+            match &program_body {
+              Some(data) => ("application/octet-stream", data.as_slice()),
               None => ("", &[]),
             }
           }
@@ -654,7 +743,7 @@ mod harness {
 
     /// Fails the run with a clear message if this Chrome has no WebGPU.
     fn check_webgpu(&self, server: &Server) {
-      let (id, url) = server.add_program(String::new(), true);
+      let (id, url) = server.add_program(String::new(), None, true);
       let mut tab = Tab::open(self, &url);
       let result = tab.session.evaluate(
         "(async () => !!(navigator.gpu && \
@@ -961,10 +1050,19 @@ mod harness {
     chrome: &Chrome,
     server: &Server,
   ) -> Result<(), String> {
-    let program_js = bundle_program(&case.source)
-      .map_err(|e| format!("compile error:\n{e}"))?
-      .program_js;
-    let (id, url) = server.add_program(program_js, case.isolated);
+    let (program_js, data) = if case.from_sources {
+      let bundle = bundle_program_sources(&case.source)
+        .map_err(|e| format!("compile error:\n{e}"))?;
+      (bundle.program_js, None)
+    } else {
+      let bundle = bundle_program(&case.source)
+        .map_err(|e| format!("compile error:\n{e}"))?;
+      (
+        bundle.program_js(PROGRAM_DATA_FILE),
+        Some(bundle.program_data),
+      )
+    };
+    let (id, url) = server.add_program(program_js, data, case.isolated);
     let mut tab = Tab::open(chrome, &url);
     let result =
       run_program(&mut tab.session, case.script, case.captures_prints);
