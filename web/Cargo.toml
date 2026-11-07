@@ -51,11 +51,14 @@ features = [
 ]
 
 # Optimized for size: the runtime is a download. Natively, the bytecode
-# VM runs as fast at this level as at `opt-level = 3`.
+# VM runs as fast at this level as at `opt-level = 3`. Stripping drops the
+# function names (about a quarter of the wasm), so a panic's stack trace in
+# the browser shows function numbers.
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
+strip = true
 
 # The runtime built with the compiler (`--features compiler`). The compiler
 # runs about 1.7x slower at `opt-level = "z"`, and only slightly slower at

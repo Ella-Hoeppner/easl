@@ -1,0 +1,7 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+# Compilation recurses deeply on large programs; wasm's default 1MB stack
+# isn't enough.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=16777216"]
