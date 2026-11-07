@@ -439,6 +439,7 @@ error_test!(
   array_size_def_failure,
   CompileErrorKind::NonConstantArraySize("called".to_string()),
   CompileErrorKind::NonConstantArraySize("fractional".to_string()),
+  CompileErrorKind::NonConstantArraySize("from-float".to_string()),
   CompileErrorKind::NegativeArraySize("negative".to_string(), -2),
   CompileErrorKind::ArraySizeDividesByZero("by-zero".to_string())
 );

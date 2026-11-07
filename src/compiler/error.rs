@@ -674,8 +674,9 @@ pub enum CompileErrorKind {
   NonConstantInitializerInShader(String),
   #[error(
     "`{0}` is used as an array size, so its value must be a constant \
-     integer: an integer literal, or `+`, `-`, `*`, `/`, or `%` of those and \
-     of other such `def`s"
+     integer: computed from integer literals and other such `def`s with \
+     `+`, `-`, `*`, `/`, `%`, the conversions `u32` and `i32`, integer \
+     vectors (`vec2u`, `vec3i`, ...), and their components (`.x`, `.xy`, ...)"
   )]
   NonConstantArraySize(String),
   #[error(
