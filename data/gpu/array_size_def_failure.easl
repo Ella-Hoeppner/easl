@@ -1,11 +1,13 @@
 ; `def`s used as array sizes whose values aren't constant integers: one
-; calls a function, one isn't an integer, one is negative, and one divides
-; by zero. The `def` that calls a function but isn't a size is fine.
+; calls a function, one isn't an integer, one converts a float, one is
+; negative, and one divides by zero. The `def` that calls a function but
+; isn't a size is fine.
 (defn twice [x: u32]: u32
   (* 2u x))
 
 (def called: u32 (twice 2u))
 (def fractional: f32 2.)
+(def from-float: u32 (u32 (.x (vec2f 2. 3.))))
 (def negative: i32 (- 1i 3i))
 (def by-zero: u32 (/ 4u (- 2u 2u)))
 (def unused-as-size: u32 (twice 3u))
@@ -14,6 +16,7 @@
 (defn main []
   (print (array-length (zeroed-array): [called: f32]))
   (print (array-length (zeroed-array): [fractional: f32]))
+  (print (array-length (zeroed-array): [from-float: f32]))
   (print (array-length (zeroed-array): [negative: f32]))
   (print (array-length (zeroed-array): [by-zero: f32]))
   (print unused-as-size))

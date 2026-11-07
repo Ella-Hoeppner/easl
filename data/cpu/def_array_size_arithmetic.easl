@@ -1,9 +1,10 @@
 ; Array sizes can name `def`s computed with `+`, `-`, `*`, `/`, and `%`
-; from integer literals and other such `def`s. The compiler computes them
-; the way the runtime does, which each line checks by printing the `def`
-; (computed at runtime) beside the length of an array of that size:
-; wrapping overflow, and `/` and `%` truncating toward zero, so `%` takes
-; the sign of the dividend.
+; from integer literals and other such `def`s, the integer conversions,
+; integer vectors, and their components. The compiler computes them the way
+; the runtime does, which each line checks by printing the `def` (computed
+; at runtime) beside the length of an array of that size: wrapping
+; overflow, and `/` and `%` truncating toward zero, so `%` takes the sign
+; of the dividend.
 (def base: u32 4u)
 (def three: u32 (+ 1u 2u))
 (def six: u32 (+ 1u 2u 3u))
@@ -15,6 +16,18 @@
 (def negated-quotient: i32 (- (/ -7i 2i)))
 ; truncating `%` gives -1 here (a Euclidean one would give 1, making this -1)
 (def negated-remainder: i32 (- 0i (% -7i 2i)))
+; Conversions, vectors (built from components, one repeated integer, or a
+; vector converted), component-wise vector arithmetic, and components.
+(def grid: vec2u (vec2u 6u 4u))
+(def cell-count: u32 (u32 (* grid.x grid.y)))
+(def signed-height: i32 (+ (i32 grid.y) 1i))
+(def unsigned-height: u32 (u32 signed-height))
+(def corner: vec3i (vec3i (vec2i 1i 2i) 3i))
+(def corner-sum: u32 (u32 (+ corner.x corner.y corner.z)))
+(def scaled: vec2u (* grid (vec2u 2u)))
+(def scaled-area: u32 (* scaled.x scaled.y))
+(def swapped-width: u32 (.y (.yx grid)))
+(def converted: u32 (.x (vec2u (vec2i 7i 8i))))
 
 ; A `def` that calls a function is fine when it isn't an array size.
 (defn twice [x: u32]: u32
@@ -47,6 +60,14 @@
         (array-length (zeroed-array): [negated-quotient: f32]))
   (show (u32 negated-remainder)
         (array-length (zeroed-array): [negated-remainder: f32]))
+  (show cell-count (array-length (zeroed-array): [cell-count: f32]))
+  (show (u32 signed-height)
+        (array-length (zeroed-array): [signed-height: f32]))
+  (show unsigned-height (array-length (zeroed-array): [unsigned-height: f32]))
+  (show corner-sum (array-length (zeroed-array): [corner-sum: f32]))
+  (show scaled-area (array-length (zeroed-array): [scaled-area: f32]))
+  (show swapped-width (array-length (zeroed-array): [swapped-width: f32]))
+  (show converted (array-length (zeroed-array): [converted: f32]))
   (print (array-length (.items (Bucket (zeroed-array)))))
   (print (total [1u 2u 3u 4u]))
   (print computed))
