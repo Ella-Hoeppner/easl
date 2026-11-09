@@ -1,0 +1,9 @@
+; A program with two @cpu entry points, started without naming one: it
+; doesn't run, and says which it has.
+@cpu
+(defn first []
+  (print "first"))
+
+@cpu
+(defn second []
+  (print "second"))

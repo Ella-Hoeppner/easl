@@ -267,6 +267,10 @@ mod harness {
   /// each line it's called with prefixed `onPrint: `.
   const CAPTURED_PRINTS: &[&str] = &["web/print_capture"];
 
+  /// Tests whose page starts the program at the named `@cpu` entry point,
+  /// and logs its entry points (`entryPoints`) as `entryPoints: <names>`.
+  const ENTRY_CHOICES: &[(&str, &str)] = &[("web/entry_choice", "first")];
+
   /// Tests that also run, as `<test> (from sources)`, on the runtime built
   /// with the compiler, given the program's sources.
   const ALSO_FROM_SOURCES: &[&str] = &[
@@ -276,6 +280,8 @@ mod harness {
     "web/audio_shared_vars",
     "web/shared_atomics",
     "web/runtime_error",
+    "web/entry_choice",
+    "web/entry_required",
     "buffer/screen_vertex_data",
   ];
 
@@ -308,6 +314,10 @@ mod harness {
           document.getElementById("easl-canvas"),
           options,
         );
+        if (options.entry !== undefined) {
+          const entryPoints = await window.program.entryPoints;
+          console.log(`entryPoints: ${entryPoints.join(" ")}`);
+        }
         await window.program.finished;
       };
     </script>
@@ -329,6 +339,9 @@ mod harness {
     isolated: bool,
     /// Whether its page captures its prints (see `CAPTURED_PRINTS`).
     captures_prints: bool,
+    /// The entry point its page starts the program at (see
+    /// `ENTRY_CHOICES`).
+    entry: Option<&'static str>,
   }
 
   #[derive(Clone)]
@@ -456,6 +469,10 @@ mod harness {
         let case = |from_sources: bool, expected: Expected| Case {
           isolated: !NOT_ISOLATED.contains(&&*name),
           captures_prints: CAPTURED_PRINTS.contains(&&*name),
+          entry: ENTRY_CHOICES
+            .iter()
+            .find(|(chosen, _)| *chosen == name)
+            .map(|(_, entry)| *entry),
           name: if from_sources && !ONLY_FROM_SOURCES.contains(&&*name) {
             format!("{name} (from sources)")
           } else {
@@ -1067,8 +1084,12 @@ mod harness {
     };
     let (id, url) = server.add_program(program_js, data, case.isolated);
     let mut tab = Tab::open(chrome, &url);
-    let result =
-      run_program(&mut tab.session, case.script, case.captures_prints);
+    let result = run_program(
+      &mut tab.session,
+      case.script,
+      case.captures_prints,
+      case.entry,
+    );
     let pixel = match &case.expected {
       Expected::Screen { .. } => Some(canvas_pixel(&mut tab.session)),
       _ => None,
@@ -1187,21 +1208,25 @@ mod harness {
   }
 
   /// Runs the page's program to completion, performing `script` meanwhile,
-  /// with an `onPrint` callback if `captures_prints`. Every page passes an
+  /// with an `onPrint` callback if `captures_prints`, and at the entry point
+  /// `entry`, if given. Every page passes an
   /// `onAudioError` callback, which logs each error from the audio thread
   /// prefixed `onAudioError: `, so it's part of the test's output.
   fn run_program(
     session: &mut Session,
     script: &[Step],
     captures_prints: bool,
+    entry: Option<&str>,
   ) -> Result<(), String> {
     let on_print = if captures_prints {
       "onPrint: (line) => console.log(`onPrint: ${line}`), "
     } else {
       ""
     };
+    let entry =
+      entry.map_or(String::new(), |entry| format!("entry: {entry:?}, "));
     let expression = format!(
-      "runProgram({{ {on_print}onAudioError: (message) => \
+      "runProgram({{ {entry}{on_print}onAudioError: (message) => \
        console.log(`onAudioError: ${{message}}`) }})"
     );
     let run = session.send(

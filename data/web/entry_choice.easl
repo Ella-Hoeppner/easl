@@ -1,0 +1,9 @@
+; A program with two @cpu entry points, run from the one its page names.
+; The page logs the names `entryPoints` gives it first.
+@cpu
+(defn first []
+  (print "first"))
+
+@cpu
+(defn second []
+  (print "second"))

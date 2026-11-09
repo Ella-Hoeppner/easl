@@ -1,0 +1,13 @@
+; A program with two @cpu entry points, written `second` first: a
+; precompiled program lists them in that order and runs the one chosen when
+; it starts.
+(defn greet [who: u32]
+  (print who))
+
+@cpu
+(defn second []
+  (greet 2u))
+
+@cpu
+(defn first []
+  (greet 1u))

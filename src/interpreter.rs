@@ -169,7 +169,7 @@ pub enum UserspaceEvalError {
   AudioRuntimeError(String),
   #[error("No `@cpu` entry point found")]
   NoCpuEntryPoint,
-  #[error("Multiple `@cpu` entry points found, must specify a particle one")]
+  #[error("Multiple `@cpu` entry points found, must specify a particular one")]
   MultipleCpuEntryPoints,
   #[error("Couldn't find `@cpu` entry point named {0}")]
   CpuEntryPointNotFound(Arc<str>),

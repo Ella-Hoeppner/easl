@@ -38,7 +38,7 @@ use easl::{
   },
 };
 use io::WebIO;
-use js_sys::{Function, Promise, Reflect};
+use js_sys::{Array, Function, Promise, Reflect};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
@@ -50,10 +50,11 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 /// runtime, which the audio worklet instantiates too, or a function
 /// returning a promise of it) and `workletUrl` (the audio worklet script)
 /// for programs that play audio, `startMidi`, called if the program reads
-/// MIDI, and optionally `onPrint`, called with each line the program
-/// prints in place of the browser console, and `onAudioError`, called in
-/// its place with each error from the audio thread (which stop the audio
-/// but not the program).
+/// MIDI, and optionally `entry`, naming the `@cpu` entry point to run (a
+/// program with only one needs none), `onPrint`, called with each line the
+/// program prints in place of the browser console, and `onAudioError`,
+/// called in its place with each error from the audio thread (which stop
+/// the audio but not the program).
 #[wasm_bindgen(js_name = startProgram)]
 pub fn start_program(
   canvas: HtmlCanvasElement,
@@ -66,9 +67,9 @@ pub fn start_program(
 }
 
 /// Like `startProgram`, for a program given as its sources: parallel lists
-/// of file paths and sources, with `main_path` naming the file holding the
-/// `@cpu` entry point. The program is compiled first, and a compile error
-/// rejects `finished`.
+/// of file paths and sources, with `main_path` naming the main file, which
+/// holds the `@cpu` entry points. The program is compiled first, and a
+/// compile error rejects `finished`.
 #[cfg(feature = "compiler")]
 #[wasm_bindgen(js_name = startProgramFromSources)]
 pub fn start_program_from_sources(
@@ -92,14 +93,42 @@ fn start(
   let control = Rc::new(ProgramControl::default());
   let run_control = Rc::clone(&control);
   let load = RefCell::new(Some(load));
+  let settle_entry_points: Rc<RefCell<Option<(Function, Function)>>> =
+    Rc::default();
+  let entry_points = Promise::new(&mut |resolve, reject| {
+    *settle_entry_points.borrow_mut() = Some((resolve, reject));
+  });
+  // A page that never asks for the entry points isn't told the program
+  // failed to load through them too: `finished` reports that.
+  let ignore_failure = Closure::<dyn FnMut(JsValue)>::new(|_| {});
+  let _ = entry_points.catch(&ignore_failure);
+  ignore_failure.forget();
   let finished = Promise::new(&mut |resolve, reject| {
     let control = Rc::clone(&run_control);
     let (canvas, host) = (canvas.clone(), host.clone());
     let load = load.borrow_mut().take().unwrap();
+    let (resolve_entry_points, reject_entry_points) =
+      settle_entry_points.borrow_mut().take().unwrap();
     spawn_local(async move {
       let result = match load.await {
-        Ok(program) => run_program(canvas, program, host, &control).await,
-        Err(message) => Err(message),
+        Ok(program) => {
+          let names: Array = program
+            .entry_points
+            .iter()
+            .map(|name| JsValue::from_str(name))
+            .collect();
+          resolve_entry_points.call1(&JsValue::NULL, &names).unwrap();
+          run_program(canvas, program, host, &control).await
+        }
+        Err(message) => {
+          reject_entry_points
+            .call1(
+              &JsValue::NULL,
+              &JsError::new(&format!("easl: {message}")).into(),
+            )
+            .unwrap();
+          Err(message)
+        }
       };
       match result {
         Ok(()) => resolve.call0(&JsValue::NULL),
@@ -111,13 +140,18 @@ fn start(
       .unwrap();
     });
   });
-  EaslProgram { control, finished }
+  EaslProgram {
+    control,
+    entry_points,
+    finished,
+  }
 }
 
 /// A running easl program, as its page sees it (see `startProgram`).
 #[wasm_bindgen]
 pub struct EaslProgram {
   control: Rc<ProgramControl>,
+  entry_points: Promise,
   finished: Promise,
 }
 
@@ -140,6 +174,14 @@ impl EaslProgram {
   #[wasm_bindgen(getter)]
   pub fn paused(&self) -> bool {
     self.control.paused.get()
+  }
+
+  /// A promise of the names of the program's `@cpu` entry points, in the
+  /// order they're written, resolved once it has loaded (before it runs;
+  /// also when it then fails for want of an `entry` naming one).
+  #[wasm_bindgen(getter, js_name = entryPoints)]
+  pub fn entry_points(&self) -> Promise {
+    self.entry_points.clone()
   }
 
   /// Settles when the program ends: resolves when it finishes (a program
@@ -195,7 +237,12 @@ async fn run_program(
   control: &ProgramControl,
 ) -> Result<(), String> {
   console_error_panic_hook::set_once();
-  let entry_name = program.entry_name.clone();
+  let entry_name = program.entry(
+    Reflect::get(&host, &"entry".into())
+      .ok()
+      .and_then(|entry| entry.as_string())
+      .as_deref(),
+  )?;
   if program.audio.is_some() {
     control.plays_audio.set(true);
     audio::configure(AudioHost {

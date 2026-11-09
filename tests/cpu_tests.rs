@@ -11,6 +11,7 @@ use easl::precompiled::PrecompiledProgram;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn run_cpu_test(name: &str) {
   let expected = fs::read_to_string(format!("./data/cpu/{name}.txt"))
@@ -91,7 +92,7 @@ fn run_precompiled_capturing_output(
 ) -> Result<String, EvalError> {
   let bytes = PrecompiledProgram::new(program)?.to_bytes();
   let precompiled = PrecompiledProgram::from_bytes(&bytes).unwrap();
-  let entry_name = precompiled.entry_name.clone();
+  let entry_name = precompiled.entry(None).expect("one `@cpu` entry point");
   let mut runtime =
     VmCpuRuntime::from_precompiled(precompiled, StringIO::new(), None)?;
   runtime.run(&entry_name)?;
@@ -691,3 +692,52 @@ cpu_error_test!(index_error_remove);
 cpu_error_test!(index_error_shared_atomic);
 cpu_error_test!(index_error_vector);
 cpu_error_test!(midi_out_of_range_error);
+
+/// A program with several `@cpu` entry points precompiles with all of
+/// them, in the order they're written, and runs whichever one is chosen
+/// when it starts. Starting it without choosing, or with a name it doesn't
+/// have, fails naming its entry points.
+#[test]
+fn precompiled_entry_choice() {
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(Path::new(
+    "./data/cpu/precompiled_entry_choice.easl",
+  )) else {
+    panic!("precompiled_entry_choice didn't load");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let bytes = PrecompiledProgram::new(program).unwrap().to_bytes();
+  let load = || PrecompiledProgram::from_bytes(&bytes).unwrap();
+  let entry_points: Vec<Arc<str>> = vec!["second".into(), "first".into()];
+  assert_eq!(load().entry_points, entry_points);
+  assert_eq!(
+    load().entry(None).unwrap_err(),
+    "the program has several `@cpu` entry points (`second`, `first`): name \
+     the one to run"
+  );
+  assert_eq!(
+    load().entry(Some("third")).unwrap_err(),
+    "the program has no `@cpu` entry point named `third`; its entry points \
+     are `second`, `first`"
+  );
+  for (entry, expected) in [("first", "1u\n"), ("second", "2u\n")] {
+    let precompiled = load();
+    let entry_name = precompiled.entry(Some(entry)).unwrap();
+    let mut runtime =
+      VmCpuRuntime::from_precompiled(precompiled, StringIO::new(), None)
+        .unwrap();
+    runtime.run(&entry_name).unwrap();
+    let output: String = runtime
+      .env
+      .io
+      .events
+      .iter()
+      .filter_map(|event| match event {
+        IOEvent::Print(s) => Some(format!("{s}\n")),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(output, expected, "{entry}");
+  }
+}

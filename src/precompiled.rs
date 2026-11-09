@@ -9,8 +9,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-  compiler::{entry::EntryPoint, program::Program, wgsl::MIDI_VARS},
-  interpreter::{EnvironmentSpec, EvalError, pick_entry_point_name},
+  compiler::{
+    entry::EntryPoint, functions::FunctionImplementationKind, program::Program,
+    wgsl::MIDI_VARS,
+  },
+  interpreter::{EnvironmentSpec, EvalError, UserspaceEvalError},
   vm::bytecode::Code,
 };
 
@@ -19,8 +22,9 @@ use crate::{
 /// map, so errors from a deserialized program have no source locations.
 #[derive(Serialize, Deserialize)]
 pub struct PrecompiledProgram {
-  /// The `@cpu` entry point the program runs.
-  pub entry_name: Arc<str>,
+  /// The program's `@cpu` entry points, in the order they're written: the
+  /// runtime starts whichever one it's given (see [`Self::entry`]).
+  pub entry_points: Vec<Arc<str>>,
   pub cpu: Code,
   pub cpu_function_names: Vec<Arc<str>>,
   /// What `start-audio` runs, for a program with audio entry points.
@@ -36,10 +40,32 @@ pub struct PrecompiledProgram {
 }
 
 impl PrecompiledProgram {
-  /// Compiles a validated program, whose single `@cpu` entry point it
-  /// runs.
+  /// Compiles a validated program, with every `@cpu` entry point it has.
   pub fn new(program: Program) -> Result<Self, EvalError> {
-    let entry_name = pick_entry_point_name(&program, None)?;
+    let mut entries: Vec<_> = program
+      .cpu_entry_points()
+      .into_iter()
+      .map(|signature| {
+        let signature = signature.read().unwrap();
+        let position = match &signature.implementation {
+          FunctionImplementationKind::Composite(f) => f
+            .read()
+            .unwrap()
+            .name_source_trace
+            .primary_position
+            .clone()
+            .map(|position| (position.path, position.span.start)),
+          _ => None,
+        };
+        (position, signature.name.clone())
+      })
+      .collect();
+    entries.sort();
+    let entry_points: Vec<Arc<str>> =
+      entries.into_iter().map(|(_, name)| name).collect();
+    if entry_points.is_empty() {
+      return Err(UserspaceEvalError::NoCpuEntryPoint.into());
+    }
     let audio = (!program
       .find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
       .is_empty())
@@ -67,7 +93,7 @@ impl PrecompiledProgram {
     let environment = EnvironmentSpec::of(program.clone())?;
     let (cpu, cpu_function_names) = program.compile_to_bytecode_program_cpu();
     Ok(Self {
-      entry_name,
+      entry_points,
       cpu: cpu.code,
       cpu_function_names,
       audio,
@@ -76,6 +102,42 @@ impl PrecompiledProgram {
       sends_midi,
       shared_atomic_globals,
     })
+  }
+
+  /// The entry point to start: `requested`, which must be one of the
+  /// program's, or the program's only one when none is requested. The
+  /// error names the entry points to choose from.
+  pub fn entry(&self, requested: Option<&str>) -> Result<Arc<str>, String> {
+    let names = || {
+      self
+        .entry_points
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+    };
+    match requested {
+      Some(requested) => self
+        .entry_points
+        .iter()
+        .find(|name| &***name == requested)
+        .cloned()
+        .ok_or_else(|| {
+          format!(
+            "the program has no `@cpu` entry point named `{requested}`; its \
+             entry points are {}",
+            names()
+          )
+        }),
+      None => match self.entry_points.as_slice() {
+        [entry] => Ok(entry.clone()),
+        _ => Err(format!(
+          "the program has several `@cpu` entry points ({}): name the one \
+           to run",
+          names()
+        )),
+      },
+    }
   }
 
   /// This program's encoding, for [`Self::from_bytes`].

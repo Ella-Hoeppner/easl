@@ -1,0 +1,2 @@
+entryPoints: first second
+"first"

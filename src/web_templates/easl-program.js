@@ -35,12 +35,16 @@ async function initialize() {
  *   `window-time` continues where it left off when it's resumed.
  * - `resume()` resumes it.
  * - `paused` is whether it's paused.
+ * - `entryPoints` is a promise of the names of the program's `@cpu` entry
+ *   points, in the order they're written, resolved once it has loaded.
  * - `finished` is a promise that resolves once the program finishes (a
  *   program with a window runs until it calls `close-window`), and rejects
  *   with a description of any runtime error.
  *
  * It can be paused before it has started; it then starts paused.
  *
+ * `options.entry` names the `@cpu` entry point to run; a program with only
+ * one needs none, and one with several rejects `finished` without it.
  * `options.onPrint`, if given, is called with each line the program prints,
  * in place of the browser console. `options.onAudioError`, if given, is
  * called in its place with each error from the audio thread: a runtime
@@ -49,20 +53,35 @@ async function initialize() {
 export function startEaslProgram(canvas, options = {}) {
   let program = null;
   let paused = false;
+  let started;
+  const startedProgram = new Promise((resolve, reject) => {
+    started = { resolve, reject };
+  });
   const finished = (async () => {
-    initialized ??= initialize();
-    const { module, program: bytes } = await initialized;
+    let loaded;
+    try {
+      initialized ??= initialize();
+      loaded = await initialized;
+    } catch (error) {
+      started.reject(error);
+      throw error;
+    }
+    const { module, program: bytes } = loaded;
     program = startProgram(canvas, bytes, {
       // The audio worklet instantiates its own copy of the runtime.
       module,
       workletUrl: new URL("./easl-audio-worklet.js", import.meta.url).href,
       startMidi: listenToMidi,
+      entry: options.entry,
       onPrint: options.onPrint,
       onAudioError: options.onAudioError,
     });
+    started.resolve(program);
     if (paused) program.pause();
     await program.finished;
   })();
+  const entryPoints = startedProgram.then((program) => program.entryPoints);
+  entryPoints.catch(() => {});
   return {
     pause() {
       paused = true;
@@ -75,6 +94,7 @@ export function startEaslProgram(canvas, options = {}) {
     get paused() {
       return paused;
     },
+    entryPoints,
     finished,
   };
 }
