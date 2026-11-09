@@ -687,7 +687,7 @@ impl Instruction {
   }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Function {
   pub instructions: Range<u32>,
   pub return_position: u16,
@@ -1354,11 +1354,11 @@ impl VmHost for AudioHost<'_> {
 }
 
 /// A compiled program. It serializes with [`Code::to_bytes`] (without its
-/// source map), so another runtime instance can run the same program
-/// without compiling it: the web runtime's audio worklet shares no memory
-/// with its page, and a precompiled program (`crate::precompiled`) runs
-/// without the compiler.
-#[derive(Serialize, Deserialize)]
+/// source map, unless it's been described: [`Code::describe_sources`]), so
+/// another runtime instance can run the same program without compiling it:
+/// the web runtime's audio worklet shares no memory with its page, and a
+/// precompiled program (`crate::precompiled`) runs without the compiler.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Code {
   pub function_instructions: Vec<Instruction>,
   pub functions: Vec<Function>,
@@ -1415,19 +1415,86 @@ pub struct Code {
   /// described against.
   #[serde(skip)]
   pub documents: Option<Arc<EaslMultiDocument>>,
+  /// The source map with its positions already described, which serializes:
+  /// how a runtime without the documents describes where errors happened
+  /// (see [`Code::describe_sources`]).
+  #[serde(default)]
+  pub described_sources: Option<DescribedSources>,
+}
+
+/// A source map whose positions are already described against their
+/// documents, so describing where an error happened needs no documents.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DescribedSources {
+  /// The runs of instructions compiled from one source position, as in
+  /// `Code::instruction_sources`.
+  instruction_sources: Vec<(u32, u32)>,
+  /// The description of each of `Code::source_positions`.
+  locations: Vec<String>,
+}
+
+/// The index into a source map's positions of the one instruction
+/// `instruction` was compiled from: the innermost application around it
+/// with one. `instruction_sources` holds the runs of instructions compiled
+/// from one position.
+fn source_index(
+  instruction_sources: &[(u32, u32)],
+  instruction: u32,
+) -> Option<usize> {
+  let run = instruction_sources
+    .partition_point(|&(start, _)| start <= instruction)
+    .checked_sub(1)?;
+  Some(instruction_sources[run].1 as usize)
 }
 
 impl Code {
-  /// The source position instruction `instruction` was compiled from: the
-  /// innermost application around it with one.
+  /// The source position instruction `instruction` was compiled from.
   fn instruction_source(&self, instruction: u32) -> Option<&DocumentPosition> {
-    let run = self
-      .instruction_sources
-      .partition_point(|&(start, _)| start <= instruction)
-      .checked_sub(1)?;
     self
       .source_positions
-      .get(self.instruction_sources[run].1 as usize)
+      .get(source_index(&self.instruction_sources, instruction)?)
+  }
+  /// Describes the source map's positions against the documents, so the
+  /// code describes where its errors happened after it's serialized too
+  /// (the audio code the runtime built with the compiler hands its
+  /// worklet). Code without documents keeps no source map.
+  pub fn describe_sources(&mut self) {
+    let Some(documents) = &self.documents else {
+      return;
+    };
+    self.described_sources = Some(DescribedSources {
+      instruction_sources: self.instruction_sources.clone(),
+      locations: self
+        .source_positions
+        .iter()
+        .map(|position| documents.describe_document_position(position.clone()))
+        .collect(),
+    });
+  }
+  /// Where a run stopped at `site` (see `BytecodeProgram::trap_site`)
+  /// happened, described against the documents or the described source
+  /// map, if the code has either.
+  pub fn describe_site(&self, site: &[u32]) -> Option<String> {
+    if let Some(documents) = &self.documents
+      && !documents.sources.is_empty()
+    {
+      let source_trace = self.source_trace(site);
+      return source_trace
+        .primary_position
+        .is_some()
+        .then(|| source_trace.describe_runtime_location(documents));
+    }
+    let described = self.described_sources.as_ref()?;
+    let mut locations = site.iter().filter_map(|&instruction| {
+      described
+        .locations
+        .get(source_index(&described.instruction_sources, instruction)?)
+    });
+    let primary = locations.next()?;
+    Some(SourceTrace::join_location_descriptions(
+      primary.clone(),
+      locations.cloned(),
+    ))
   }
   /// Where a run stopped at `site` (see `BytecodeProgram::trap_site`)
   /// happened: the first source position among its instructions, then the
@@ -1721,18 +1788,9 @@ impl BytecodeProgram {
   /// `message`, about the last run that trapped, followed by where it
   /// stopped (see `trap_site`) when the code knows its source.
   pub fn describe_trap(&self, message: &str) -> String {
-    let source_trace = self.code.source_trace(&self.trap_site);
-    match &self.code.documents {
-      Some(documents)
-        if source_trace.primary_position.is_some()
-          && !documents.sources.is_empty() =>
-      {
-        format!(
-          "{message}\n{}",
-          source_trace.describe_runtime_location(documents)
-        )
-      }
-      _ => message.to_string(),
+    match self.code.describe_site(&self.trap_site) {
+      Some(location) => format!("{message}\n{location}"),
+      None => message.to_string(),
     }
   }
   pub fn execute_with_host<H: VmHost>(

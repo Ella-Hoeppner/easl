@@ -23,7 +23,7 @@ mod common;
 
 use std::sync::Arc;
 
-use easl::audio::{AudioSource, VmAudioDriver};
+use easl::audio::{AudioRestart, AudioSource, VmAudioDriver};
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::external::{ExternalVarError, ExternalVars};
@@ -190,6 +190,9 @@ struct ThreadSyncIO {
   /// queued frame events). Its windowing loop is never used.
   inner: StdoutIO,
   audio: Option<VmAudioDriver>,
+  /// The audio program as compiled, to restart it after its audio code
+  /// stops with a runtime error.
+  audio_restart: Option<AudioRestart>,
   /// Shared-variable names of the audio artifact, index-aligned with the
   /// `u16` indices the batch-boundary trace hooks report.
   audio_shared_names: Vec<Arc<str>>,
@@ -212,11 +215,21 @@ impl ThreadSyncIO {
       spoofed_audio_input: None,
       inner: StdoutIO::new(),
       audio: None,
+      audio_restart: None,
       audio_shared_names: Vec::new(),
       external,
       frame_index: 0,
       audio_batch_index: 0,
     }
+  }
+
+  /// Points `driver` at the test's spoofed inputs and captured MIDI
+  /// output.
+  fn configure_audio_driver(&self, driver: &mut VmAudioDriver) {
+    driver.midi_override =
+      Some(Arc::new(self.spoofed_midi.clone().unwrap_or_default()));
+    driver.audio_input_override = self.spoofed_audio_input.clone();
+    driver.midi_out_capture = Some(vec![]);
   }
 
   fn run_audio_batch(&mut self, frames: usize) {
@@ -268,6 +281,11 @@ impl ThreadSyncIO {
         "audio-midi-out: {}",
         format_midi(message.as_bytes())
       ));
+    }
+    // The error's first line, without its location's file path.
+    if let Some(error) = driver.take_reported_error() {
+      let message = error.lines().next().unwrap_or_default().to_string();
+      self.trace.push(format!("audio-error: {message}"));
     }
   }
 }
@@ -493,6 +511,11 @@ impl IOManager for ThreadSyncIO {
           .iter()
           .map(|info| info.name.clone())
           .collect();
+        self.audio_restart = Some(AudioRestart::new(
+          &program,
+          &function_names,
+          shared_table.clone(),
+        ));
         let mut driver = VmAudioDriver::new(
           entry_name,
           program,
@@ -500,18 +523,32 @@ impl IOManager for ThreadSyncIO {
           shared_table,
         )
         .expect("failed to build audio driver");
-        driver.midi_override =
-          Some(Arc::new(self.spoofed_midi.clone().unwrap_or_default()));
-        driver.audio_input_override = self.spoofed_audio_input.clone();
-        driver.midi_out_capture = Some(vec![]);
+        self.configure_audio_driver(&mut driver);
         self.audio = Some(driver);
       }
       Some(AudioSource::C(_)) => {
         panic!("thread-sync harness only supports the VM audio backend")
       }
-      // Repeated start-audio call after the source was consumed: the
-      // production no-op. Not traced — it happens every frame.
-      None => {}
+      // A repeated start-audio call after the source was consumed restarts
+      // audio code that stopped with a runtime error, as in production;
+      // otherwise it's the production no-op, not traced (it happens every
+      // frame).
+      None => {
+        if let Some(previous) = self.audio.as_mut()
+          && previous.take_stop()
+        {
+          let mut driver = self
+            .audio_restart
+            .as_ref()
+            .unwrap()
+            .driver(entry_name)
+            .expect("failed to restart audio driver");
+          self.configure_audio_driver(&mut driver);
+          driver.follow(self.audio.as_mut().unwrap());
+          self.trace.push(format!("restart-audio: {entry_name}"));
+          self.audio = Some(driver);
+        }
+      }
     }
     Ok(())
   }
@@ -619,6 +656,10 @@ fn run_thread_sync_test_inner(
         && entry.ends_with("_audio")
       {
         "start-audio: <audio-closure>".to_string()
+      } else if let Some(entry) = line.strip_prefix("restart-audio: ")
+        && entry.ends_with("_audio")
+      {
+        "restart-audio: <audio-closure>".to_string()
       } else {
         line
       }
@@ -771,6 +812,20 @@ thread_sync_test!(
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]
 );
 thread_sync_test!(audio_rehandoff_two_sites, [Frame, AudioBatch(2)]);
+thread_sync_test!(
+  audio_restart_after_error,
+  [
+    Frame,
+    AudioBatch(5),
+    Frame,
+    AudioBatch(4),
+    Frame,
+    AudioBatch(2),
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2)
+  ]
+);
 thread_sync_test!(
   audio_rehandoff_repeated_site,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]

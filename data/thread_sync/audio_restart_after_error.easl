@@ -1,0 +1,28 @@
+; Audio code that stops with a runtime error is restarted by the next
+; `start-audio`, even one naming the same entry: a fresh run (its own state
+; initialized again, so `played` counts from 0) at the entry the call
+; names. A run stopping with the error the run before it reported doesn't
+; report it again; a different error is reported.
+@local
+(var played: u32 0u)
+
+(defn steps []: f32
+  (let [levels [0.25 0.5 0.75]]
+    (= played (+ played 1u))
+    (levels (- played 1u))))
+
+(defn other []: f32
+  (let [levels [1. 0.5]]
+    (levels (+ played 2u))))
+
+@local
+(var frames: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (= frames (+ frames 1u))
+      (if (< frames 4u)
+        (start-audio steps)
+        (start-audio other)))))

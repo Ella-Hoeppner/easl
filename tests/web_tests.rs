@@ -281,8 +281,11 @@ mod harness {
 
   /// Tests that run only on the runtime built with the compiler: their
   /// expected errors say where in the sources they happened, which a
-  /// precompiled program can't.
-  const ONLY_FROM_SOURCES: &[&str] = &["web/runtime_error_located"];
+  /// precompiled program's don't.
+  const ONLY_FROM_SOURCES: &[&str] = &[
+    "web/runtime_error_located",
+    "web/audio_runtime_error_located",
+  ];
 
   /// How long one test may run.
   const TEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1184,17 +1187,23 @@ mod harness {
   }
 
   /// Runs the page's program to completion, performing `script` meanwhile,
-  /// with an `onPrint` callback if `captures_prints`.
+  /// with an `onPrint` callback if `captures_prints`. Every page passes an
+  /// `onAudioError` callback, which logs each error from the audio thread
+  /// prefixed `onAudioError: `, so it's part of the test's output.
   fn run_program(
     session: &mut Session,
     script: &[Step],
     captures_prints: bool,
   ) -> Result<(), String> {
-    let expression = if captures_prints {
-      "runProgram({ onPrint: (line) => console.log(`onPrint: ${line}`) })"
+    let on_print = if captures_prints {
+      "onPrint: (line) => console.log(`onPrint: ${line}`), "
     } else {
-      "runProgram()"
+      ""
     };
+    let expression = format!(
+      "runProgram({{ {on_print}onAudioError: (message) => \
+       console.log(`onAudioError: ${{message}}`) }})"
+    );
     let run = session.send(
       "Runtime.evaluate",
       json!({ "expression": expression, "awaitPromise": true }),

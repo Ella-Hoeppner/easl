@@ -1,0 +1,29 @@
+; `start-audio` every frame restarts audio code that stopped with a runtime
+; error. Failing the same way again isn't reported again, so the page hears
+; of each different error once: `steps` fails every run, then `other` does,
+; differently.
+@local
+(var played: u32 0u)
+
+@local
+(var two: u32 2u)
+
+(defn steps []: f32
+  (+= played 1u)
+  (let [levels [0. 0.1 0.2 0.3]]
+    (levels (/ played 1000u))))
+
+(defn other []: f32
+  (let [levels [0. 0.1]]
+    (levels two)))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (if (< (window-time) 1.)
+        (start-audio steps)
+        (start-audio other))
+      (when (> (window-time) 2.)
+        (print "done")
+        (close-window)))))

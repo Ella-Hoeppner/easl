@@ -1,0 +1,21 @@
+spawn-window
+frame 0
+start-audio: steps
+audio-batch 0 x5
+samples: 0.25 0.5 0.75 0 0
+audio-error: index 3 is out of bounds for length 3
+frame 1
+restart-audio: steps
+audio-batch 1 x4
+samples: 0.25 0.5 0.75 0
+frame 2
+restart-audio: steps
+audio-batch 2 x2
+samples: 0.25 0.5
+audio-batch 3 x2
+samples: 0.75 0
+frame 3
+restart-audio: other
+audio-batch 4 x2
+samples: 0 0
+audio-error: index 2 is out of bounds for length 2

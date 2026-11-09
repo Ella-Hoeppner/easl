@@ -51,7 +51,9 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 /// returning a promise of it) and `workletUrl` (the audio worklet script)
 /// for programs that play audio, `startMidi`, called if the program reads
 /// MIDI, and optionally `onPrint`, called with each line the program
-/// prints in place of the browser console.
+/// prints in place of the browser console, and `onAudioError`, called in
+/// its place with each error from the audio thread (which stop the audio
+/// but not the program).
 #[wasm_bindgen(js_name = startProgram)]
 pub fn start_program(
   canvas: HtmlCanvasElement,
@@ -202,6 +204,9 @@ async fn run_program(
         .ok()
         .and_then(|url| url.as_string())
         .unwrap_or_default(),
+      on_error: Reflect::get(&host, &"onAudioError".into())
+        .ok()
+        .and_then(|on_error| on_error.dyn_into::<Function>().ok()),
     })
     .map_err(describe_js_error)?;
     if control.paused.get() {

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use easl::{
-  audio::VmAudioDriver,
+  audio::{AudioRestart, VmAudioDriver},
   thread_sync::{ThreadSharedTable, participant},
   vm::bytecode::{BytecodeProgram, Code},
 };
@@ -25,6 +25,9 @@ pub struct AudioEngine {
   table: Arc<ThreadSharedTable>,
   /// Shared variables the last `render` published.
   published: Vec<u32>,
+  /// The program as compiled, to start over after its audio code stops
+  /// with a runtime error.
+  restart: AudioRestart,
 }
 
 #[wasm_bindgen]
@@ -53,12 +56,16 @@ impl AudioEngine {
       table.slots[index]
         .atomic_words(words, || SharedArrayWords::over(buffer).into_words());
     }
-    let function_names = function_names.into_iter().map(Arc::from).collect();
+    let function_names: Vec<Arc<str>> =
+      function_names.into_iter().map(Arc::from).collect();
+    let restart =
+      AudioRestart::new(&program, &function_names, Some(table.clone()));
     Ok(AudioEngine {
       program: Some((program, function_names)),
       driver: None,
       table,
       published: vec![],
+      restart,
     })
   }
 
@@ -72,6 +79,18 @@ impl AudioEngine {
       VmAudioDriver::new(entry, program, &names, Some(self.table.clone()))
         .map_err(|e| JsError::new(&e))?,
     );
+    Ok(())
+  }
+
+  /// Starts the program over at `entry`, after its audio code stopped with
+  /// a runtime error (see `AudioRestart`).
+  pub fn restart(&mut self, entry: &str) -> Result<(), JsError> {
+    let mut driver =
+      self.restart.driver(entry).map_err(|e| JsError::new(&e))?;
+    if let Some(previous) = &mut self.driver {
+      driver.follow(previous);
+    }
+    self.driver = Some(driver);
     Ok(())
   }
 
@@ -128,6 +147,24 @@ impl AudioEngine {
       |index| published.push(index as u32),
     );
     self.published.clone()
+  }
+
+  /// Whether the audio code has stopped with a runtime error, true only
+  /// the first time it's asked after it did: the page then restarts the
+  /// program at its next `start-audio`.
+  #[wasm_bindgen(js_name = takeStop)]
+  pub fn take_stop(&mut self) -> bool {
+    self.driver.as_mut().is_some_and(VmAudioDriver::take_stop)
+  }
+
+  /// The runtime error the audio code stopped with, the first time it's
+  /// asked for after the error, unless the run before reported the same
+  /// one (the driver's own report goes to stderr, which the browser
+  /// doesn't show).
+  #[wasm_bindgen(js_name = takeRuntimeError)]
+  pub fn take_runtime_error(&mut self) -> Option<String> {
+    let error = self.driver.as_mut()?.take_reported_error()?;
+    Some(format!("Runtime error in audio code: {error}"))
   }
 
   /// The words of shared variable `index`'s current snapshot.

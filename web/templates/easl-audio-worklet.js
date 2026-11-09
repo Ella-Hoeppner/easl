@@ -3,7 +3,10 @@
 // audio program the page compiled one render quantum at a time.
 // Shared variables and MIDI arrive from the page as messages, and shared
 // variables this thread publishes go back the same way, except atomics,
-// whose words both threads operate on in shared buffers.
+// whose words both threads operate on in shared buffers. Errors go to the
+// page too: one that stops this thread, and the runtime error the audio
+// code stops with (after which the engine renders silence until the page
+// restarts it).
 
 import "./easl-text-polyfill.js";
 import { initSync, AudioEngine } from "./easl_web.js";
@@ -45,6 +48,9 @@ class EaslAudioProcessor extends AudioWorkletProcessor {
         case "switch":
           this.engine.switchEntry(message.entry);
           break;
+        case "restart":
+          this.engine.restart(message.entry);
+          break;
         case "reset-time":
           this.engine.resetTime();
           break;
@@ -67,6 +73,13 @@ class EaslAudioProcessor extends AudioWorkletProcessor {
       const channel = output[0];
       const published = this.engine.render(channel, sampleRate);
       for (let c = 1; c < output.length; c++) output[c].set(channel);
+      const error = this.engine.takeRuntimeError();
+      if (error !== undefined) {
+        this.port.postMessage({ type: "error", message: error });
+      }
+      if (this.engine.takeStop()) {
+        this.port.postMessage({ type: "stopped" });
+      }
       for (const index of published) {
         this.port.postMessage({
           type: "snapshot",

@@ -67,16 +67,31 @@ impl SourceTrace {
     &self,
     documents: &EaslMultiDocument,
   ) -> String {
-    let mut description = self
-      .primary_position
-      .iter()
-      .map(|position| documents.describe_document_position(position.clone()))
-      .collect::<String>();
-    if !self.secondary_positions.is_empty() {
+    Self::join_location_descriptions(
+      self
+        .primary_position
+        .iter()
+        .map(|position| documents.describe_document_position(position.clone()))
+        .collect(),
+      self
+        .secondary_positions
+        .iter()
+        .map(|position| documents.describe_document_position(position.clone())),
+    )
+  }
+  /// Where a runtime error happened, from the descriptions of its position
+  /// (`primary`) and of the calls that led to it, innermost first.
+  pub fn join_location_descriptions(
+    primary: String,
+    secondaries: impl Iterator<Item = String>,
+  ) -> String {
+    let mut description = primary;
+    let mut secondaries = secondaries.peekable();
+    if secondaries.peek().is_some() {
       description += "\ncalled from:";
-      for position in self.secondary_positions.iter() {
+      for secondary in secondaries {
         description += "\n";
-        description += &documents.describe_document_position(position.clone());
+        description += &secondary;
       }
     }
     description

@@ -211,8 +211,23 @@ fn vm_audio_driver_index_error() {
   let mut driver = VmAudioDriver::new("f", program, &names, None).unwrap();
   // At 8 Hz, samples 0..3 read elements 0..3 and sample 4 reads past them.
   let mut samples = Vec::new();
-  driver.run_batch(6, 8.0, |s| samples.push(s), |_| {}, |_| {});
+  driver.run_batch(2, 8.0, |s| samples.push(s), |_| {}, |_| {});
+  // Asking about a run that hasn't stopped finds nothing, and doesn't use
+  // up the report of the error it stops with later.
+  assert_eq!(driver.take_reported_error(), None);
+  assert!(!driver.take_stop());
+  driver.run_batch(4, 8.0, |s| samples.push(s), |_| {}, |_| {});
   assert_eq!(samples, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
+  // The error is handed out once, and so is the stop.
+  assert_eq!(
+    driver
+      .take_reported_error()
+      .map(|error| error.lines().next().unwrap()),
+    Some("index 4 is out of bounds for length 4")
+  );
+  assert_eq!(driver.take_reported_error(), None);
+  assert!(driver.take_stop());
+  assert!(!driver.take_stop());
   assert_eq!(
     driver.runtime_error().map(|error| error
       .replace(&format!("{}/", env::current_dir().unwrap().display()), "")),
@@ -229,6 +244,53 @@ fn vm_audio_driver_index_error() {
   samples.clear();
   driver.run_batch(2, 8.0, |s| samples.push(s), |_| {}, |_| {});
   assert_eq!(samples, vec![0.0, 0.0]);
+}
+
+/// Audio code serialized as the web runtime hands it to its worklet
+/// describes where its errors happened when its source map was described
+/// first (`Code::describe_sources`, the runtime built with the compiler),
+/// exactly as the original does, and gives only the message otherwise.
+#[test]
+fn serialized_audio_error_location() {
+  use easl::audio::VmAudioDriver;
+  use easl::vm::bytecode::{BytecodeProgram, Code};
+  let error_after_serializing = |describe: bool| {
+    let source_path = Path::new("./data/audio/index_error.easl");
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program");
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let (program, names) = program.compile_to_bytecode_program();
+    let mut code = program.code;
+    if describe {
+      code.describe_sources();
+    }
+    let code = Code::from_bytes(&code.to_bytes()).unwrap();
+    let mut driver =
+      VmAudioDriver::new("f", BytecodeProgram::from_code(code), &names, None)
+        .unwrap();
+    driver.run_batch(6, 8.0, |_| {}, |_| {}, |_| {});
+    driver.runtime_error().map(|error| {
+      error.replace(&format!("{}/", env::current_dir().unwrap().display()), "")
+    })
+  };
+  assert_eq!(
+    error_after_serializing(true),
+    Some(
+      "index 4 is out of bounds for length 4\n\
+       data/audio/index_error.easl\n\
+       6 | (defn f []: f32\n\
+       7 |   (+ (table (u32 (* (audio-time) 8.))) 0.5))\n         \
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+        .to_string()
+    )
+  );
+  assert_eq!(
+    error_after_serializing(false),
+    Some("index 4 is out of bounds for length 4".to_string())
+  );
 }
 
 /// An audio program round-tripped through `Code::to_bytes` /

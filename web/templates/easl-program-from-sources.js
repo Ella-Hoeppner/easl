@@ -46,7 +46,9 @@ function loadAudioRuntime() {
  * It can be paused before it has started; it then starts paused.
  *
  * `options.onPrint`, if given, is called with each line the program prints,
- * in place of the browser console.
+ * in place of the browser console. `options.onAudioError`, if given, is
+ * called in its place with each error from the audio thread: a runtime
+ * error in audio code stops the audio, but not the program.
  */
 export function startEaslProgram(canvas, options = {}) {
   let program = null;
@@ -64,6 +66,7 @@ export function startEaslProgram(canvas, options = {}) {
         workletUrl: new URL("./easl-audio-worklet.js", import.meta.url).href,
         startMidi: listenToMidi,
         onPrint: options.onPrint,
+        onAudioError: options.onAudioError,
       },
     );
     if (paused) program.pause();

@@ -37,11 +37,13 @@ const PROCESSOR_NAME: &str = "easl-audio";
 
 /// What the page provides for audio: the compiled wasm module of the
 /// precompiled-program runtime, which the worklet instantiates (or a
-/// function returning a promise of it, called only when audio starts), and
-/// the worklet script's URL.
+/// function returning a promise of it, called only when audio starts), the
+/// worklet script's URL, and optionally a function to call with each error
+/// from the audio thread in place of the browser console.
 pub struct AudioHost {
   pub module: JsValue,
   pub worklet_url: String,
+  pub on_error: Option<Function>,
 }
 
 /// The running audio output.
@@ -56,6 +58,9 @@ struct Output {
   table: Option<Arc<ThreadSharedTable>>,
   shared_names: Vec<Arc<str>>,
   entry: Option<String>,
+  /// Whether the worklet's audio code has stopped with a runtime error,
+  /// so the next `start-audio` restarts it.
+  stopped: bool,
 }
 
 thread_local! {
@@ -107,6 +112,7 @@ pub fn configure(host: AudioHost) -> Result<(), JsValue> {
       table: None,
       shared_names: vec![],
       entry: None,
+      stopped: false,
     })
   });
   Ok(())
@@ -119,7 +125,9 @@ pub fn sample_rate() -> Option<f32> {
 
 /// Handles a `start-audio` call. The first carries the audio program (its
 /// table already bootstrapped by the call): the worklet is created and told
-/// to start. Later calls switch the running entry when it differs.
+/// to start. Later calls switch the running entry when it differs, or
+/// restart the program when its audio code has stopped with a runtime
+/// error.
 pub fn start(entry: &str, source: Option<AudioSource>) -> Result<(), String> {
   let first = OUTPUT.with(|o| {
     let mut o = o.borrow_mut();
@@ -129,14 +137,19 @@ pub fn start(entry: &str, source: Option<AudioSource>) -> Result<(), String> {
     Ok(output.entry.is_none())
   })?;
   if !first {
-    let changed = OUTPUT.with(|o| {
+    let (changed, stopped) = OUTPUT.with(|o| {
       let mut o = o.borrow_mut();
       let output = o.as_mut().unwrap();
       let changed = output.entry.as_deref() != Some(entry);
       output.entry = Some(entry.to_string());
-      changed
+      (changed, std::mem::take(&mut output.stopped))
     });
-    if changed {
+    if stopped {
+      post(message(&[
+        ("type", "restart".into()),
+        ("entry", entry.into()),
+      ]));
+    } else if changed {
       post(message(&[
         ("type", "switch".into()),
         ("entry", entry.into()),
@@ -181,7 +194,11 @@ pub fn start(entry: &str, source: Option<AudioSource>) -> Result<(), String> {
     ("type", "start".into()),
     ("entry", entry.into()),
   ]));
-  let program = Uint8Array::from(&program.code.to_bytes()[..]);
+  // The code describes its source map, when it has one (the runtime built
+  // with the compiler), so the worklet's errors say where they happened.
+  let mut code = program.code;
+  code.describe_sources();
+  let program = Uint8Array::from(&code.to_bytes()[..]);
   let function_names = names_array(&function_names);
   spawn_local(async move {
     if let Err(error) = create_worklet(program, function_names).await {
@@ -359,9 +376,28 @@ fn receive(event: MessageEvent) {
         }
       });
     }
+    Some("stopped") => {
+      OUTPUT.with(|o| {
+        if let Some(output) = o.borrow_mut().as_mut() {
+          output.stopped = true;
+        }
+      });
+    }
     Some("error") => {
       let text = Reflect::get(&data, &"message".into()).unwrap_or_default();
-      web_sys::console::error_2(&"easl audio:".into(), &text);
+      let on_error =
+        HOST.with(|h| h.borrow().as_ref().and_then(|h| h.on_error.clone()));
+      match on_error {
+        Some(on_error) => {
+          if let Err(error) = on_error.call1(&JsValue::NULL, &text) {
+            web_sys::console::error_2(
+              &"easl: onAudioError threw:".into(),
+              &error,
+            );
+          }
+        }
+        None => web_sys::console::error_2(&"easl audio:".into(), &text),
+      }
     }
     _ => {}
   }

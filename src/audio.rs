@@ -22,7 +22,7 @@ use cpal::{FromSample, SampleRate, SizedSample};
 
 use crate::midi_out::MidiMessage;
 use crate::thread_sync::{ThreadSharedTable, participant};
-use crate::vm::bytecode::BytecodeProgram;
+use crate::vm::bytecode::{BytecodeProgram, Code};
 
 /// The backend used to drive the audio thread's per-sample function. Picked
 /// by the caller when starting an audio-capable program. Defaults to `VM`.
@@ -71,6 +71,10 @@ enum VmSwapMessage {
   /// `--watch` reload. The new driver starts at its own sample 0, so
   /// `t`/`(audio-time)` restart alongside the rest of the program's state.
   Replace(Box<VmAudioDriver>),
+  /// Start the program over after its audio code stopped with a runtime
+  /// error (see `AudioRestart`): like `Replace`, except the new driver
+  /// doesn't report the error the old one stopped with again.
+  Restart(Box<VmAudioDriver>),
   /// Re-point the running driver at a different entry function in the same
   /// program, preserving program state and sample position. Carries an
   /// index into the running program's function table: entry *names* only
@@ -98,6 +102,12 @@ struct VmStreamState {
   /// it at its next batch. A flag rather than a mailbox message, so it
   /// never displaces a pending swap.
   reset_time: Arc<AtomicBool>,
+  /// Whether the running driver's audio code has stopped with a runtime
+  /// error (set by the callback, once per run): a later `start-audio`
+  /// then restarts the program (`restart`) and clears it.
+  stopped: Arc<AtomicBool>,
+  /// The running program as compiled, to start it over.
+  restart: AudioRestart,
 }
 
 /// Active audio thread state. The cpal stream is `!Send`, so we stash it in a
@@ -565,6 +575,48 @@ pub struct VmAudioDriver {
   /// it happened. Once it's set, the driver runs no more code: every
   /// sample is silent.
   runtime_error: Option<String>,
+  /// The runtime error the run this one restarted reported (see
+  /// `follow`), which this run doesn't report again if it stops with it.
+  previously_reported_error: Option<String>,
+  /// Whether `take_reported_error` has handed out this run's error.
+  error_taken: bool,
+  /// Whether `take_stop` has reported that this run stopped.
+  stop_taken: bool,
+}
+
+/// An audio program as compiled, before any of it ran, to start over once
+/// its audio code has stopped with a runtime error: a later `start-audio`
+/// gives the program a fresh run (its state initialized again, adopting the
+/// shared variables, from sample 0) at the entry it names.
+#[derive(Clone)]
+pub struct AudioRestart {
+  code: Code,
+  function_names: Vec<Arc<str>>,
+  shared_table: Option<Arc<ThreadSharedTable>>,
+}
+
+impl AudioRestart {
+  /// The restart of `program`, before it runs any audio code.
+  pub fn new(
+    program: &BytecodeProgram,
+    function_names: &[Arc<str>],
+    shared_table: Option<Arc<ThreadSharedTable>>,
+  ) -> Self {
+    Self {
+      code: program.code.clone(),
+      function_names: function_names.to_vec(),
+      shared_table,
+    }
+  }
+  /// A fresh run of the program, at `entry_name`.
+  pub fn driver(&self, entry_name: &str) -> Result<VmAudioDriver, String> {
+    VmAudioDriver::new(
+      entry_name,
+      BytecodeProgram::from_code(self.code.clone()),
+      &self.function_names,
+      self.shared_table.clone(),
+    )
+  }
 }
 
 impl VmAudioDriver {
@@ -629,7 +681,47 @@ impl VmAudioDriver {
       shared_table,
       sample_index: 0,
       runtime_error: None,
+      previously_reported_error: None,
+      error_taken: false,
+      stop_taken: false,
     })
+  }
+
+  /// Takes over from `previous`, the run this one restarts: an error it
+  /// reported isn't reported again, so a program failing the same way on
+  /// every restart (say, one calling `start-audio` every frame) reports it
+  /// once.
+  pub fn follow(&mut self, previous: &mut VmAudioDriver) {
+    self.previously_reported_error = previous
+      .runtime_error
+      .take()
+      .or_else(|| previous.previously_reported_error.take());
+  }
+
+  /// Whether this run's audio code has stopped with a runtime error, true
+  /// only the first time it's asked after it did: how a host learns to
+  /// restart the program at the next `start-audio`, whether or not the
+  /// error is reported again.
+  pub fn take_stop(&mut self) -> bool {
+    if self.stop_taken || self.runtime_error.is_none() {
+      return false;
+    }
+    self.stop_taken = true;
+    true
+  }
+
+  /// The runtime error this run stopped with, the first time it's asked
+  /// for, unless the run it restarted reported the same one: what a host
+  /// reports where stderr doesn't reach (the web's audio worklet).
+  pub fn take_reported_error(&mut self) -> Option<&str> {
+    if self.runtime_error.is_none()
+      || self.error_taken
+      || self.runtime_error == self.previously_reported_error
+    {
+      return None;
+    }
+    self.error_taken = true;
+    self.runtime_error.as_deref()
   }
 
   /// Refreshes the audio replica's copies of the implicit `easl_midi_*`
@@ -723,8 +815,9 @@ impl VmAudioDriver {
   /// (already clamped) sample. Adopts before the first sample and publishes
   /// after the last, so within a batch every read of a shared global is
   /// stable and the batch's writes become visible to other threads as one
-  /// unit. A runtime error stops the audio code: it's reported on stderr,
-  /// and the rest of this batch and every later one is silent.
+  /// unit. A runtime error stops the audio code: it's reported on stderr
+  /// (unless the run this one restarted reported the same one), and the
+  /// rest of this batch and every later one is silent.
   pub fn run_batch(
     &mut self,
     frames: usize,
@@ -780,7 +873,9 @@ impl VmAudioDriver {
         .execute_audio(&mut self.midi_out, &mut reset_time)
       {
         let error = self.program.describe_trap(&trap.to_string());
-        eprintln!("Runtime error in audio code: {error}");
+        if self.previously_reported_error.as_ref() != Some(&error) {
+          eprintln!("Runtime error in audio code: {error}");
+        }
         self.runtime_error = Some(error);
         (i..frames).for_each(|_| emit(0.0));
         return;
@@ -828,6 +923,8 @@ pub fn start_audio_thread_vm(
   if program.code.sends_midi() {
     crate::midi::start_output();
   }
+  let restart =
+    AudioRestart::new(&program, &function_names, shared_table.clone());
   let mut driver =
     VmAudioDriver::new(entry_name, program, &function_names, shared_table)?;
   let mut state_lock = AUDIO_STATE.lock().unwrap();
@@ -841,6 +938,9 @@ pub fn start_audio_thread_vm(
     };
     vm.current_entry = entry_name.into();
     vm.function_names = function_names;
+    vm.restart = restart;
+    // A stop the old run reported isn't the new program's to restart.
+    vm.stopped.store(false, Ordering::Relaxed);
     *vm.mailbox.lock().unwrap() =
       Some(VmSwapMessage::Replace(Box::new(driver)));
     return Ok(());
@@ -849,6 +949,8 @@ pub fn start_audio_thread_vm(
   let cb_mailbox = mailbox.clone();
   let reset_time = Arc::new(AtomicBool::new(false));
   let cb_reset_time = reset_time.clone();
+  let stopped = Arc::new(AtomicBool::new(false));
+  let cb_stopped = stopped.clone();
   let stream = build_audio_stream_batched(move |output, channels, rate| {
     // Apply any pending swap first, so it takes effect at a batch
     // boundary. `try_lock` only: if the main thread happens to be
@@ -862,6 +964,10 @@ pub fn start_audio_thread_vm(
           // Dropping the old driver deallocates its program here on the
           // audio thread — a one-off cost at swap time, well within a
           // batch's time budget.
+          driver = *new_driver;
+        }
+        VmSwapMessage::Restart(mut new_driver) => {
+          new_driver.follow(&mut driver);
           driver = *new_driver;
         }
         VmSwapMessage::SwitchEntry(fn_index) => {
@@ -885,6 +991,9 @@ pub fn start_audio_thread_vm(
       |_| {},
       |_| {},
     );
+    if driver.take_stop() {
+      cb_stopped.store(true, Ordering::Relaxed);
+    }
   })?;
   *state_lock = Some(AudioState {
     _stream: stream,
@@ -893,6 +1002,8 @@ pub fn start_audio_thread_vm(
       current_entry: entry_name.into(),
       function_names,
       reset_time,
+      stopped,
+      restart,
     }),
     #[cfg(feature = "c_audio")]
     c: None,
@@ -917,9 +1028,11 @@ pub fn reset_audio_time() {
 /// source was consumed by the first call): with the same entry name — the
 /// typical every-frame repeat — it's a cheap no-op; with a different name,
 /// the running program switches entries at the next batch boundary,
-/// preserving its state and sample position. On a C-backend stream this is
-/// a no-op — the C driver calls a fixed compiled-in symbol, and without a
-/// fresh source there is nothing to switch to.
+/// preserving its state and sample position. Once the audio code has
+/// stopped with a runtime error, any call starts the program over at the
+/// entry it names (`AudioRestart`). On a C-backend stream this is a no-op —
+/// the C driver calls a fixed compiled-in symbol, and without a fresh
+/// source there is nothing to switch to.
 pub fn switch_vm_audio_entry(entry_name: &str) -> Result<(), String> {
   let mut state_lock = AUDIO_STATE.lock().unwrap();
   let Some(state) = state_lock.as_mut() else {
@@ -928,6 +1041,13 @@ pub fn switch_vm_audio_entry(entry_name: &str) -> Result<(), String> {
   let Some(vm) = state.vm.as_mut() else {
     return Ok(());
   };
+  if vm.stopped.swap(false, Ordering::Relaxed) {
+    let driver = vm.restart.driver(entry_name)?;
+    vm.current_entry = entry_name.into();
+    *vm.mailbox.lock().unwrap() =
+      Some(VmSwapMessage::Restart(Box::new(driver)));
+    return Ok(());
+  }
   if *vm.current_entry == *entry_name {
     return Ok(());
   }
@@ -940,6 +1060,10 @@ pub fn switch_vm_audio_entry(entry_name: &str) -> Result<(), String> {
     Some(VmSwapMessage::Replace(mut driver)) => {
       driver.switch_entry_by_index(fn_index);
       VmSwapMessage::Replace(driver)
+    }
+    Some(VmSwapMessage::Restart(mut driver)) => {
+      driver.switch_entry_by_index(fn_index);
+      VmSwapMessage::Restart(driver)
     }
     _ => VmSwapMessage::SwitchEntry(fn_index),
   });

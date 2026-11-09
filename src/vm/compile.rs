@@ -3008,6 +3008,7 @@ impl BytecodeCompilationState {
       source_positions: self.source_positions,
       instruction_sources: self.instruction_sources,
       documents: self.documents,
+      described_sources: None,
     };
     // The CPU runtime runs the initializers itself, with its host: they can
     // use builtins that run as host ops, like `string`.

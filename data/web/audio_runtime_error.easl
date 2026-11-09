@@ -1,0 +1,18 @@
+; A runtime error in audio code stops the audio, not the program: the page
+; hears of it through its `onAudioError` callback, and the frame loop keeps
+; running.
+(var samples: u32)
+
+(defn tone []: f32
+  (+= samples 1u)
+  (let [levels [0. 0.1 0.2 0.3]]
+    (levels (/ samples 1000u))))
+
+@cpu
+(defn main []
+  (start-audio tone)
+  (spawn-window
+    (fn []
+      (when (> (window-time) 3.)
+        (print "the frame loop kept running")
+        (close-window)))))

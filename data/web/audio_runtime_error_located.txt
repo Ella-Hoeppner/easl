@@ -1,0 +1,6 @@
+onAudioError: Runtime error in audio code: index 4 is out of bounds for length 4
+audio_runtime_error_located.easl
+7 |   (let [levels [0. 0.1 0.2 0.3]]
+8 |     (levels (/ samples 1000u))))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+"the frame loop kept running"

@@ -1,0 +1,2 @@
+onAudioError: Runtime error in audio code: index 4 is out of bounds for length 4
+"the frame loop kept running"
