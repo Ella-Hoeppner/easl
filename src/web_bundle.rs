@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// The page that runs the program on a full-window canvas.
-pub const INDEX_HTML: &str = include_str!("../web/templates/index.html");
+pub const INDEX_HTML: &str = include_str!("web_templates/index.html");
 
 /// The runtime that runs precompiled programs (`web/build.sh` builds it):
 /// its JS bindings and its wasm module.
@@ -34,19 +34,18 @@ pub const COMPILER_RUNTIME_FILES: [&str; 2] =
 pub const RUNTIME_SUPPORT_FILES: &[(&str, &str)] = &[
   (
     "easl-audio-worklet.js",
-    include_str!("../web/templates/easl-audio-worklet.js"),
+    include_str!("web_templates/easl-audio-worklet.js"),
   ),
   (
     "easl-text-polyfill.js",
-    include_str!("../web/templates/easl-text-polyfill.js"),
+    include_str!("web_templates/easl-text-polyfill.js"),
   ),
 ];
 
-const PROGRAM_JS_TEMPLATE: &str =
-  include_str!("../web/templates/easl-program.js");
+const PROGRAM_JS_TEMPLATE: &str = include_str!("web_templates/easl-program.js");
 
 const PROGRAM_FROM_SOURCES_JS_TEMPLATE: &str =
-  include_str!("../web/templates/easl-program-from-sources.js");
+  include_str!("web_templates/easl-program-from-sources.js");
 
 /// The name `index.html` loads the program's module by.
 pub const PROGRAM_JS_FILE: &str = "easl-program.js";

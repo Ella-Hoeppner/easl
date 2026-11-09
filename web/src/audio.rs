@@ -1,7 +1,7 @@
 //! Audio output on the web, page side. `start-audio` runs its audio
-//! function on the browser's real-time audio thread, in an AudioWorklet
-//! (`templates/easl-audio-worklet.js`) holding its own instance of this
-//! runtime (see `audio_engine`). The two instances share no memory, so the
+//! function on the browser's real-time audio thread, in an AudioWorklet (the
+//! easl crate's `src/web_templates/easl-audio-worklet.js`) holding its own
+//! instance of this runtime (see `audio_engine`). The two instances share no memory, so the
 //! page sends the worklet its compiled audio program, serialized
 //! (`Code::to_bytes`): both sides then hold the same program, with the same
 //! shared-variable indices, exactly as a native audio thread does.

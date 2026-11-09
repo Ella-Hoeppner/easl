@@ -29,7 +29,7 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
 - `src/video.rs` — video decoding (`ffmpeg` subprocess) behind the `video` feature
 - `src/midi.rs` — native MIDI listener and output sender (`midir`); `src/midi_web.rs` — the web equivalent; `src/midi_out.rs` — building MIDI output messages (shared by both CPU runtimes and the audio thread)
 - `src/precompiled.rs` — `PrecompiledProgram`: a validated program compiled for the VM's CPU runtime, serializable, so it runs without the compiler (the web runtime's default build)
-- `src/web_bundle.rs` — packaging a program for the web runtime (`web/` crate)
+- `src/web_bundle.rs` — packaging a program for the web runtime (`web/` crate); the page templates it embeds are in `src/web_templates/` (not under `web/`, a separate package that `cargo package` leaves out of the easl crate)
 - `src/main.rs` — benchmark only; the CLI is the separate `easl_cli` crate
 - `src/compiler/`:
   - `program.rs` — `Program` and the pipeline (`validate_raw_program`); emission (`compile_to_target`), `compile_to_bytecode_program`, `thread_shared_globals`. The largest file

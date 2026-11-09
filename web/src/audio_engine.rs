@@ -1,7 +1,7 @@
 //! Audio output on the web, worklet side: the runtime instance inside the
-//! AudioWorklet (`templates/easl-audio-worklet.js`), running a program's
-//! audio function on the browser's real-time audio thread. See `audio` for
-//! the page side and the protocol between them.
+//! AudioWorklet (the easl crate's `src/web_templates/easl-audio-worklet.js`),
+//! running a program's audio function on the browser's real-time audio
+//! thread. See `audio` for the page side and the protocol between them.
 
 use std::sync::Arc;
 
