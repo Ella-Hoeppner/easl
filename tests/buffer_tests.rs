@@ -167,6 +167,7 @@ macro_rules! screen_test {
 }
 
 screen_test!(screen_draw_order);
+screen_test!(screen_discard);
 screen_test!(render_settings_depth);
 screen_test!(render_settings_raster);
 screen_test!(screen_draw_flushes);

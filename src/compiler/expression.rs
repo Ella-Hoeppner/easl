@@ -3153,7 +3153,17 @@ impl TypedExp {
       ),
       Break => "\nbreak;".to_string(),
       Continue => "\ncontinue;".to_string(),
-      Discard => "\ndiscard;".to_string(),
+      // WGSL's `discard` doesn't end the function (the invocation carries on
+      // as a helper, its writes and outputs dropped), so a function
+      // returning a value needs a `return` after one in tail position, or
+      // its end is reachable without a value. The value is never used.
+      Discard => match position {
+        Return => format!(
+          "\ndiscard;\nreturn {}();",
+          self.data.monomorphized_name(names, target)
+        ),
+        InnerLine | InnerExpression => "\ndiscard;".to_string(),
+      },
       ExpKind::Return(exp) => {
         if exp.data.kind == TypeState::Known(Type::Unit) {
           // A unit-valued return has no value to emit: run the returned
