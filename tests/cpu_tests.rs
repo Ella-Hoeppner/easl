@@ -131,6 +131,29 @@ fn run_cpu_error_test(name: &str) {
       "{name}: error mismatch ({runtime:?})"
     );
   }
+  // Precompiled with its source map described, encoded, and read back (as
+  // the web runtime's `compileProgram` hands programs to pages), it fails
+  // in the same place.
+  let error = run_described_precompiled(program)
+    .expect_err(&format!("{name}: no runtime error (precompiled)"));
+  assert_eq!(
+    error.to_string().replace(&repository, ""),
+    expected.trim_end(),
+    "{name}: error mismatch (precompiled with described sources)"
+  );
+}
+
+/// Precompiles `program`, describes its source maps, encodes it and reads it
+/// back, and runs it on the bytecode VM.
+fn run_described_precompiled(program: Program) -> Result<(), EvalError> {
+  let mut precompiled = PrecompiledProgram::new(program)?;
+  precompiled.describe_sources();
+  let precompiled =
+    PrecompiledProgram::from_bytes(&precompiled.to_bytes()).unwrap();
+  let entry_name = precompiled.entry(None).expect("one `@cpu` entry point");
+  let mut runtime =
+    VmCpuRuntime::from_precompiled(precompiled, StringIO::new(), None)?;
+  runtime.run(&entry_name).map(|_| ())
 }
 
 macro_rules! cpu_error_test {

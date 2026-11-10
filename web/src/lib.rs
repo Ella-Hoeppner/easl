@@ -6,8 +6,9 @@
 //! The default build runs programs `easl compile --web` precompiled (see
 //! `easl::precompiled`), so it holds no compiler. The `compiler` feature
 //! builds a runtime that can also compile programs from their sources in
-//! the browser, for pages that change them as they run (a playground); its
-//! errors describe where in the sources they happened.
+//! the browser (`compileProgram`), for pages that change them as they run
+//! (a playground); their errors describe where in the sources they
+//! happened.
 
 mod atomics;
 mod audio;
@@ -18,7 +19,6 @@ use std::{
   cell::{Cell, RefCell},
   collections::HashMap,
   fmt::Display,
-  future::Future,
   rc::Rc,
   sync::{Arc, RwLock},
 };
@@ -44,7 +44,8 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 
 /// Starts running a precompiled easl program (the bytes `easl compile
-/// --web` writes beside the page), rendering into `canvas`, and returns it
+/// --web` writes beside the page, or `compileProgram`'s), rendering into
+/// `canvas`, and returns it
 /// at once, for the page to pause, resume, and wait on. `host` carries
 /// what the page provides: `module` (the compiled wasm module of this
 /// runtime, which the audio worklet instantiates too, or a function
@@ -61,38 +62,9 @@ pub fn start_program(
   program: Vec<u8>,
   host: JsValue,
 ) -> EaslProgram {
-  start(canvas, host, async move {
-    PrecompiledProgram::from_bytes(&program)
-  })
-}
-
-/// Like `startProgram`, for a program given as its sources: parallel lists
-/// of file paths and sources, with `main_path` naming the main file, which
-/// holds the `@cpu` entry points. The program is compiled first, and a
-/// compile error rejects `finished`.
-#[cfg(feature = "compiler")]
-#[wasm_bindgen(js_name = startProgramFromSources)]
-pub fn start_program_from_sources(
-  canvas: HtmlCanvasElement,
-  main_path: String,
-  paths: Vec<String>,
-  sources: Vec<String>,
-  host: JsValue,
-) -> EaslProgram {
-  start(canvas, host, async move {
-    compile_program(&main_path, paths, sources)
-  })
-}
-
-/// Starts running the program `load` produces.
-fn start(
-  canvas: HtmlCanvasElement,
-  host: JsValue,
-  load: impl Future<Output = Result<PrecompiledProgram, String>> + 'static,
-) -> EaslProgram {
   let control = Rc::new(ProgramControl::default());
   let run_control = Rc::clone(&control);
-  let load = RefCell::new(Some(load));
+  let program = RefCell::new(Some(program));
   let settle_entry_points: Rc<RefCell<Option<(Function, Function)>>> =
     Rc::default();
   let entry_points = Promise::new(&mut |resolve, reject| {
@@ -106,11 +78,11 @@ fn start(
   let finished = Promise::new(&mut |resolve, reject| {
     let control = Rc::clone(&run_control);
     let (canvas, host) = (canvas.clone(), host.clone());
-    let load = load.borrow_mut().take().unwrap();
+    let program = program.borrow_mut().take().unwrap();
     let (resolve_entry_points, reject_entry_points) =
       settle_entry_points.borrow_mut().take().unwrap();
     spawn_local(async move {
-      let result = match load.await {
+      let result = match PrecompiledProgram::from_bytes(&program) {
         Ok(program) => {
           let names: Array = program
             .entry_points
@@ -144,6 +116,59 @@ fn start(
     control,
     entry_points,
     finished,
+  }
+}
+
+/// Compiles a program given as its sources without running it: parallel
+/// lists of file paths and sources, with `main_path` naming the main file,
+/// which holds the `@cpu` entry points. The compiled program's `bytes` go to
+/// `startProgram` (of either build), as many times as the page likes, with
+/// `host.entry` naming one of its `entryPoints`. Its source map is described
+/// into the bytes (`PrecompiledProgram::describe_sources`), so its runtime
+/// errors say where they happened. A compile error throws
+/// `easl: <message>`.
+#[cfg(feature = "compiler")]
+#[wasm_bindgen(js_name = compileProgram)]
+pub fn compile_program(
+  main_path: String,
+  paths: Vec<String>,
+  sources: Vec<String>,
+) -> Result<CompiledProgram, JsError> {
+  let mut program = compile_sources(&main_path, paths, sources)
+    .map_err(|message| JsError::new(&format!("easl: {message}")))?;
+  program.describe_sources();
+  Ok(CompiledProgram {
+    entry_points: program
+      .entry_points
+      .iter()
+      .map(|name| name.to_string())
+      .collect(),
+    bytes: program.to_bytes(),
+  })
+}
+
+/// A compiled program, ready to start (see `compileProgram`).
+#[cfg(feature = "compiler")]
+#[wasm_bindgen]
+pub struct CompiledProgram {
+  bytes: Vec<u8>,
+  entry_points: Vec<String>,
+}
+
+#[cfg(feature = "compiler")]
+#[wasm_bindgen]
+impl CompiledProgram {
+  /// The program's encoding, for `startProgram`.
+  #[wasm_bindgen(getter)]
+  pub fn bytes(&self) -> Vec<u8> {
+    self.bytes.clone()
+  }
+
+  /// The names of the program's `@cpu` entry points, in the order they're
+  /// written.
+  #[wasm_bindgen(getter, js_name = entryPoints)]
+  pub fn entry_points(&self) -> Vec<String> {
+    self.entry_points.clone()
   }
 }
 
@@ -186,8 +211,8 @@ impl EaslProgram {
 
   /// Settles when the program ends: resolves when it finishes (a program
   /// with a window runs until it calls `close-window`), and rejects with
-  /// the description of a compile or runtime error, prefixed `easl: ` so
-  /// it's clear where it comes from.
+  /// the description of a runtime error (or of why the bytes it was given
+  /// aren't a program), prefixed `easl: ` so it's clear where it comes from.
   #[wasm_bindgen(getter)]
   pub fn finished(&self) -> Promise {
     self.finished.clone()
@@ -336,7 +361,7 @@ pub fn send_midi_message(bytes: &[u8]) {
 
 /// Parses, validates, and compiles the program.
 #[cfg(feature = "compiler")]
-fn compile_program(
+fn compile_sources(
   main_path: &str,
   paths: Vec<String>,
   sources: Vec<String>,

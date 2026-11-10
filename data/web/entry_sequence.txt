@@ -1,0 +1,9 @@
+entryPoints: first second
+"second"
+1u
+entryPoints: first second
+"first"
+0u
+entryPoints: first second
+"second"
+1u

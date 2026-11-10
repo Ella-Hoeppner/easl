@@ -1,5 +1,6 @@
 import init, {
-  startProgramFromSources,
+  compileProgram,
+  startProgram,
   sendMidiMessage,
 } from "./easl_web_compiler.js";
 
@@ -7,15 +8,26 @@ import init, {
 const MAIN_PATH = __EASL_MAIN_PATH__;
 const FILES = __EASL_FILES__;
 
-let initialized = null;
+let compiled = null;
 
 let audioRuntime = null;
 
-/** Loads the runtime, which compiles programs, once. */
-async function initialize() {
+/**
+ * Loads the runtime, which compiles programs, and compiles the program, once:
+ * every `startEaslProgram` runs the same compiled program.
+ */
+async function compile() {
   await init({
     module_or_path: new URL("./easl_web_compiler_bg.wasm", import.meta.url),
   });
+  const program = compileProgram(
+    MAIN_PATH,
+    Object.keys(FILES),
+    Object.values(FILES),
+  );
+  const result = { bytes: program.bytes, entryPoints: program.entryPoints };
+  program.free();
+  return result;
 }
 
 /**
@@ -31,8 +43,9 @@ function loadAudioRuntime() {
 }
 
 /**
- * Compiles and runs the program, rendering into `canvas`, and returns it at
- * once, to control and wait on:
+ * Runs the program, rendering into `canvas`, and returns it at once, to
+ * control and wait on. The program is compiled the first time it's started,
+ * and every later start runs the same compiled program.
  *
  * - `pause()` stops it before its next frame: its canvas keeps showing the
  *   last frame, its audio is suspended, and its clock stops, so
@@ -40,7 +53,7 @@ function loadAudioRuntime() {
  * - `resume()` resumes it.
  * - `paused` is whether it's paused.
  * - `entryPoints` is a promise of the names of the program's `@cpu` entry
- *   points, in the order they're written, resolved once it has loaded.
+ *   points, in the order they're written, resolved once it has compiled.
  * - `finished` is a promise that resolves once the program finishes (a
  *   program with a window runs until it calls `close-window`), and rejects
  *   with a description of any compile or runtime error.
@@ -55,39 +68,23 @@ function loadAudioRuntime() {
  * error in audio code stops the audio, but not the program.
  */
 export function startEaslProgram(canvas, options = {}) {
+  compiled ??= compile();
   let program = null;
   let paused = false;
-  let started;
-  const startedProgram = new Promise((resolve, reject) => {
-    started = { resolve, reject };
-  });
   const finished = (async () => {
-    try {
-      initialized ??= initialize();
-      await initialized;
-    } catch (error) {
-      started.reject(error);
-      throw error;
-    }
-    program = startProgramFromSources(
-      canvas,
-      MAIN_PATH,
-      Object.keys(FILES),
-      Object.values(FILES),
-      {
-        module: loadAudioRuntime,
-        workletUrl: new URL("./easl-audio-worklet.js", import.meta.url).href,
-        startMidi: listenToMidi,
-        entry: options.entry,
-        onPrint: options.onPrint,
-        onAudioError: options.onAudioError,
-      },
-    );
-    started.resolve(program);
+    const { bytes } = await compiled;
+    program = startProgram(canvas, bytes, {
+      module: loadAudioRuntime,
+      workletUrl: new URL("./easl-audio-worklet.js", import.meta.url).href,
+      startMidi: listenToMidi,
+      entry: options.entry,
+      onPrint: options.onPrint,
+      onAudioError: options.onAudioError,
+    });
     if (paused) program.pause();
     await program.finished;
   })();
-  const entryPoints = startedProgram.then((program) => program.entryPoints);
+  const entryPoints = compiled.then((compiled) => compiled.entryPoints);
   entryPoints.catch(() => {});
   return {
     pause() {

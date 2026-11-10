@@ -140,6 +140,17 @@ impl PrecompiledProgram {
     }
   }
 
+  /// Describes the source maps of the program's code
+  /// (`Code::describe_sources`), so its runtime errors still say where they
+  /// happened after it's encoded and read back. Code compiled without
+  /// documents keeps none.
+  pub fn describe_sources(&mut self) {
+    self.cpu.describe_sources();
+    if let Some((audio, _)) = &mut self.audio {
+      audio.describe_sources();
+    }
+  }
+
   /// This program's encoding, for [`Self::from_bytes`].
   pub fn to_bytes(&self) -> Vec<u8> {
     postcard::to_allocvec(self)

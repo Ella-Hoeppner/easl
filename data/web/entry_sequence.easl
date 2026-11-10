@@ -1,0 +1,15 @@
+; A program with two @cpu entry points, which its page starts several times,
+; at one and then the other, from the one program it loaded (or compiled).
+; The page logs the names `entryPoints` gives it before each run.
+(var runs: u32)
+
+@cpu
+(defn first []
+  (print "first")
+  (print runs))
+
+@cpu
+(defn second []
+  (print "second")
+  (+= runs 1u)
+  (print runs))

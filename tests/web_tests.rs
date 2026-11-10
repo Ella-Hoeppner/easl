@@ -267,9 +267,14 @@ mod harness {
   /// each line it's called with prefixed `onPrint: `.
   const CAPTURED_PRINTS: &[&str] = &["web/print_capture"];
 
-  /// Tests whose page starts the program at the named `@cpu` entry point,
-  /// and logs its entry points (`entryPoints`) as `entryPoints: <names>`.
-  const ENTRY_CHOICES: &[(&str, &str)] = &[("web/entry_choice", "first")];
+  /// Tests whose page starts the program at each named `@cpu` entry point in
+  /// turn, each once the one before has finished, and logs its entry points
+  /// (`entryPoints`) as `entryPoints: <names>` before each run. Every start
+  /// of a page's program runs the one it loaded (or compiled) first.
+  const ENTRY_CHOICES: &[(&str, &[&str])] = &[
+    ("web/entry_choice", &["first"]),
+    ("web/entry_sequence", &["second", "first", "second"]),
+  ];
 
   /// Tests that also run, as `<test> (from sources)`, on the runtime built
   /// with the compiler, given the program's sources.
@@ -281,6 +286,7 @@ mod harness {
     "web/shared_atomics",
     "web/runtime_error",
     "web/entry_choice",
+    "web/entry_sequence",
     "web/entry_required",
     "buffer/screen_vertex_data",
   ];
@@ -308,17 +314,19 @@ mod harness {
   <body>
     <canvas id="easl-canvas"></canvas>
     <script type="module">
-      window.runProgram = async (options) => {
+      window.runProgram = async ({ entries, ...options }) => {
         const { startEaslProgram } = await import("./easl-program.js");
-        window.program = startEaslProgram(
-          document.getElementById("easl-canvas"),
-          options,
-        );
-        if (options.entry !== undefined) {
-          const entryPoints = await window.program.entryPoints;
-          console.log(`entryPoints: ${entryPoints.join(" ")}`);
+        for (const entry of entries ?? [undefined]) {
+          window.program = startEaslProgram(
+            document.getElementById("easl-canvas"),
+            { ...options, entry },
+          );
+          if (entry !== undefined) {
+            const entryPoints = await window.program.entryPoints;
+            console.log(`entryPoints: ${entryPoints.join(" ")}`);
+          }
+          await window.program.finished;
         }
-        await window.program.finished;
       };
     </script>
   </body>
@@ -339,9 +347,9 @@ mod harness {
     isolated: bool,
     /// Whether its page captures its prints (see `CAPTURED_PRINTS`).
     captures_prints: bool,
-    /// The entry point its page starts the program at (see
+    /// The entry points its page starts the program at, in turn (see
     /// `ENTRY_CHOICES`).
-    entry: Option<&'static str>,
+    entries: Option<&'static [&'static str]>,
   }
 
   #[derive(Clone)]
@@ -469,10 +477,10 @@ mod harness {
         let case = |from_sources: bool, expected: Expected| Case {
           isolated: !NOT_ISOLATED.contains(&&*name),
           captures_prints: CAPTURED_PRINTS.contains(&&*name),
-          entry: ENTRY_CHOICES
+          entries: ENTRY_CHOICES
             .iter()
             .find(|(chosen, _)| *chosen == name)
-            .map(|(_, entry)| *entry),
+            .map(|(_, entries)| *entries),
           name: if from_sources && !ONLY_FROM_SOURCES.contains(&&*name) {
             format!("{name} (from sources)")
           } else {
@@ -1088,7 +1096,7 @@ mod harness {
       &mut tab.session,
       case.script,
       case.captures_prints,
-      case.entry,
+      case.entries,
     );
     let pixel = match &case.expected {
       Expected::Screen { .. } => Some(canvas_pixel(&mut tab.session)),
@@ -1208,25 +1216,25 @@ mod harness {
   }
 
   /// Runs the page's program to completion, performing `script` meanwhile,
-  /// with an `onPrint` callback if `captures_prints`, and at the entry point
-  /// `entry`, if given. Every page passes an
+  /// with an `onPrint` callback if `captures_prints`, and at each of
+  /// `entries` in turn, if given. Every page passes an
   /// `onAudioError` callback, which logs each error from the audio thread
   /// prefixed `onAudioError: `, so it's part of the test's output.
   fn run_program(
     session: &mut Session,
     script: &[Step],
     captures_prints: bool,
-    entry: Option<&str>,
+    entries: Option<&[&str]>,
   ) -> Result<(), String> {
     let on_print = if captures_prints {
       "onPrint: (line) => console.log(`onPrint: ${line}`), "
     } else {
       ""
     };
-    let entry =
-      entry.map_or(String::new(), |entry| format!("entry: {entry:?}, "));
+    let entries = entries
+      .map_or(String::new(), |entries| format!("entries: {entries:?}, "));
     let expression = format!(
-      "runProgram({{ {entry}{on_print}onAudioError: (message) => \
+      "runProgram({{ {entries}{on_print}onAudioError: (message) => \
        console.log(`onAudioError: ${{message}}`) }})"
     );
     let run = session.send(

@@ -275,7 +275,9 @@ impl EvalError {
 impl EvalError {
   /// This error, if it's a userspace error with no location yet, located
   /// where `program`'s last run stopped (see `BytecodeProgram::trap_site`),
-  /// then described against `documents`.
+  /// then described against `documents`. Code read back from bytes has no
+  /// source positions, only the descriptions its source map was given
+  /// before it was serialized (`Code::describe_sources`), if it was.
   fn located_in_vm(
     self,
     program: &BytecodeProgram,
@@ -285,7 +287,17 @@ impl EvalError {
       EvalError::Userspace(error) => {
         let source_trace = program.code.source_trace(&program.trap_site);
         if source_trace.primary_position.is_none() {
-          return EvalError::Userspace(error);
+          return match program.code.describe_site(&program.trap_site) {
+            Some(description) => {
+              EvalError::Located(Box::new(LocatedEvalError {
+                error,
+                source_trace,
+                leaving_call: false,
+                description: Some(description),
+              }))
+            }
+            None => EvalError::Userspace(error),
+          };
         }
         EvalError::Located(Box::new(LocatedEvalError {
           error,
