@@ -12,8 +12,8 @@ crate-type = ["cdylib"]
 
 [features]
 # Also compile programs from their sources in the browser
-# (`startProgramFromSources`), for pages that change them as they run. This
-# links the whole compiler into the runtime.
+# (`compileProgram`), for pages that change them as they run. This links the
+# whole compiler into the runtime.
 compiler = []
 
 [dependencies]

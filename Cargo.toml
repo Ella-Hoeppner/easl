@@ -2,6 +2,14 @@
 name = "easl"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.90"
+description = "A high-level shader language that compiles to WGSL, with an optional CPU runtime."
+license = "MIT"
+repository = "https://github.com/Ella-Hoeppner/easl"
+homepage = "https://easl-lang.org"
+readme = "README.md"
+keywords = ["shader", "wgsl", "webgpu", "lisp", "language"]
+categories = ["compilers", "graphics", "rendering", "multimedia::audio"]
 
 [dependencies]
 lazy_static = "1.5.0"
