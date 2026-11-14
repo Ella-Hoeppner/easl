@@ -433,3 +433,4 @@ Practices: pin required semantics with a test that fails before a fix; prefer on
 - `take_mut::take` for in-place mutation of `&mut self`; `Rc<RefCell<…>>`/`Arc<RwLock<…>>` for shared AST state
 - `ExpTypeInfo` derefs to `TypeState`; `unwrap_known()` clones the `Type` (panics if unknown)
 - Imports go at the file header (no inline fully-qualified paths); comments describe current behavior, not history
+- Visibility: an item is `pub` only when something outside the crate uses it (an embedder, the downstream repos, the `web/` crate, or `tests/`); everything else is `pub(crate)`, which also lets the compiler report dead code. A type a public signature exposes must stay `pub` even if nothing names it. Internals public only for `tests/` carry `#[doc(hidden)]`

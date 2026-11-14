@@ -21,12 +21,12 @@ macro_rules! setting_enum {
 
     impl $name {
       /// The variants' names, in discriminant order.
-      pub const NAMES: &'static [&'static str] =
+      pub(crate) const NAMES: &'static [&'static str] =
         &[stringify!($first) $(, stringify!($variant))*];
       const VARIANTS: &'static [Self] = &[Self::$first $(, Self::$variant)*];
 
       /// The variant with declaration-order index `discriminant`.
-      pub fn from_discriminant(discriminant: u32) -> Self {
+      pub(crate) fn from_discriminant(discriminant: u32) -> Self {
         *Self::VARIANTS.get(discriminant as usize).unwrap_or_else(|| {
           panic!(
             "{} discriminant {discriminant} out of range",
@@ -84,14 +84,14 @@ setting_enum!(
 /// dst_factor)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlendComponent {
-  pub src_factor: BlendFactor,
-  pub dst_factor: BlendFactor,
+  pub(crate) src_factor: BlendFactor,
+  pub(crate) dst_factor: BlendFactor,
   pub operation: BlendOperation,
 }
 
 impl BlendComponent {
   /// Writes the source over the destination.
-  pub const REPLACE: Self = Self {
+  pub(crate) const REPLACE: Self = Self {
     src_factor: BlendFactor::One,
     dst_factor: BlendFactor::Zero,
     operation: BlendOperation::Add,
@@ -124,7 +124,7 @@ impl BlendComponent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Blend {
   pub color: BlendComponent,
-  pub alpha: BlendComponent,
+  pub(crate) alpha: BlendComponent,
 }
 
 impl Default for Blend {
@@ -140,9 +140,10 @@ impl Default for Blend {
 }
 
 impl Blend {
+  #[cfg(feature = "window")]
   /// Whether this blend writes the source over the destination unchanged,
   /// so a pipeline can skip blending altogether.
-  pub fn is_replace(&self) -> bool {
+  pub(crate) fn is_replace(&self) -> bool {
     self.color.normalized() == BlendComponent::REPLACE
       && self.alpha.normalized() == BlendComponent::REPLACE
   }
@@ -191,12 +192,12 @@ setting_enum!(
 pub struct RenderSettings {
   pub blend: Blend,
   /// The color the `Constant` blend factors use, as `f32` bits.
-  pub blend_constant: [u32; 4],
-  pub depth_test: DepthTest,
+  pub(crate) blend_constant: [u32; 4],
+  pub(crate) depth_test: DepthTest,
   /// Whether fragments that pass the depth test write their depth. Only
   /// meaningful when `depth_test` isn't `Off`.
-  pub depth_write: bool,
-  pub cull: CullMode,
+  pub(crate) depth_write: bool,
+  pub(crate) cull: CullMode,
   pub front_face: FrontFace,
   pub topology: Topology,
 }
@@ -232,13 +233,15 @@ impl RenderSettings {
     }
   }
 
+  #[cfg(feature = "window")]
   /// The blend constant as a color.
-  pub fn blend_constant(&self) -> [f32; 4] {
+  pub(crate) fn blend_constant(&self) -> [f32; 4] {
     self.blend_constant.map(f32::from_bits)
   }
 
+  #[cfg(feature = "window")]
   /// Whether a draw with these settings uses its target's depth buffer.
-  pub fn uses_depth(&self) -> bool {
+  pub(crate) fn uses_depth(&self) -> bool {
     self.depth_test != DepthTest::Off
   }
 
@@ -303,7 +306,7 @@ const OPERATION: SettingArgument =
 
 impl RenderSetting {
   /// The setter builtins, with the setting each changes.
-  pub const SETTERS: &'static [(&'static str, RenderSetting)] = &[
+  pub(crate) const SETTERS: &'static [(&'static str, RenderSetting)] = &[
     ("set-blend", RenderSetting::Blend),
     ("set-blend-constant", RenderSetting::BlendConstant),
     ("set-depth-test", RenderSetting::DepthTest),
@@ -315,17 +318,18 @@ impl RenderSetting {
 
   /// The builtin enums the setters take, with their variants' names in
   /// discriminant order.
-  pub const ENUMS: &'static [(&'static str, &'static [&'static str])] = &[
-    ("BlendFactor", BlendFactor::NAMES),
-    ("BlendOperation", BlendOperation::NAMES),
-    ("DepthTest", DepthTest::NAMES),
-    ("CullMode", CullMode::NAMES),
-    ("FrontFace", FrontFace::NAMES),
-    ("Topology", Topology::NAMES),
-  ];
+  pub(crate) const ENUMS: &'static [(&'static str, &'static [&'static str])] =
+    &[
+      ("BlendFactor", BlendFactor::NAMES),
+      ("BlendOperation", BlendOperation::NAMES),
+      ("DepthTest", DepthTest::NAMES),
+      ("CullMode", CullMode::NAMES),
+      ("FrontFace", FrontFace::NAMES),
+      ("Topology", Topology::NAMES),
+    ];
 
   /// The setting the setter builtin `name` changes.
-  pub fn of_setter(name: &str) -> Option<Self> {
+  pub(crate) fn of_setter(name: &str) -> Option<Self> {
     Self::SETTERS
       .iter()
       .find_map(|(setter, setting)| (*setter == name).then_some(*setting))
@@ -357,7 +361,7 @@ impl RenderSetting {
   }
 
   /// How many words each of the setter's arguments takes.
-  pub fn words_per_argument(self) -> usize {
+  pub(crate) fn words_per_argument(self) -> usize {
     match self {
       RenderSetting::BlendConstant => 4,
       _ => 1,

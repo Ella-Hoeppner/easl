@@ -61,17 +61,17 @@ pub struct StorageReadViews {
   pub views: Vec<StorageReadView>,
   /// Each render entry point that reads through views, with the vars it
   /// reads through them.
-  pub entry_vars: HashMap<Arc<str>, Vec<Arc<str>>>,
+  pub(crate) entry_vars: HashMap<Arc<str>, Vec<Arc<str>>>,
 }
 
 impl StorageReadViews {
   /// The view of `var`, if render shaders read it through one.
-  pub fn view_of(&self, var: &str) -> Option<&StorageReadView> {
+  pub(crate) fn view_of(&self, var: &str) -> Option<&StorageReadView> {
     self.views.iter().find(|view| &*view.var == var)
   }
 
   /// Whether the entry point `entry` reads `var` through its view.
-  pub fn reads_through_view(&self, entry: &str, var: &str) -> bool {
+  pub(crate) fn reads_through_view(&self, entry: &str, var: &str) -> bool {
     self
       .entry_vars
       .get(entry)
@@ -185,7 +185,7 @@ impl Program {
   /// reads and a draw reads as vertex data or indices, a read-only view (see
   /// the module docs). Runs after `assign_elided_bindings`, so every
   /// binding is known and views take free ones.
-  pub fn plan_storage_read_views(&mut self) {
+  pub(crate) fn plan_storage_read_views(&mut self) {
     let entries = self.render_entry_storage_uses(&self.storage_write_vars());
     let mut entry_names: Vec<&Arc<str>> = entries.keys().collect();
     entry_names.sort();

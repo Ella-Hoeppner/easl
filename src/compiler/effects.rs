@@ -48,7 +48,7 @@ pub enum WindowInfoKind {
 /// the zero-arg queries, or a key query for one specific compile-time key
 /// string.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum WindowInfoBindingSource {
+pub(crate) enum WindowInfoBindingSource {
   Simple(WindowInfoKind),
   KeyDown(Arc<str>),
   KeyJustDown(Arc<str>),
@@ -73,7 +73,7 @@ impl WindowInfoKind {
     WindowInfoKind::KeyJustDown,
   ];
   /// The easl builtin function name that queries this info.
-  pub fn fn_name(&self) -> &'static str {
+  pub(crate) fn fn_name(&self) -> &'static str {
     match self {
       WindowInfoKind::Resolution => "window-resolution",
       WindowInfoKind::Time => "window-time",
@@ -92,14 +92,14 @@ impl WindowInfoKind {
       WindowInfoKind::KeyJustDown => "key-just-down?",
     }
   }
-  pub fn from_fn_name(name: &str) -> Option<Self> {
+  pub(crate) fn from_fn_name(name: &str) -> Option<Self> {
     Self::ALL
       .iter()
       .copied()
       .find(|kind| kind.fn_name() == name)
   }
   /// The base name for the implicit uniform binding generated for GPU uses.
-  pub fn binding_base_name(&self) -> &'static str {
+  pub(crate) fn binding_base_name(&self) -> &'static str {
     match self {
       WindowInfoKind::Resolution => "window_resolution_info",
       WindowInfoKind::Time => "window_time_info",
@@ -121,7 +121,7 @@ impl WindowInfoKind {
   /// Whether the easl-level query returns a bool. Bools aren't
   /// host-shareable in WGSL uniforms, so these bindings are stored as `u32`
   /// and GPU-side uses are rewritten to `(!= binding 0u)`.
-  pub fn is_boolean(&self) -> bool {
+  pub(crate) fn is_boolean(&self) -> bool {
     matches!(
       self,
       WindowInfoKind::MousePresent
@@ -162,7 +162,7 @@ impl UniformitySource {
   /// sources of: those sources, with any of `held`'s variables among them
   /// resolved in turn. A variable named in its own sources stands for its
   /// value on entry (a parameter's), and stays.
-  pub fn resolve_held(
+  pub(crate) fn resolve_held(
     source: &UniformitySource,
     held: &HashMap<Arc<str>, HashSet<UniformitySource>>,
   ) -> Option<HashSet<UniformitySource>> {
@@ -201,7 +201,7 @@ impl UniformitySource {
 pub struct UniformValueRequirement {
   pub source: UniformitySource,
   pub requirement: Arc<UniformControlRequirement>,
-  pub condition: SourceTrace,
+  pub(crate) condition: SourceTrace,
 }
 
 /// The exit an `Effect::ExitDependsOn` is about.
@@ -215,7 +215,7 @@ pub enum ExitKind {
 impl ExitKind {
   pub const ALL: [ExitKind; 3] =
     [ExitKind::Return, ExitKind::Break, ExitKind::Continue];
-  pub fn effect(self) -> Effect {
+  pub(crate) fn effect(self) -> Effect {
     match self {
       ExitKind::Return => Effect::Return,
       ExitKind::Break => Effect::Break,
@@ -305,9 +305,6 @@ impl EffectType {
   pub fn empty() -> Self {
     Self(HashSet::new())
   }
-  pub fn is_pure(&self) -> bool {
-    self.0.is_empty()
-  }
   pub fn merge(&mut self, other: impl Into<Self>) {
     // The larger set absorbs the smaller one.
     let mut other = other.into();
@@ -322,7 +319,7 @@ impl EffectType {
   pub fn contains(&self, e: &Effect) -> bool {
     self.0.contains(e)
   }
-  pub fn is_side_effect_free(&self) -> bool {
+  pub(crate) fn is_side_effect_free(&self) -> bool {
     for e in self.0.iter() {
       match e {
         Effect::ReadsVar(_)
@@ -340,21 +337,6 @@ impl EffectType {
     }
     true
   }
-  /// The uniform-control requirements among these effects.
-  pub fn uniform_control_requirements(
-    &self,
-  ) -> Vec<Arc<UniformControlRequirement>> {
-    self
-      .0
-      .iter()
-      .filter_map(|e| match e {
-        Effect::RequiresUniformControl(requirement) => {
-          Some(requirement.clone())
-        }
-        _ => None,
-      })
-      .collect()
-  }
   /// The source an effect carrying one for uniformity depends on.
   fn uniformity_source(effect: &Effect) -> Option<&UniformitySource> {
     match effect {
@@ -366,14 +348,17 @@ impl EffectType {
   }
   /// Whether one of these effects depends on one of `names` for
   /// uniformity.
-  pub fn has_uniformity_source_in(&self, names: &HashSet<Arc<str>>) -> bool {
+  pub(crate) fn has_uniformity_source_in(
+    &self,
+    names: &HashSet<Arc<str>>,
+  ) -> bool {
     self.0.iter().any(|e| {
       matches!(Self::uniformity_source(e), Some(UniformitySource::Var(name))
         if names.contains(name))
     })
   }
   /// Whether these effects include a uniformity requirement on an argument.
-  pub fn has_uniformity_requirement_on_arguments(&self) -> bool {
+  pub(crate) fn has_uniformity_requirement_on_arguments(&self) -> bool {
     self.0.iter().any(|e| {
       matches!(
         e,
@@ -390,7 +375,7 @@ impl EffectType {
       .any(|kind| self.0.contains(&kind.effect()))
   }
   /// What decides whether these effects' exits happen.
-  pub fn exit_sources(&self) -> HashSet<UniformitySource> {
+  pub(crate) fn exit_sources(&self) -> HashSet<UniformitySource> {
     self
       .0
       .iter()
@@ -402,7 +387,7 @@ impl EffectType {
   }
   /// Whether these effects include something whose uniformity a condition
   /// they run under decides (see `Self::condition_on`).
-  pub fn depend_on_conditions(&self) -> bool {
+  pub(crate) fn depend_on_conditions(&self) -> bool {
     self.0.iter().any(|e| {
       matches!(
         e,
@@ -418,7 +403,7 @@ impl EffectType {
   /// whose uniformity depends on `sources`: each uniform-control
   /// requirement then also requires `sources` to be uniform, and each local
   /// write and exit depends on them.
-  pub fn condition_on(
+  pub(crate) fn condition_on(
     &mut self,
     sources: &HashSet<UniformitySource>,
     condition: &SourceTrace,
@@ -459,7 +444,7 @@ impl EffectType {
   }
   /// Replaces each dependence on a source `resolve` knows with dependences
   /// on what that source holds.
-  pub fn resolve_uniformity_sources(
+  pub(crate) fn resolve_uniformity_sources(
     &mut self,
     mut resolve: impl FnMut(&UniformitySource) -> Option<HashSet<UniformitySource>>,
   ) {
@@ -493,7 +478,7 @@ impl EffectType {
   /// Resolves dependences on each variable `bindings` binds into what it
   /// holds: the sources of its value on entry, given, and of every write
   /// to it among these effects.
-  pub fn bind_uniformity_sources(
+  pub(crate) fn bind_uniformity_sources(
     &mut self,
     bindings: impl IntoIterator<Item = (Arc<str>, HashSet<UniformitySource>)>,
   ) {
@@ -513,7 +498,7 @@ impl EffectType {
   }
   /// Leaves the scope of the local variables `names`: what concerns only
   /// them (reading or writing them) doesn't concern anything outside.
-  pub fn leave_scope(&mut self, names: &HashSet<Arc<str>>) {
+  pub(crate) fn leave_scope(&mut self, names: &HashSet<Arc<str>>) {
     self.0.retain(|e| match e {
       Effect::ReadsVar(name)
       | Effect::ReadsArrayLength(name)
@@ -524,7 +509,7 @@ impl EffectType {
   }
   /// Leaves a function with the parameters `params`: its own parameters
   /// are out of scope, and its `return`s end there.
-  pub fn leave_function(&mut self, params: &HashSet<Arc<str>>) {
+  pub(crate) fn leave_function(&mut self, params: &HashSet<Arc<str>>) {
     self.leave_scope(params);
     self.0.retain(|e| {
       !matches!(
@@ -534,7 +519,7 @@ impl EffectType {
     });
   }
   /// Leaves a loop: its `break`s and `continue`s end there.
-  pub fn leave_loop(&mut self) {
+  pub(crate) fn leave_loop(&mut self) {
     self.0.retain(|e| {
       !matches!(
         e,
@@ -546,7 +531,7 @@ impl EffectType {
   }
   /// Whether these effects include a builtin only shaders have, which no
   /// CPU or audio code can run.
-  pub fn uses_shader_only_builtin(&self) -> bool {
+  pub(crate) fn uses_shader_only_builtin(&self) -> bool {
     self.0.iter().any(|e| {
       matches!(
         e,
@@ -556,7 +541,7 @@ impl EffectType {
       )
     })
   }
-  pub fn window_info_kinds(&self) -> Vec<WindowInfoKind> {
+  pub(crate) fn window_info_kinds(&self) -> Vec<WindowInfoKind> {
     self
       .0
       .iter()
@@ -576,7 +561,7 @@ impl EffectType {
   /// the CPU-exclusive family stays main-thread-only (host ops — IO,
   /// windowing, GPU dispatch — with no audio-side implementation).
   /// Shader contexts reject all of them regardless.
-  pub fn cpu_exclusive_function_allowed_in_audio(name: &str) -> bool {
+  pub(crate) fn cpu_exclusive_function_allowed_in_audio(name: &str) -> bool {
     matches!(
       name,
       "into-dynamic-array"
@@ -591,7 +576,7 @@ impl EffectType {
         | "reset-audio-time"
     ) || MidiOutKind::BUILTIN_NAMES.contains(&name)
   }
-  pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
+  pub(crate) fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
     self
       .0
       .iter()
@@ -604,7 +589,7 @@ impl EffectType {
       })
       .collect()
   }
-  pub fn cpu_exclusive_types(&self) -> Vec<Arc<str>> {
+  pub(crate) fn cpu_exclusive_types(&self) -> Vec<Arc<str>> {
     self
       .0
       .iter()
@@ -617,7 +602,7 @@ impl EffectType {
       })
       .collect()
   }
-  pub fn gpu_illegal_address_space_writes(
+  pub(crate) fn gpu_illegal_address_space_writes(
     &self,
     program: &Program,
   ) -> Vec<(Arc<str>, VariableAddressSpace)> {
@@ -642,7 +627,9 @@ impl EffectType {
   /// The globals whose *values* are read and written. Length-only reads
   /// (`ReadsArrayLength`) are excluded from the read set: this is the set
   /// used to decide GPU→CPU readbacks, and array lengths never need one.
-  pub fn read_and_written_globals(&self) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+  pub(crate) fn read_and_written_globals(
+    &self,
+  ) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
     (
       self
         .0
@@ -667,7 +654,9 @@ impl EffectType {
   /// decide which CPU-dirty buffers to upload first: a shader calling
   /// `arrayLength()` needs the buffer uploaded even if it never reads the
   /// elements, since WGSL derives the length from the buffer's size.
-  pub fn gpu_read_and_written_globals(&self) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+  pub(crate) fn gpu_read_and_written_globals(
+    &self,
+  ) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
     let (mut reads, writes) = self.read_and_written_globals();
     reads.extend(self.0.iter().filter_map(|effect| match effect {
       Effect::ReadsArrayLength(name) => Some(name.clone()),
@@ -678,7 +667,7 @@ impl EffectType {
   /// The globals seeded inside a `start-audio` call (see
   /// `Effect::SeedsGlobalVar`). Only the thread-sharing audience analysis
   /// consumes these.
-  pub fn seeded_globals(&self) -> Vec<Arc<str>> {
+  pub(crate) fn seeded_globals(&self) -> Vec<Arc<str>> {
     self
       .0
       .iter()
@@ -688,7 +677,7 @@ impl EffectType {
       })
       .collect()
   }
-  pub fn looked_up_builtin_attributes(&self) -> Vec<BuiltinIOAttribute> {
+  pub(crate) fn looked_up_builtin_attributes(&self) -> Vec<BuiltinIOAttribute> {
     self
       .0
       .iter()

@@ -54,7 +54,7 @@ pub mod participant {
   pub const AUDIO: u32 = 2;
   /// An embedder holding an `ExternalVars` handle. Goes live when the
   /// handle is created (which happens before the run starts).
-  pub const EXTERNAL: u32 = 4;
+  pub(crate) const EXTERNAL: u32 = 4;
 }
 
 /// One published state of one shared variable: its value as flat words in
@@ -78,7 +78,7 @@ pub struct SharedVarSlot {
 
 /// The words of a shared var holding atomics, which every participant
 /// operates on directly. Natively they're `AtomicU32`s
-/// ([`NativeAtomicWords`]); the web keeps them in a `SharedArrayBuffer`, the
+/// (`NativeAtomicWords`); the web keeps them in a `SharedArrayBuffer`, the
 /// only memory its page and audio worklet share.
 pub trait AtomicWords: Send + Sync {
   fn len(&self) -> usize;
@@ -115,7 +115,10 @@ pub enum AtomicOp {
 impl AtomicOp {
   /// The op an atomic builtin performs; `signed` says whether its atomic
   /// holds an `i32` (only asked for `atomic-max`/`atomic-min`).
-  pub fn of_builtin(name: &str, signed: impl FnOnce() -> bool) -> Option<Self> {
+  pub(crate) fn of_builtin(
+    name: &str,
+    signed: impl FnOnce() -> bool,
+  ) -> Option<Self> {
     let signed = matches!(name, "atomic-max" | "atomic-min") && signed();
     Some(match name {
       "atomic-load" => Self::Load,
@@ -175,7 +178,7 @@ impl dyn AtomicWords {
 }
 
 /// Atomic words in this process's memory.
-pub struct NativeAtomicWords(Box<[AtomicU32]>);
+pub(crate) struct NativeAtomicWords(Box<[AtomicU32]>);
 
 impl NativeAtomicWords {
   pub fn zeroed(words: usize) -> Arc<dyn AtomicWords> {
@@ -335,7 +338,7 @@ impl ThreadSharedTable {
   }
   /// The live participants other than `self_bit`. Zero means no one else
   /// exists and every publish/adopt can be skipped outright.
-  pub fn live_others(&self, self_bit: u32) -> u32 {
+  pub(crate) fn live_others(&self, self_bit: u32) -> u32 {
     self.live.load(Ordering::Acquire) & !self_bit
   }
 }

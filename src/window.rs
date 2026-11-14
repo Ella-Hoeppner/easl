@@ -78,12 +78,12 @@ pub fn close_persistent_window() {}
 /// the window will later reuse, rather than on a freshly-created headless GPU
 /// that gets thrown away when `setup_window` takes `PERSISTENT_RELOAD_STATE`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
+pub(crate) fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
   PERSISTENT_RELOAD_STATE
     .with(|c| c.borrow().as_ref().map(|s| Arc::clone(&s.gpu)))
 }
 #[cfg(target_arch = "wasm32")]
-pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
+pub(crate) fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
   None
 }
 
@@ -263,7 +263,7 @@ fn create_texture_and_view(
 /// embedding applications drive rendering themselves (the web runtime from
 /// `requestAnimationFrame`).
 #[cfg(any(target_os = "ios", target_arch = "wasm32"))]
-pub fn run_window_loop<D: FrameDriver>(
+pub(crate) fn run_window_loop<D: FrameDriver>(
   _driver: &mut D,
 ) -> Result<bool, EvalError> {
   unimplemented!(
@@ -273,7 +273,7 @@ pub fn run_window_loop<D: FrameDriver>(
 }
 
 #[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
-pub fn run_window_loop<D: FrameDriver>(
+pub(crate) fn run_window_loop<D: FrameDriver>(
   driver: &mut D,
 ) -> Result<bool, EvalError> {
   EVENT_LOOP.with(|cell| {
@@ -350,7 +350,7 @@ fn unpresented_frame_interval(
 /// Metadata about a single GPU buffer binding, kept so we can recreate
 /// buffers with the correct usage flags when the size changes at runtime.
 #[derive(Clone)]
-pub struct BindingSlot {
+pub(crate) struct BindingSlot {
   pub group: u8,
   pub binding: u8,
   /// Source-level variable name, for diagnostics.
@@ -358,7 +358,7 @@ pub struct BindingSlot {
   pub kind: GpuBufferKind,
   /// For a read-only view of a storage-write var, the var's binding: the
   /// view binds that binding's buffer (see `GpuBindingInfo::alias_of`).
-  pub alias_of: Option<(u8, u8)>,
+  pub(crate) alias_of: Option<(u8, u8)>,
 }
 
 impl BindingSlot {
@@ -612,11 +612,11 @@ pub struct GpuCore {
   /// Linear scan keyed by (vert_id, frag_id, settings, format) — pipeline
   /// counts are small and integer-compare scans beat hashing here.
   render_pipelines: Vec<(RenderPipelineKey, CachedRenderPipeline)>,
-  pub binding_slots: Vec<BindingSlot>,
-  pub binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
+  pub(crate) binding_slots: Vec<BindingSlot>,
+  pub(crate) binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
   /// Tracks the byte-length of each buffer (or width*height*4 for textures)
   /// so we can detect when a binding's size changes and needs to be recreated.
-  pub binding_buffer_sizes: HashMap<(u8, u8), u64>,
+  pub(crate) binding_buffer_sizes: HashMap<(u8, u8), u64>,
   /// The GPU textures, keyed by `TextureHandle::id`. An entry is freed once
   /// no handle to its texture is left (`prune_textures`).
   texture_store: HashMap<u64, StoredTexture>,
@@ -681,7 +681,7 @@ pub struct GpuCore {
   /// Surface configuration (format, size, present mode, …). Present iff `surface` is Some.
   pub surface_config: Option<wgpu::SurfaceConfiguration>,
   /// Where screen-targeted draws render.
-  pub screen_target: ScreenTarget,
+  pub(crate) screen_target: ScreenTarget,
   /// The window-sized texture `ScreenTarget::Texture` draws into.
   screen_texture: Option<wgpu::Texture>,
   /// The screen image of the frame in progress, from the frame's first
@@ -1144,7 +1144,7 @@ impl GpuCore {
     // against the new shader module, buffers, and entry table.
   }
 
-  pub fn get_or_create_compute_pipeline(&mut self, entry: u16) {
+  pub(crate) fn get_or_create_compute_pipeline(&mut self, entry: u16) {
     if self.compute_pipelines.len() <= entry as usize {
       self
         .compute_pipelines
@@ -1286,66 +1286,6 @@ impl GpuCore {
     if let Some(enc) = encoder {
       self.queue.submit(std::iter::once(enc.finish()));
     }
-  }
-
-  /// Immediately executes a compute shader and blocks until GPU completes.
-  /// Uploads `pre_upload` buffers first, then dispatches and polls.
-  pub fn execute_compute(
-    &mut self,
-    entry: u16,
-    workgroup_count: (u32, u32, u32),
-    pre_upload: Vec<((u8, u8), BufferUpload)>,
-  ) {
-    self.upload_bindings(&pre_upload);
-    self.get_or_create_compute_pipeline(entry);
-
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("compute encoder"),
-        });
-    {
-      let mut compute_pass =
-        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-          label: Some("compute pass"),
-          timestamp_writes: None,
-        });
-      let cached = self.compute_pipelines[entry as usize].as_ref().unwrap();
-      for (group_idx, bind_group) in
-        cached.bindings.bind_groups.iter().enumerate()
-      {
-        compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-      }
-      compute_pass.set_pipeline(&cached.pipeline);
-      let (x, y, z) = workgroup_count;
-      compute_pass.dispatch_workgroups(x, y, z);
-    }
-    self.queue.submit(std::iter::once(encoder.finish()));
-    self
-      .device
-      .poll(wgpu::PollType::wait_indefinitely())
-      .unwrap();
-  }
-
-  /// Batches multiple compute dispatches into the minimum number of submits,
-  /// splitting only when a call's pre_upload would overwrite a binding already
-  /// uploaded for the current in-flight encoder. Consecutive calls with
-  /// non-conflicting uploads are merged into a single encoder and submitted
-  /// together. Always uses a single final poll, saving N-1 blocking waits vs.
-  /// calling `execute_compute` N times.
-  pub fn execute_compute_batch(
-    &mut self,
-    calls: Vec<(u16, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
-  ) {
-    if calls.is_empty() {
-      return;
-    }
-    self.encode_compute_batch(calls);
-    self
-      .device
-      .poll(wgpu::PollType::wait_indefinitely())
-      .unwrap();
   }
 
   /// Encodes and submits a batch of compute dispatches without waiting for
@@ -2099,7 +2039,7 @@ impl GpuCore {
   /// Returns whether the frame presented: a present means drawable
   /// acquisition (vsync) throttled the caller's loop, while an unpresented
   /// frame has no natural backpressure and must be paced explicitly.
-  pub fn finish_frame(&mut self) -> bool {
+  pub(crate) fn finish_frame(&mut self) -> bool {
     let Some(screen) = self.frame_screen.take() else {
       return false;
     };
@@ -2178,7 +2118,7 @@ impl GpuCore {
   /// Reads the screen texture back as its sRGB-encoded RGBA8 bytes (what
   /// a display shows), returning `(width, height, pixels)`
   /// (`ScreenTarget::Texture` without a surface only).
-  pub fn read_screen(&self) -> Option<(u32, u32, Vec<u8>)> {
+  pub(crate) fn read_screen(&self) -> Option<(u32, u32, Vec<u8>)> {
     let texture = self.screen_texture.as_ref()?;
     (texture.format() == Self::HEADLESS_SCREEN_FORMAT)
       .then(|| self.read_texture_rgba8(texture))
@@ -2201,7 +2141,7 @@ impl GpuCore {
     wgpu::TextureFormat::Rgba8UnormSrgb;
 
   /// Creates and caches a render pipeline for the given format (if not already cached).
-  pub fn get_or_create_render_pipeline(
+  pub(crate) fn get_or_create_render_pipeline(
     &mut self,
     vert_entry: u16,
     frag_entry: u16,
@@ -2610,7 +2550,7 @@ impl GpuCore {
   /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
   /// Reads a texture back from the GPU as RGBA8 bytes, returning `(width,
   /// height, pixels)`. Blocking, like `read_buffer`; used by `save-png`.
-  pub fn read_texture(
+  pub(crate) fn read_texture(
     &mut self,
     texture: &TextureHandle,
   ) -> (u32, u32, Vec<u8>) {

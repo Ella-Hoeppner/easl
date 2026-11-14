@@ -138,7 +138,7 @@ impl Program {
   /// Checks that every draw's vertex shader outputs what its fragment
   /// shader reads. Runs after `validate_entry_points`, which infers
   /// the locations neither shader writes.
-  pub fn validate_render_interfaces(&self, errors: &mut ErrorLog) {
+  pub(crate) fn validate_render_interfaces(&self, errors: &mut ErrorLog) {
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap();
       let FunctionImplementationKind::Composite(implementation) =

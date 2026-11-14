@@ -1,3 +1,3 @@
 pub mod bytecode;
-pub mod compile;
-pub mod shared_sync;
+pub(crate) mod compile;
+pub(crate) mod shared_sync;

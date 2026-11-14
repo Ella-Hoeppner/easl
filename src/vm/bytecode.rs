@@ -20,6 +20,8 @@ use crate::thread_sync::{
   AtomicOp, AtomicWords, NativeAtomicWords, ThreadSharedTable,
 };
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
   // Control & memory
@@ -409,7 +411,7 @@ pub enum Op {
 
 impl Op {
   /// The opcode applying `op` to a shared atomic word.
-  pub fn shared_atomic(op: AtomicOp) -> Self {
+  pub(crate) fn shared_atomic(op: AtomicOp) -> Self {
     match op {
       AtomicOp::Load => Op::SharedAtomicLoadWord,
       AtomicOp::Store => Op::SharedAtomicStoreWord,
@@ -448,7 +450,7 @@ impl Op {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Instruction {
   pub op: Op,
-  pub arg_positions: [u16; 3],
+  pub(crate) arg_positions: [u16; 3],
   pub return_position: u16,
 }
 
@@ -689,12 +691,12 @@ impl Instruction {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Function {
-  pub instructions: Range<u32>,
+  pub(crate) instructions: Range<u32>,
   pub return_position: u16,
   /// Total stack words occupied by the function's arguments. Lets drivers
   /// that write args generically — e.g. the audio driver's optional `t` —
   /// know how many the function actually takes.
-  pub arg_words: u16,
+  pub(crate) arg_words: u16,
   /// Slot of the function's first argument. Args follow the reserved
   /// return slot(s) at the start of the frame, so this is NOT
   /// `return_position` — the return value must never time-share a slot
@@ -706,7 +708,7 @@ pub struct Function {
 
 /// How the CPU-side value of a GPU-bound global is stored in the VM runtime.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum HostBindingStorage {
+pub(crate) enum HostBindingStorage {
   /// Fixed-size value living directly in VM stack slots.
   Slots { position: u16, size: u16 },
   /// Texture held host-side as a `Value`; VM code accesses it through host
@@ -725,6 +727,8 @@ pub enum SharedVarStorage {
   DynMemory { region: u16, stride: u16 },
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 /// Compile-time record of one thread-shared global (see
 /// `Program::thread_shared_globals`): its name, value layout, and storage
 /// location in this program. Index-aligned with the runtime `ThreadSharedTable`'s
@@ -786,15 +790,17 @@ impl ValueLayout {
     }
   }
   /// Whether the value is or embeds a heap id.
-  pub fn involves_heap(&self) -> bool {
+  pub(crate) fn involves_heap(&self) -> bool {
     !matches!(self, Self::Flat { .. })
   }
   /// Whether the value is itself a heap id.
-  pub fn is_heap_value(&self) -> bool {
+  pub(crate) fn is_heap_value(&self) -> bool {
     matches!(self, Self::String | Self::DynArray(_))
   }
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 /// Backing store for one runtime-sized array: flat words in the VM's
 /// element layout, a lazily-zeroed state that defers allocation until the
 /// first element write (so huge GPU-only buffers never materialize
@@ -814,7 +820,7 @@ pub enum DynMemory {
 }
 
 impl DynMemory {
-  pub fn len_elements(&self, stride: usize) -> u32 {
+  pub(crate) fn len_elements(&self, stride: usize) -> u32 {
     match self {
       DynMemory::Zeroed { elements } => *elements,
       DynMemory::Words(words) => (words.len() / stride.max(1)) as u32,
@@ -823,7 +829,7 @@ impl DynMemory {
   }
   /// The flat words, materializing the lazily-zeroed state first. Only
   /// meaningful for flat-element storage.
-  pub fn words_mut(&mut self, stride: usize) -> &mut Vec<u32> {
+  pub(crate) fn words_mut(&mut self, stride: usize) -> &mut Vec<u32> {
     if let DynMemory::Zeroed { elements } = self {
       *self = DynMemory::Words(vec![0u32; *elements as usize * stride]);
     }
@@ -840,7 +846,7 @@ impl DynMemory {
 /// kept only for logging and sync-trace parity with the tree-walking
 /// interpreter — the runtime addresses entries exclusively by table index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HostBinding {
+pub(crate) struct HostBinding {
   pub name: Arc<str>,
   pub ty: Type,
   pub storage: HostBindingStorage,
@@ -852,7 +858,7 @@ pub struct HostBinding {
 /// Read/write binding-index sets for one GPU dispatch site, resolved from
 /// the dispatched entry point's effects at compile time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HostDispatch {
+pub(crate) struct HostDispatch {
   /// Bindings the dispatched shader(s) read (including length-only reads —
   /// `arrayLength()` derives from buffer size, so uploads must count them).
   pub reads: Vec<u16>,
@@ -861,7 +867,7 @@ pub struct HostDispatch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WindowQueryKind {
+pub(crate) enum WindowQueryKind {
   /// vec2f, 2 slots.
   Resolution,
   Time,
@@ -886,7 +892,7 @@ pub enum WindowQueryKind {
 /// `host_types`, string-ish fields → `host_strings`, `binding` →
 /// `host_bindings`, `sets` → `host_dispatches`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum HostOp {
+pub(crate) enum HostOp {
   /// Print the value starting at `slot`, of type `host_types[ty]`, with the
   /// same formatting as the tree-walking interpreter.
   Print {
@@ -1135,7 +1141,7 @@ pub enum HostOp {
 
 /// WGSL's `pack2x16float`: each component rounded to the nearest IEEE
 /// binary16, the first in the low bits.
-pub fn pack_2x16_float(v: [f32; 2]) -> u32 {
+pub(crate) fn pack_2x16_float(v: [f32; 2]) -> u32 {
   v.iter()
     .enumerate()
     .map(|(i, x)| (f16::from_f32(*x).to_bits() as u32) << (i * 16))
@@ -1143,13 +1149,13 @@ pub fn pack_2x16_float(v: [f32; 2]) -> u32 {
 }
 
 /// WGSL's `unpack2x16float`, the inverse of [`pack_2x16_float`].
-pub fn unpack_2x16_float(e: u32) -> [f32; 2] {
+pub(crate) fn unpack_2x16_float(e: u32) -> [f32; 2] {
   [0, 1].map(|i| f16::from_bits((e >> (i * 16)) as u16).to_f32())
 }
 
 /// Why `execute_with_host` returned before running to completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostSuspendReason {
+pub(crate) enum HostSuspendReason {
   SpawnWindow {
     frame_fn: u16,
   },
@@ -1162,7 +1168,7 @@ pub enum HostSuspendReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunResult {
+pub(crate) enum RunResult {
   Finished,
   Suspended(HostSuspendReason),
   /// The program hit a fatal runtime error. Its call stack is cleared:
@@ -1271,7 +1277,7 @@ pub struct SharedAtomic {
 /// Mutable view of the per-shared-variable runtime state a host call (or
 /// the thread-sync publish/adopt functions) may need alongside the stack
 /// and dynamic memory.
-pub struct SharedStateParts<'a> {
+pub(crate) struct SharedStateParts<'a> {
   pub dirty: &'a mut [bool],
   pub adopted: &'a mut [u64],
   pub scratch: &'a mut [Option<Vec<u32>>],
@@ -1282,7 +1288,7 @@ pub struct SharedStateParts<'a> {
 /// dispatch loop is untouched. The audio path uses `NoopHost` (audio-mode
 /// compilation never emits `HostCall`), so after monomorphization it pays
 /// nothing for this interface.
-pub trait VmHost {
+pub(crate) trait VmHost {
   type Error;
   fn host_call(
     &mut self,
@@ -1301,7 +1307,7 @@ pub trait VmHost {
 }
 
 /// Host for pure-math execution (audio, tests): host calls never occur.
-pub struct NoopHost;
+pub(crate) struct NoopHost;
 impl VmHost for NoopHost {
   type Error = std::convert::Infallible;
   fn host_call(
@@ -1367,7 +1373,7 @@ pub struct Code {
   /// initialized global; `from_code` runs it once on construction so the
   /// globals are live before any user function executes. `None` when there
   /// are no initializers (no setup work needed).
-  pub init_function_index: Option<usize>,
+  pub(crate) init_function_index: Option<usize>,
   /// Name, base stack slot, and size (in u32 stack slots) of each top-level
   /// var. Globals live at the bottom of the stack, below all function
   /// frames, and persist across `execute` calls; external integrations can
@@ -1378,26 +1384,26 @@ pub struct Code {
   /// are only ever written by host ops (whose operands aren't visible to
   /// `max_touched_index`), so stack sizing takes the max of this and the
   /// instruction-derived bound.
-  pub min_stack_size: usize,
+  pub(crate) min_stack_size: usize,
   /// Cold metadata for `Op::HostCall` (CPU-runtime mode; all empty for
   /// audio-mode programs).
-  pub host_ops: Vec<HostOp>,
-  pub host_types: Vec<Type>,
-  pub host_strings: Vec<Arc<str>>,
-  pub host_bindings: Vec<HostBinding>,
-  pub host_dispatches: Vec<HostDispatch>,
+  pub(crate) host_ops: Vec<HostOp>,
+  pub(crate) host_types: Vec<Type>,
+  pub(crate) host_strings: Vec<Arc<str>>,
+  pub(crate) host_bindings: Vec<HostBinding>,
+  pub(crate) host_dispatches: Vec<HostDispatch>,
   /// Number of runtime-sized array globals; sizes
   /// `BytecodeProgram::dyn_memory`.
-  pub dyn_memory_count: u16,
+  pub(crate) dyn_memory_count: u16,
   /// Regions whose elements are heap values (nested arrays, Strings),
   /// which start as empty `DynMemory::Cells` rather than `Zeroed` —
   /// zeroed storage only ever holds flat elements.
-  pub cell_regions: Vec<u16>,
+  pub(crate) cell_regions: Vec<u16>,
   /// Name, region index, and element stride (in u32 words) of each
   /// runtime-sized array global — the dynamic-memory analog of `globals`,
   /// for locating regions by name (e.g. the one-time global copy into a
   /// starting audio program, or external hosts streaming sample data).
-  pub dyn_memory_regions: Vec<(Arc<str>, u16, u16)>,
+  pub(crate) dyn_memory_regions: Vec<(Arc<str>, u16, u16)>,
   /// Thread-shared globals, sorted by name; empty when the program has no
   /// cross-thread sharing. `Op::MarkSharedDirty` indices and the runtime
   /// `ThreadSharedTable` slots address into this list.
@@ -1405,12 +1411,12 @@ pub struct Code {
   /// The source positions instructions were compiled from, which runtime
   /// errors are reported at (see `Code::source_trace`).
   #[serde(skip)]
-  pub source_positions: Vec<DocumentPosition>,
+  pub(crate) source_positions: Vec<DocumentPosition>,
   /// Runs of instructions compiled from one source position: each run's
   /// first instruction and its index into `source_positions` (`u32::MAX`
   /// for instructions with none), by instruction.
   #[serde(skip)]
-  pub instruction_sources: Vec<(u32, u32)>,
+  pub(crate) instruction_sources: Vec<(u32, u32)>,
   /// The documents the program was compiled from, which runtime errors are
   /// described against.
   #[serde(skip)]
@@ -1419,13 +1425,13 @@ pub struct Code {
   /// how a runtime without the documents describes where errors happened
   /// (see [`Code::describe_sources`]).
   #[serde(default)]
-  pub described_sources: Option<DescribedSources>,
+  pub(crate) described_sources: Option<DescribedSources>,
 }
 
 /// A source map whose positions are already described against their
 /// documents, so describing where an error happened needs no documents.
 #[derive(Serialize, Deserialize, Clone)]
-pub struct DescribedSources {
+pub(crate) struct DescribedSources {
   /// The runs of instructions compiled from one source position, as in
   /// `Code::instruction_sources`.
   instruction_sources: Vec<(u32, u32)>,
@@ -1474,7 +1480,7 @@ impl Code {
   /// Where a run stopped at `site` (see `BytecodeProgram::trap_site`)
   /// happened, described against the documents or the described source
   /// map, if the code has either.
-  pub fn describe_site(&self, site: &[u32]) -> Option<String> {
+  pub(crate) fn describe_site(&self, site: &[u32]) -> Option<String> {
     if let Some(documents) = &self.documents
       && !documents.sources.is_empty()
     {
@@ -1525,6 +1531,8 @@ impl Code {
   }
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 /// One heap-allocated dynamic-array value, referenced by heap-id words on
 /// the stack (see the `Heap*` opcodes). The payload is `Arc`-shared
 /// between value-semantics copies and cloned lazily on mutation.
@@ -1532,9 +1540,11 @@ impl Code {
 pub struct HeapCell {
   pub memory: DynMemory,
   /// Words per element (1 for nested arrays, whose elements are heap ids).
-  pub stride: u16,
+  pub(crate) stride: u16,
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 /// A heap-id word: 0 is the null/empty id, any other value is
 /// `heap_index + 1`.
 pub fn heap_index(id: u32) -> Option<usize> {
@@ -1544,7 +1554,7 @@ pub fn heap_index(id: u32) -> Option<usize> {
 /// Frees the cell owned by heap id `old_id`, if any — drop-on-overwrite
 /// for a heap-id destination that's about to be rewritten. Used by the
 /// dispatch loop's `release_cell!` and by host ops that write heap ids.
-pub fn release_heap_id(
+pub(crate) fn release_heap_id(
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
   old_id: u32,
@@ -1557,7 +1567,7 @@ pub fn release_heap_id(
 
 /// Stores `cell` in a free heap slot and returns its id. Used by the
 /// dispatch loop's `alloc_cell!` and by host ops that write heap ids.
-pub fn alloc_heap_cell(
+pub(crate) fn alloc_heap_cell(
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
   cell: Arc<HeapCell>,
@@ -1576,17 +1586,17 @@ pub fn alloc_heap_cell(
 
 /// Encodes a Rust string into string-cell payload words: one char
 /// codepoint per word, stride 1.
-pub fn string_to_words(s: &str) -> Vec<u32> {
+pub(crate) fn string_to_words(s: &str) -> Vec<u32> {
   s.chars().map(|c| c as u32).collect()
 }
 
 /// `word` when it's a Unicode scalar value, otherwise U+FFFD.
-pub fn codepoint_word(word: u32) -> u32 {
+pub(crate) fn codepoint_word(word: u32) -> u32 {
   char::from_u32(word).unwrap_or(char::REPLACEMENT_CHARACTER) as u32
 }
 
 /// Decodes string-cell payload words back into a Rust string.
-pub fn words_to_string(words: &[u32]) -> String {
+pub(crate) fn words_to_string(words: &[u32]) -> String {
   words
     .iter()
     .map(|w| char::from_u32(*w).unwrap_or(char::REPLACEMENT_CHARACTER))
@@ -1595,7 +1605,10 @@ pub fn words_to_string(words: &[u32]) -> String {
 
 /// Reads the payload words of the string cell referenced by the heap id
 /// `id` (a null id reads as the empty string).
-pub fn heap_string_words(heap: &[Option<Arc<HeapCell>>], id: u32) -> &[u32] {
+pub(crate) fn heap_string_words(
+  heap: &[Option<Arc<HeapCell>>],
+  id: u32,
+) -> &[u32] {
   match heap_index(id).and_then(|i| heap[i].as_ref()) {
     Some(cell) => match &cell.memory {
       DynMemory::Words(words) => words,
@@ -1610,7 +1623,7 @@ pub fn heap_string_words(heap: &[Option<Arc<HeapCell>>], id: u32) -> &[u32] {
 pub struct BytecodeProgram {
   pub code: Code,
   pub stack: Vec<u32>,
-  pub call_stack: Vec<Range<u32>>,
+  pub(crate) call_stack: Vec<Range<u32>>,
   /// Backing store for runtime-sized array globals, indexed by the
   /// compile-time region ids baked into the `Dyn*` opcodes. Lives outside
   /// the u16-addressed stack, so these arrays aren't subject to its 2^16
@@ -1621,18 +1634,18 @@ pub struct BytecodeProgram {
   /// free (their indices sit in `heap_free`).
   pub heap: Vec<Option<std::sync::Arc<HeapCell>>>,
   /// Free-list of released `heap` indices.
-  pub heap_free: Vec<u32>,
+  pub(crate) heap_free: Vec<u32>,
   /// Per-shared-variable "written since my last publish" flags, aligned
   /// with `Code::shared_vars`. Set by `Op::MarkSharedDirty`; cleared when
   /// the owning thread publishes at an iteration boundary. Thread-local
   /// state (each replica has its own program), so plain bools.
-  pub shared_dirty: Vec<bool>,
+  pub(crate) shared_dirty: Vec<bool>,
   /// Per-shared-variable version last adopted from the `ThreadSharedTable`,
   /// aligned with `Code::shared_vars`.
-  pub shared_adopted: Vec<u64>,
+  pub(crate) shared_adopted: Vec<u64>,
   /// Per-shared-variable spare snapshot buffers, recycled between
   /// publications so steady-state publishing allocates nothing.
-  pub shared_scratch: Vec<Option<Vec<u32>>>,
+  pub(crate) shared_scratch: Vec<Option<Vec<u32>>>,
   /// Per-shared-variable shared words, for the vars holding atomics
   /// (`SharedVarInfo::atomic`), aligned with `Code::shared_vars`. Set by
   /// `attach_shared_atomics`.
@@ -1642,23 +1655,23 @@ pub struct BytecodeProgram {
   /// `Op::MarkGpuNewer`, cleared by `Op::CheckGpuRead`; a flag may stay set
   /// after the binding syncs some other way, which only costs the next
   /// check a host call.
-  pub gpu_newer: Vec<bool>,
+  pub(crate) gpu_newer: Vec<bool>,
   /// The audio driver's exact count of samples before the current one, and
   /// its sample rate, which `(audio-time period)` reads. Set by the driver
   /// before every sample; zero outside the audio thread.
-  pub audio_samples: u64,
-  pub audio_rate: f32,
+  pub(crate) audio_samples: u64,
+  pub(crate) audio_rate: f32,
   /// Where the last run that trapped or failed in a host call stopped: the
   /// instruction, then the call instruction of each function it was in,
   /// innermost first (see `Code::source_trace`).
-  pub trap_site: Vec<u32>,
+  pub(crate) trap_site: Vec<u32>,
 }
 
 impl BytecodeProgram {
   /// A program from `code` whose top-level initializers haven't run: the
   /// caller runs `code.init_function_index` (as the CPU runtime does, with
   /// its host).
-  pub fn without_initializing(code: Code) -> Self {
+  pub(crate) fn without_initializing(code: Code) -> Self {
     let max_stack_size = code
       .function_instructions
       .iter()
@@ -1705,7 +1718,7 @@ impl BytecodeProgram {
   /// Connects the vars holding atomics to their shared words in `table`
   /// (once per program, before it runs anything touching them), making
   /// native ones if no participant has made them yet.
-  pub fn attach_shared_atomics(&mut self, table: &ThreadSharedTable) {
+  pub(crate) fn attach_shared_atomics(&mut self, table: &ThreadSharedTable) {
     for (index, info) in self.code.shared_vars.iter().enumerate() {
       if info.atomic {
         let words = info.layout.words() as usize;
@@ -1768,10 +1781,11 @@ impl BytecodeProgram {
       Err(never) => match never {},
     }
   }
+  #[cfg(feature = "window")]
   /// Runs without a host on the audio thread: appends the MIDI messages
   /// the run sends to `midi_out`, and sets `reset_time` if it resets the
   /// audio clock. A trap ends the run and is returned.
-  pub fn execute_audio(
+  pub(crate) fn execute_audio(
     &mut self,
     midi_out: &mut Vec<MidiMessage>,
     reset_time: &mut bool,
@@ -1787,13 +1801,13 @@ impl BytecodeProgram {
   }
   /// `message`, about the last run that trapped, followed by where it
   /// stopped (see `trap_site`) when the code knows its source.
-  pub fn describe_trap(&self, message: &str) -> String {
+  pub(crate) fn describe_trap(&self, message: &str) -> String {
     match self.code.describe_site(&self.trap_site) {
       Some(location) => format!("{message}\n{location}"),
       None => message.to_string(),
     }
   }
-  pub fn execute_with_host<H: VmHost>(
+  pub(crate) fn execute_with_host<H: VmHost>(
     &mut self,
     host: &mut H,
   ) -> Result<RunResult, H::Error> {

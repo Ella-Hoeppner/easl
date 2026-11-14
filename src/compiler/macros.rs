@@ -14,7 +14,7 @@ pub struct Macro {
   >,
 }
 
-pub fn macroexpand(
+pub(crate) fn macroexpand(
   tree: EaslTree,
   macros: &Vec<Macro>,
   names: &mut NameContext,

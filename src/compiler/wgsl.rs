@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use crate::compiler::util::compile_word;
 
-pub const WGSL_RESERVED_WORDS: &[&'static str] = &[
+pub(crate) const WGSL_RESERVED_WORDS: &[&'static str] = &[
   // Keywords (16.1)
   "alias",
   "break",
@@ -185,7 +185,7 @@ lazy_static! {
     WGSL_RESERVED_WORDS.iter().copied().collect();
 }
 
-pub fn is_wgsl_reserved_word(word: &str) -> bool {
+pub(crate) fn is_wgsl_reserved_word(word: &str) -> bool {
   WGSL_RESERVED_WORDS_SET.contains(word)
 }
 
@@ -193,7 +193,7 @@ pub fn is_wgsl_reserved_word(word: &str) -> bool {
 /// no user definition or local may compile to one: easl's own builtins emit
 /// as these (`inverse-sqrt` as `inverseSqrt`), and a user `inverseSqrt`
 /// would take over their calls.
-pub const WGSL_PREDECLARED_NAMES: &[&'static str] = &[
+pub(crate) const WGSL_PREDECLARED_NAMES: &[&'static str] = &[
   // Types (6)
   "array",
   "bool",
@@ -394,7 +394,7 @@ pub const FRAGMENT_POSITION_OFFSET_VAR: &str = "easl_fragment_position_offset";
 
 /// The implicit vars the MIDI builtins read (see `Program::extract_audio_info`),
 /// which every thread refreshes for itself.
-pub const MIDI_VARS: &[&'static str] = &[
+pub(crate) const MIDI_VARS: &[&'static str] = &[
   "easl_midi_cc",
   "easl_midi_aftertouch",
   "easl_midi_pitch_bend",
@@ -428,6 +428,6 @@ lazy_static! {
 
 /// Whether `word` compiles to the name of one of the compiler's implicit
 /// globals.
-pub fn is_easl_reserved_word(word: &str) -> bool {
+pub(crate) fn is_easl_reserved_word(word: &str) -> bool {
   EASL_RESERVED_WORDS_SET.contains(&*compile_word(word.into()))
 }

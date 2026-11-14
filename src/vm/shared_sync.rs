@@ -204,7 +204,7 @@ pub fn adopt_shared(
 }
 
 impl BytecodeProgram {
-  /// [`publish_shared`] over this program's replica.
+  /// `publish_shared` over this program's replica.
   pub fn publish_shared(
     &mut self,
     table: &ThreadSharedTable,
@@ -238,7 +238,7 @@ impl BytecodeProgram {
       on_publish,
     );
   }
-  /// [`adopt_shared`] over this program's replica.
+  /// `adopt_shared` over this program's replica.
   pub fn adopt_shared(
     &mut self,
     table: &ThreadSharedTable,
@@ -349,7 +349,7 @@ impl ValueLayout {
   /// any other (slot-backed) var needs it when the value itself embeds a
   /// runtime-sized array or String. Flat values — scalars, and structs/
   /// enums/arrays of only flat fields — keep the raw-words fast path.
-  pub fn needs_wire_encoding(&self) -> bool {
+  pub(crate) fn needs_wire_encoding(&self) -> bool {
     match self {
       Self::DynArray(element) => element.involves_heap(),
       layout => layout.involves_heap(),
@@ -358,7 +358,7 @@ impl ValueLayout {
 }
 
 /// [`ValueLayout::needs_wire_encoding`] for a value of type `ty`.
-pub fn needs_wire_encoding(ty: &Type) -> bool {
+pub(crate) fn needs_wire_encoding(ty: &Type) -> bool {
   ValueLayout::of(ty).needs_wire_encoding()
 }
 

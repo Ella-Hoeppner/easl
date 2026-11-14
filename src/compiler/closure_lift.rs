@@ -82,7 +82,7 @@ impl Program {
   /// effects — CPU write marks, GPU readbacks, shared-dirty marks — follow
   /// actual writes, and a closure that never mutates its scope can be
   /// called on scope data in read-only storage.
-  pub fn refine_closure_reference_mutability(&mut self) {
+  pub(crate) fn refine_closure_reference_mutability(&mut self) {
     let scope_structs: HashSet<Arc<str>> = self
       .abstract_functions_iter()
       .filter_map(|f| {
@@ -400,29 +400,29 @@ impl Program {
 /// the parameter. Nothing about this is specific to closures: it applies to
 /// any struct-typed global.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SplitGlobal {
+pub(crate) struct SplitGlobal {
   /// The type of what the global itself holds, if anything's left.
-  pub rest_type: Option<Type>,
+  pub(crate) rest_type: Option<Type>,
   pub parts: Vec<SplitPart>,
 }
 
 /// One runtime-sized array split out of a `SplitGlobal`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SplitPart {
+pub(crate) struct SplitPart {
   /// The field names leading to it from the global's value.
   pub path: Vec<Arc<str>>,
   pub global: Arc<str>,
-  pub part_type: Type,
+  pub(crate) part_type: Type,
 }
 
 /// Where one capture of a lifted closure lives: the global holding its
 /// value (a captured closure's value is its scope), split when the GPU
 /// requires it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LiftedCapture {
+pub(crate) struct LiftedCapture {
   pub global: Arc<str>,
   /// The captured value's type, a closure's as its scope struct.
-  pub value_type: Type,
+  pub(crate) value_type: Type,
   /// The runtime-sized arrays split out (GPU captures only); when there are
   /// none, the global holds the whole value.
   pub split: Option<SplitGlobal>,
@@ -430,7 +430,7 @@ pub struct LiftedCapture {
 
 impl LiftedCapture {
   /// Whether the capture's own global exists (a split can leave it empty).
-  pub fn has_global(&self) -> bool {
+  pub(crate) fn has_global(&self) -> bool {
     self
       .split
       .as_ref()
@@ -444,13 +444,13 @@ impl LiftedCapture {
 /// at every dispatch (GPU) or `start-audio` handoff (audio). Positionally
 /// aligned with the entry's scope struct fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LiftedCaptures {
+pub(crate) struct LiftedCaptures {
   pub fields: Vec<LiftedCapture>,
 }
 
 impl LiftedCaptures {
   /// Every global the captures live in.
-  pub fn global_names(&self, out: &mut Vec<Arc<str>>) {
+  pub(crate) fn global_names(&self, out: &mut Vec<Arc<str>>) {
     for capture in &self.fields {
       if capture.has_global() {
         out.push(capture.global.clone());
@@ -804,7 +804,7 @@ impl TypedExp {
   /// The global or variable at the root of a static field path (`g`,
   /// `g.a`, `g.a.b` — field accesses only, so it denotes one fixed place),
   /// with the path's field names.
-  pub fn static_field_path(&self) -> Option<(&Arc<str>, Vec<Arc<str>>)> {
+  pub(crate) fn static_field_path(&self) -> Option<(&Arc<str>, Vec<Arc<str>>)> {
     match &self.kind {
       ExpKind::Name(name) => Some((name, vec![])),
       ExpKind::Access(Accessor::Field(field), inner) => {
@@ -817,7 +817,7 @@ impl TypedExp {
   }
   /// Redirects every access through a split global's part path to the
   /// part's own global (see `SplitGlobal`).
-  pub fn resolve_split_globals(
+  pub(crate) fn resolve_split_globals(
     &mut self,
     split_globals: &HashMap<Arc<str>, SplitGlobal>,
   ) {

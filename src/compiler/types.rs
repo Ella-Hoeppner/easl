@@ -56,11 +56,11 @@ fn scalar_suffix(element: &Type) -> Option<&'static str> {
 /// The WGSL stride between a matrix's column vectors, in u32s, for a
 /// matrix of 32-bit elements with `rows` rows: a column is a `vec<rows>`,
 /// padded to its alignment.
-pub fn wgsl_matrix_column_stride_in_u32s(rows: usize) -> usize {
+pub(crate) fn wgsl_matrix_column_stride_in_u32s(rows: usize) -> usize {
   if rows == 2 { 2 } else { 4 }
 }
 
-pub fn contains_name_leaf(name: &Arc<str>, tree: &EaslTree) -> bool {
+pub(crate) fn contains_name_leaf(name: &Arc<str>, tree: &EaslTree) -> bool {
   match &tree {
     EaslTree::Leaf(_, leaf) => leaf == &**name,
     EaslTree::Inner(_, children) => children
@@ -70,12 +70,12 @@ pub fn contains_name_leaf(name: &Arc<str>, tree: &EaslTree) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum UntypedType {
+pub(crate) enum UntypedType {
   Struct(UntypedStruct),
   Enum(UntypedEnum),
 }
 impl UntypedType {
-  pub fn references_type_name(&self, name: &Arc<str>) -> bool {
+  pub(crate) fn references_type_name(&self, name: &Arc<str>) -> bool {
     match self {
       UntypedType::Struct(untyped_struct) => {
         untyped_struct.references_type_name(name)
@@ -103,7 +103,7 @@ impl UntypedType {
   /// The types ordered so each comes after every type it references, or
   /// the reference cycles among them, each listing the types along it and
   /// closing back to its first.
-  pub fn sort_by_references(
+  pub(crate) fn sort_by_references(
     unsorted_types: &[Self],
   ) -> Result<Vec<Self>, Vec<Vec<Arc<str>>>> {
     let dependencies: Vec<Vec<usize>> = unsorted_types
@@ -156,7 +156,7 @@ impl AbstractType {
   /// type whose concrete form doesn't depend on generics is ruled out: a
   /// struct or enum (compatible only with one of the same name) or a scalar
   /// (compatible only with itself).
-  pub fn may_be_compatible_with(&self, arg: &TypeState) -> bool {
+  pub(crate) fn may_be_compatible_with(&self, arg: &TypeState) -> bool {
     let matches = |t: &Type| match self {
       AbstractType::AbstractStruct(s) => {
         matches!(t, Type::Struct(t) if t.name == s.name.0)
@@ -214,7 +214,7 @@ impl AbstractType {
   }
   /// `Type::for_each_function_signature_mut` over the concrete types within
   /// this type.
-  pub fn for_each_function_signature_mut(
+  pub(crate) fn for_each_function_signature_mut(
     &mut self,
     visit: &mut impl FnMut(&mut FunctionSignature),
   ) {
@@ -302,7 +302,7 @@ impl AbstractType {
     }
     Ok(())
   }
-  pub fn fill_generics(
+  pub(crate) fn fill_generics(
     &self,
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
@@ -348,7 +348,7 @@ impl AbstractType {
       .into(),
     })
   }
-  pub fn concretize(
+  pub(crate) fn concretize(
     &self,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
@@ -406,7 +406,7 @@ impl AbstractType {
       },
     }
   }
-  pub fn fill_abstract_generics(
+  pub(crate) fn fill_abstract_generics(
     self,
     generics: &HashMap<Arc<str>, AbstractType>,
   ) -> Self {
@@ -441,7 +441,10 @@ impl AbstractType {
       ),
     }
   }
-  pub fn fill_const_generics(self, bindings: &HashMap<Arc<str>, u32>) -> Self {
+  pub(crate) fn fill_const_generics(
+    self,
+    bindings: &HashMap<Arc<str>, u32>,
+  ) -> Self {
     match self {
       AbstractType::AbstractArray {
         size,
@@ -647,20 +650,7 @@ impl AbstractType {
       _ => err(InvalidStructFieldType, tree.position().clone().into()),
     }
   }
-  pub fn from_name(
-    name: Arc<str>,
-    position: DocumentPosition,
-    typedefs: &TypeDefs,
-    generic_args: &Vec<Arc<str>>,
-    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
-  ) -> CompileResult<Self> {
-    Ok(if generic_args.contains(&name) {
-      AbstractType::Generic(name.into())
-    } else {
-      AbstractType::Type(Type::from_name(name, position, typedefs, skolems)?)
-    })
-  }
-  pub fn extract_generic_bindings(
+  pub(crate) fn extract_generic_bindings(
     &self,
     concrete_type: &Type,
     type_bindings: &mut HashMap<Arc<str>, Type>,
@@ -725,7 +715,10 @@ impl AbstractType {
   /// Substitutes the generics bound in `bindings` wherever they appear as
   /// skolems inside a concrete type (a generic nested in a function type,
   /// say). Skolems without a binding are left alone.
-  pub fn replace_bound_skolems(&mut self, bindings: &HashMap<Arc<str>, Type>) {
+  pub(crate) fn replace_bound_skolems(
+    &mut self,
+    bindings: &HashMap<Arc<str>, Type>,
+  ) {
     if let AbstractType::Type(t) = self {
       let mut skolems = vec![];
       t.track_skolem_names(&mut skolems);
@@ -735,7 +728,7 @@ impl AbstractType {
       }
     }
   }
-  pub fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
+  pub(crate) fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
     match self {
       AbstractType::Generic(name) => {
         AbstractType::Generic(if &*name == old_name {
@@ -774,7 +767,7 @@ impl AbstractType {
       other => other,
     }
   }
-  pub fn flat_data_size_in_u32s(
+  pub(crate) fn flat_data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
@@ -817,14 +810,14 @@ impl AbstractType {
       }
     })
   }
-  pub fn is_vec4f(&self) -> bool {
+  pub(crate) fn is_vec4f(&self) -> bool {
     match self {
       AbstractType::Type(t) => t.is_vec4f(),
       AbstractType::AbstractStruct(s) => s.is_vec4f(),
       _ => false,
     }
   }
-  pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
+  pub(crate) fn is_unitlike(&self, names: &mut NameContext) -> bool {
     match self {
       AbstractType::Unit => true,
       AbstractType::Generic(_) => false,
@@ -863,12 +856,12 @@ impl AbstractType {
 /// The values of the `def`s array sizes can name (see
 /// `Program::inline_def_array_sizes`), and the `def`s found named as sizes
 /// whose values aren't constant integers.
-pub struct ArraySizeConstants {
+pub(crate) struct ArraySizeConstants {
   pub values: HashMap<Arc<str>, u32>,
   /// The `def`s with no constant integer value.
   pub invalid: HashSet<Arc<str>>,
   /// The invalid `def`s named as array sizes.
-  pub named_invalid: RefCell<HashSet<Arc<str>>>,
+  pub(crate) named_invalid: RefCell<HashSet<Arc<str>>>,
 }
 
 impl ArraySizeConstants {
@@ -900,7 +893,7 @@ pub enum ConcreteArraySize {
 
 impl AbstractArraySize {
   /// This size as a concrete one, unless it's still generic.
-  pub fn concrete(&self) -> Option<ConcreteArraySize> {
+  pub(crate) fn concrete(&self) -> Option<ConcreteArraySize> {
     match self {
       AbstractArraySize::Literal(n) => Some(ConcreteArraySize::Literal(*n)),
       AbstractArraySize::Constant(name) => {
@@ -910,7 +903,7 @@ impl AbstractArraySize {
       AbstractArraySize::Generic(_) => None,
     }
   }
-  pub fn compile_type(&self) -> String {
+  pub(crate) fn compile_type(&self) -> String {
     match self {
       AbstractArraySize::Literal(size) => format!("{size}"),
       AbstractArraySize::Constant(name) => {
@@ -924,7 +917,7 @@ impl AbstractArraySize {
       }
     }
   }
-  pub fn fill_generics(
+  pub(crate) fn fill_generics(
     &self,
     generics: &HashMap<Arc<str>, ConstGenericValue>,
   ) -> ConcreteArraySize {
@@ -940,7 +933,7 @@ impl AbstractArraySize {
       ),
     }
   }
-  pub fn concretize(
+  pub(crate) fn concretize(
     &self,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> ConcreteArraySize {
@@ -966,7 +959,7 @@ impl AbstractArraySize {
 }
 
 impl ConcreteArraySize {
-  pub fn as_literal(&self) -> Option<u32> {
+  pub(crate) fn as_literal(&self) -> Option<u32> {
     match self {
       ConcreteArraySize::Literal(n) => Some(*n),
       ConcreteArraySize::UnificationVariable(v) => {
@@ -978,7 +971,7 @@ impl ConcreteArraySize {
       _ => None,
     }
   }
-  pub fn compile_type(&self) -> String {
+  pub(crate) fn compile_type(&self) -> String {
     match self {
       ConcreteArraySize::Literal(size) => format!("{size}"),
       ConcreteArraySize::Constant(name) => {
@@ -1007,7 +1000,7 @@ impl ConcreteArraySize {
       }
     }
   }
-  pub fn constrain(
+  pub(crate) fn constrain(
     &mut self,
     other: &Self,
     source_trace: &SourceTrace,
@@ -1134,7 +1127,7 @@ impl ConcreteArraySize {
       ),
     }
   }
-  pub fn are_compatible(a: &Self, b: &Self) -> bool {
+  pub(crate) fn are_compatible(a: &Self, b: &Self) -> bool {
     match (a, b) {
       (ConcreteArraySize::Literal(a), ConcreteArraySize::Literal(b)) => a == b,
       (ConcreteArraySize::Constant(a), ConcreteArraySize::Constant(b)) => {
@@ -1320,7 +1313,7 @@ impl ConcreteArraySize {
   /// unresolved cell must count as not-fully-known, so incomplete
   /// inference surfaces as `CouldntInferTypes` rather than reaching a
   /// backend as an unsizable type.
-  pub fn is_resolved(&self) -> bool {
+  pub(crate) fn is_resolved(&self) -> bool {
     match self {
       ConcreteArraySize::UnificationVariable(var) => {
         var.value.read().unwrap().is_some()
@@ -1363,7 +1356,7 @@ pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
 
 impl Type {
   /// The `size`-component vector of `element` (`vec3f` for 3 and `f32`).
-  pub fn vector_of(size: usize, element: Type) -> Type {
+  pub(crate) fn vector_of(size: usize, element: Type) -> Type {
     Type::Struct(
       AbstractStruct::fill_generics_ordered(
         get_builtin_struct(&format!("vec{size}")).into(),
@@ -1377,7 +1370,7 @@ impl Type {
   /// Calls `visit` on every function signature within this type: a function
   /// type's own, and those nested in its parameter and return types, struct
   /// fields, enum payloads, and array elements.
-  pub fn for_each_function_signature_mut(
+  pub(crate) fn for_each_function_signature_mut(
     &mut self,
     visit: &mut impl FnMut(&mut FunctionSignature),
   ) {
@@ -1417,7 +1410,7 @@ impl Type {
       | Type::Skolem(_, _) => {}
     }
   }
-  pub fn c_printf_statements(
+  pub(crate) fn c_printf_statements(
     &self,
     arg_str: &str,
     names: &mut NameContext,
@@ -1450,11 +1443,11 @@ impl Type {
       Type::Skolem(_, _) => panic!(),
     }
   }
-  pub fn is_sampler(&self) -> bool {
+  pub(crate) fn is_sampler(&self) -> bool {
     matches!(self, Type::Struct(s) if &*s.name == "Sampler")
   }
   /// Whether this type is, or contains, an `Atomic`.
-  pub fn involves_atomic(&self) -> bool {
+  pub(crate) fn involves_atomic(&self) -> bool {
     match self {
       Type::Struct(s) => {
         &*s.name == "Atomic"
@@ -1469,14 +1462,14 @@ impl Type {
   }
   /// Whether this type holds a texture or sampler inside it (as an array
   /// element, struct field, or enum payload) rather than being one.
-  pub fn nests_texture_or_sampler(&self) -> bool {
+  pub(crate) fn nests_texture_or_sampler(&self) -> bool {
     match self {
       Type::Struct(s) if matches!(&*s.name, "Texture2D" | "Sampler") => false,
       _ => self.involves_texture_or_sampler(),
     }
   }
   /// Whether this type is, or contains, a texture or sampler.
-  pub fn involves_texture_or_sampler(&self) -> bool {
+  pub(crate) fn involves_texture_or_sampler(&self) -> bool {
     match self {
       Type::Struct(s) => {
         matches!(&*s.name, "Texture2D" | "Sampler")
@@ -1495,7 +1488,7 @@ impl Type {
       _ => false,
     }
   }
-  pub fn is_constructible(&self) -> bool {
+  pub(crate) fn is_constructible(&self) -> bool {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,
       Type::Struct(s) => match &*s.name {
@@ -1535,7 +1528,7 @@ impl Type {
       Type::Array(_, _) => "Array",
     }
   }
-  pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
+  pub(crate) fn is_unitlike(&self, names: &mut NameContext) -> bool {
     match self {
       Type::Unit => true,
       Type::Struct(s) => {
@@ -1587,7 +1580,7 @@ impl Type {
       _ => false,
     }
   }
-  pub fn inline_def_array_sizes(&mut self, sizes: &ArraySizeConstants) {
+  pub(crate) fn inline_def_array_sizes(&mut self, sizes: &ArraySizeConstants) {
     self.walk_mut(&|t| {
       if let Type::Function(f) = t
         && let Some(f) = &f.abstract_ancestor
@@ -1607,7 +1600,7 @@ impl Type {
   /// variant). Such types have no fixed GPU layout: values of them are
   /// CPU-only, and functions whose signatures involve them are skipped
   /// during WGSL/C emission.
-  pub fn involves_runtime_sized_array(&self) -> bool {
+  pub(crate) fn involves_runtime_sized_array(&self) -> bool {
     match self {
       Type::Array(Some(ConcreteArraySize::Unsized), _) => true,
       Type::Array(_, inner) => {
@@ -1630,7 +1623,7 @@ impl Type {
   /// involving one from the name-mangling suffix — including a function type
   /// nested inside an array/struct/enum (`[(Fn ...)]`), not just a top-level
   /// one.
-  pub fn involves_function(&self) -> bool {
+  pub(crate) fn involves_function(&self) -> bool {
     match self {
       Type::Function(_) => true,
       Type::Array(_, inner) => inner.kind.unwrap_known().involves_function(),
@@ -1649,7 +1642,7 @@ impl Type {
   /// (directly, as an element/field, or inside an enum variant). Bools
   /// aren't host-shareable in WGSL, so bool-containing types can't be
   /// GPU bindings.
-  pub fn involves_bool(&self) -> bool {
+  pub(crate) fn involves_bool(&self) -> bool {
     match self {
       Type::Bool => true,
       Type::Array(_, inner) => inner.kind.unwrap_known().involves_bool(),
@@ -1667,7 +1660,7 @@ impl Type {
   /// Whether this type is, or contains anywhere in its structure, a
   /// `String`. Inspects nested types in place: every expression's effects
   /// ask this.
-  pub fn involves_string(&self) -> bool {
+  pub(crate) fn involves_string(&self) -> bool {
     match self {
       Type::String => true,
       Type::Array(_, inner) => inner.kind.with_known(Type::involves_string),
@@ -1688,7 +1681,7 @@ impl Type {
   /// CPU-exclusive), so any struct/enum/array embedding one is CPU-only for
   /// emission purposes — like `String` — and must be skipped from WGSL
   /// struct emission so it doesn't dangle on the unemitted `Video` type.
-  pub fn involves_video(&self) -> bool {
+  pub(crate) fn involves_video(&self) -> bool {
     match self {
       Type::Struct(s) => {
         &*s.name == "Video"
@@ -1713,7 +1706,7 @@ impl Type {
   /// array *embedding* one, or a nested `[[T]]`, has no binding layout
   /// (WGSL allows a runtime-sized array only as a whole binding of `array<
   /// fixed>`). A function reading such a global is CPU-only.
-  pub fn is_valid_wgsl_binding_layout(&self) -> bool {
+  pub(crate) fn is_valid_wgsl_binding_layout(&self) -> bool {
     if self.involves_bool() || self.involves_string() {
       return false;
     }
@@ -1732,7 +1725,7 @@ impl Type {
   /// host-side layout code sizes and (de)serializes function types through
   /// it. `None` for a non-function type or one whose function isn't resolved
   /// yet.
-  pub fn closure_data_type(&self) -> Option<Type> {
+  pub(crate) fn closure_data_type(&self) -> Option<Type> {
     let Type::Function(f) = self else {
       return None;
     };
@@ -1742,7 +1735,7 @@ impl Type {
       None => Some(Type::Unit),
     }
   }
-  pub fn flat_data_size_in_u32s(
+  pub(crate) fn flat_data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
@@ -1811,7 +1804,7 @@ impl Type {
   }
   /// Returns the WGSL AlignOf for this type, in u32s (bytes / 4).
   /// See <https://www.w3.org/TR/WGSL/#alignment-and-size>
-  pub fn wgsl_alignment_in_u32s(&self) -> usize {
+  pub(crate) fn wgsl_alignment_in_u32s(&self) -> usize {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
       Type::Struct(s) => match &*s.name {
@@ -1840,7 +1833,7 @@ impl Type {
   /// For user-defined structs and arrays, inter-field / stride padding IS
   /// included.
   /// See <https://www.w3.org/TR/WGSL/#alignment-and-size>
-  pub fn wgsl_flat_data_size_in_u32s(&self) -> usize {
+  pub(crate) fn wgsl_flat_data_size_in_u32s(&self) -> usize {
     fn round_up(align: usize, size: usize) -> usize {
       if align == 0 {
         return size;
@@ -1892,7 +1885,10 @@ impl Type {
       _ => 0,
     }
   }
-  pub fn satisfies_constraint(&self, constraint: &TypeConstraint) -> bool {
+  pub(crate) fn satisfies_constraint(
+    &self,
+    constraint: &TypeConstraint,
+  ) -> bool {
     if let Type::Skolem(_, skolem_constraints) = self {
       skolem_constraints.contains(&constraint)
     } else {
@@ -2072,17 +2068,17 @@ impl Type {
     };
     b
   }
-  pub fn compatible_with_any(&self, others: &[Self]) -> bool {
+  pub(crate) fn compatible_with_any(&self, others: &[Self]) -> bool {
     others.iter().find(|x| self.compatible(x)).is_some()
   }
-  pub fn filter_compatibles(&self, others: &[Self]) -> Vec<Self> {
+  pub(crate) fn filter_compatibles(&self, others: &[Self]) -> Vec<Self> {
     others
       .iter()
       .filter(|x| self.compatible(x))
       .cloned()
       .collect()
   }
-  pub fn from_name(
+  pub(crate) fn from_name(
     name: Arc<str>,
     source_position: DocumentPosition,
     typedefs: &TypeDefs,
@@ -2135,7 +2131,7 @@ impl Type {
       }
     })
   }
-  pub fn monomorphized_name(
+  pub(crate) fn monomorphized_name(
     &self,
     names: &mut NameContext,
     target: CompilerTarget,
@@ -2299,7 +2295,7 @@ impl Type {
   }
   /// Extract generic bindings from a Type that may contain Skolems, by
   /// walking it in parallel with the corresponding concrete type.
-  pub fn extract_skolem_bindings(
+  pub(crate) fn extract_skolem_bindings(
     &self,
     concrete: &Type,
     type_bindings: &mut HashMap<Arc<str>, Type>,
@@ -2397,7 +2393,7 @@ impl Type {
       _ => {}
     }
   }
-  pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
+  pub(crate) fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
     if let Type::Skolem(s, _) = &self {
       std::mem::swap(self, &mut skolems.get(s).unwrap().clone())
     } else {
@@ -2433,7 +2429,7 @@ impl Type {
   /// fields, enum payloads, function args/return) into owned values, following
   /// and collapsing any shared `UnificationVariable`. See
   /// `TypeState::snapshot_owned`.
-  pub fn snapshot_nested_type_states(&mut self) {
+  pub(crate) fn snapshot_nested_type_states(&mut self) {
     match self {
       Type::Struct(s) => {
         for field in s.fields.iter_mut() {
@@ -2455,7 +2451,7 @@ impl Type {
       _ => {}
     }
   }
-  pub fn replace_const_generic_skolems(
+  pub(crate) fn replace_const_generic_skolems(
     &mut self,
     bindings: &HashMap<Arc<str>, u32>,
   ) {
@@ -2512,7 +2508,7 @@ impl Type {
       _ => {}
     }
   }
-  pub fn bitcastable_chunk_accessors(
+  pub(crate) fn bitcastable_chunk_accessors(
     &self,
     value_name: Arc<str>,
   ) -> Vec<TypedExp> {
@@ -2827,7 +2823,7 @@ impl Type {
       }
     }
   }
-  pub fn bitcasted_from_enum_data(
+  pub(crate) fn bitcasted_from_enum_data(
     &self,
     enum_value_name: Arc<str>,
     enum_type: &Enum,
@@ -2844,7 +2840,7 @@ impl Type {
       )
       .0
   }
-  pub fn replace_skolems_with_unification_variables(
+  pub(crate) fn replace_skolems_with_unification_variables(
     &mut self,
     replacements: &HashMap<Arc<str>, ExpTypeInfo>,
     const_replacements: &HashMap<Arc<str>, ConstGenericValue>,
@@ -2900,7 +2896,7 @@ impl Type {
   pub fn known(self) -> TypeState {
     TypeState::Known(self)
   }
-  pub fn required_address_space(&self) -> Option<VariableAddressSpace> {
+  pub(crate) fn required_address_space(&self) -> Option<VariableAddressSpace> {
     if let Type::Struct(s) = self
       && (&*s.name == "Texture2D" || &*s.name == "Sampler")
     {
@@ -2937,7 +2933,7 @@ impl Type {
       _ => true,
     }
   }
-  pub fn is_attributable(&self) -> bool {
+  pub(crate) fn is_attributable(&self) -> bool {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,
       Type::Struct(s) => match &*s.abstract_ancestor.original_ancestor().name.0
@@ -2953,10 +2949,10 @@ impl Type {
       _ => false,
     }
   }
-  pub fn is_location_attributable(&self) -> bool {
+  pub(crate) fn is_location_attributable(&self) -> bool {
     *self != Type::Bool && self.is_attributable()
   }
-  pub fn is_vector(&self) -> bool {
+  pub(crate) fn is_vector(&self) -> bool {
     if let Type::Struct(s) = self
       && (&*s.name == "vec2" || &*s.name == "vec3" || &*s.name == "vec4")
     {
@@ -2965,21 +2961,21 @@ impl Type {
       false
     }
   }
-  pub fn is_matrix(&self) -> bool {
+  pub(crate) fn is_matrix(&self) -> bool {
     if let Type::Struct(s) = self {
       crate::compiler::functions::extract_mat_size(&s.name).is_some()
     } else {
       false
     }
   }
-  pub fn matrix_dimensions(&self) -> Option<(usize, usize)> {
+  pub(crate) fn matrix_dimensions(&self) -> Option<(usize, usize)> {
     if let Type::Struct(s) = self {
       crate::compiler::functions::extract_mat_size(&s.name)
     } else {
       None
     }
   }
-  pub fn vector_element_type(&self) -> Option<Type> {
+  pub(crate) fn vector_element_type(&self) -> Option<Type> {
     if let Type::Struct(s) = self
       && crate::compiler::functions::extract_vec_size(&s.name).is_some()
     {
@@ -2995,11 +2991,11 @@ impl Type {
     }
   }
   /// An integer scalar, or a vector of integers.
-  pub fn is_integer_scalar_or_vector(&self) -> bool {
+  pub(crate) fn is_integer_scalar_or_vector(&self) -> bool {
     matches!(self, Type::U32 | Type::I32)
       || matches!(self.vector_element_type(), Some(Type::U32 | Type::I32))
   }
-  pub fn matrix_scalar_type(&self) -> Option<Type> {
+  pub(crate) fn matrix_scalar_type(&self) -> Option<Type> {
     if let Type::Struct(s) = self
       && crate::compiler::functions::extract_mat_size(&s.name).is_some()
     {
@@ -3014,7 +3010,7 @@ impl Type {
       None
     }
   }
-  pub fn is_vec3u(&self) -> bool {
+  pub(crate) fn is_vec3u(&self) -> bool {
     if let Type::Struct(s) = self
       && &*s.name == "vec3"
       && s
@@ -3028,7 +3024,7 @@ impl Type {
       false
     }
   }
-  pub fn is_vec4f(&self) -> bool {
+  pub(crate) fn is_vec4f(&self) -> bool {
     if let Type::Struct(s) = self
       && &*s.name == "vec4"
       && s
@@ -3094,7 +3090,7 @@ fn boxed_function_name(
   compile_word(name.into())
 }
 
-pub fn extract_type_annotation_ast(
+pub(crate) fn extract_type_annotation_ast(
   exp: EaslTree,
 ) -> (Option<EaslTree>, EaslTree) {
   if let EaslTree::Inner(
@@ -3108,7 +3104,7 @@ pub fn extract_type_annotation_ast(
   }
 }
 
-pub fn extract_type_annotation(
+pub(crate) fn extract_type_annotation(
   exp: EaslTree,
   typedefs: &TypeDefs,
   skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
@@ -3125,16 +3121,16 @@ pub fn extract_type_annotation(
 pub struct ExpTypeInfo {
   pub kind: TypeState,
   pub ownership: Ownership,
-  pub is_globally_bound: bool,
-  pub subtree_fully_typed: bool,
+  pub(crate) is_globally_bound: bool,
+  pub(crate) subtree_fully_typed: bool,
   pub errored: bool,
-  pub fully_known_cached: bool,
-  pub already_constrained_against_signatures: bool,
-  pub already_match_breaks_extracted: bool,
+  pub(crate) fully_known_cached: bool,
+  pub(crate) already_constrained_against_signatures: bool,
+  pub(crate) already_match_breaks_extracted: bool,
   /// Scratch index used by `defunctionalize_boxed_functions` to associate
   /// flow-analysis data with each node of a function instance's body. Not
   /// identity (excluded from `PartialEq`) and meaningless outside that pass.
-  pub defun_slot: Option<u32>,
+  pub(crate) defun_slot: Option<u32>,
 }
 
 impl PartialEq for ExpTypeInfo {
@@ -3179,7 +3175,7 @@ impl From<TypeState> for ExpTypeInfo {
 }
 
 impl ExpTypeInfo {
-  pub fn is_fully_known(&mut self) -> bool {
+  pub(crate) fn is_fully_known(&mut self) -> bool {
     if self.fully_known_cached {
       return true;
     }
@@ -3222,7 +3218,7 @@ impl PartialEq for TypeState {
 impl TypeState {
   /// `Type::for_each_function_signature_mut` over every type this state
   /// could be.
-  pub fn for_each_function_signature_mut(
+  pub(crate) fn for_each_function_signature_mut(
     &mut self,
     visit: &mut impl FnMut(&mut FunctionSignature),
   ) {
@@ -3240,7 +3236,7 @@ impl TypeState {
         .for_each_function_signature_mut(visit),
     }
   }
-  pub fn as_fn_type_if_known(
+  pub(crate) fn as_fn_type_if_known(
     &mut self,
     err_fn: impl Fn() -> CompileError,
   ) -> CompileResult<Option<&mut FunctionSignature>> {
@@ -3263,7 +3259,7 @@ impl TypeState {
       }
     })
   }
-  pub fn unwrap_known(&self) -> Type {
+  pub(crate) fn unwrap_known(&self) -> Type {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
         t.clone()
@@ -3274,19 +3270,19 @@ impl TypeState {
   }
   /// Runs `f` on the known type in place, without cloning it; panics, like
   /// `unwrap_known`, if the type isn't known.
-  pub fn with_known<T>(&self, f: impl FnOnce(&Type) -> T) -> T {
+  pub(crate) fn with_known<T>(&self, f: impl FnOnce(&Type) -> T) -> T {
     self.with_dereferenced(|typestate| match typestate {
       TypeState::Known(t) => f(t),
       _ => panic!("unwrapped non-Known TypeState \"{typestate:?}\""),
     })
   }
   /// Whether the type is known and satisfies `f`, without cloning it.
-  pub fn is_known_and(&self, f: impl FnOnce(&Type) -> bool) -> bool {
+  pub(crate) fn is_known_and(&self, f: impl FnOnce(&Type) -> bool) -> bool {
     self.with_dereferenced(
       |typestate| matches!(typestate, TypeState::Known(t) if f(t)),
     )
   }
-  pub fn try_unwrap_known(&self) -> Option<Type> {
+  pub(crate) fn try_unwrap_known(&self) -> Option<Type> {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
         Some(t.clone())
@@ -3295,7 +3291,10 @@ impl TypeState {
       }
     })
   }
-  pub fn as_known_mut<O>(&mut self, f: impl FnOnce(&mut Type) -> O) -> O {
+  pub(crate) fn as_known_mut<O>(
+    &mut self,
+    f: impl FnOnce(&mut Type) -> O,
+  ) -> O {
     self.with_dereferenced_mut(|typestate| {
       if let TypeState::Known(t) = typestate {
         f(t)
@@ -3304,7 +3303,7 @@ impl TypeState {
       }
     })
   }
-  pub fn try_as_known_mut<O>(
+  pub(crate) fn try_as_known_mut<O>(
     &mut self,
     f: impl FnOnce(&mut Type) -> O,
   ) -> Option<O> {
@@ -3316,26 +3315,10 @@ impl TypeState {
       }
     })
   }
-  pub fn any_of(possibilities: Vec<TypeState>) -> Self {
-    let mut type_possibilities = vec![];
-    for possibility in possibilities {
-      match possibility {
-        TypeState::Unknown => {}
-        TypeState::OneOf(mut new_possibilities) => {
-          type_possibilities.append(&mut new_possibilities);
-        }
-        TypeState::Known(t) => type_possibilities.push(t),
-        TypeState::UnificationVariable(_) => {
-          panic!("can't handle UnificationVariable in any_of :(")
-        }
-      }
-    }
-    Self::OneOf(type_possibilities).simplified()
-  }
-  pub fn fresh_unification_variable() -> Self {
+  pub(crate) fn fresh_unification_variable() -> Self {
     TypeState::UnificationVariable(Arc::new(RwLock::new(TypeState::Unknown)))
   }
-  pub fn with_dereferenced<T>(&self, f: impl FnOnce(&Self) -> T) -> T {
+  pub(crate) fn with_dereferenced<T>(&self, f: impl FnOnce(&Self) -> T) -> T {
     match self {
       TypeState::UnificationVariable(var) => {
         (&*var.read().unwrap()).with_dereferenced(f)
@@ -3343,7 +3326,7 @@ impl TypeState {
       other => f(other),
     }
   }
-  pub fn with_dereferenced_mut<T>(
+  pub(crate) fn with_dereferenced_mut<T>(
     &mut self,
     f: impl FnOnce(&mut Self) -> T,
   ) -> T {
@@ -3366,7 +3349,7 @@ impl TypeState {
   /// in a generic `map` body, whose element type is a unification variable
   /// resolved to the element generic. Snapshotting each clone before
   /// substitution gives it independent types.
-  pub fn snapshot_owned(&mut self) {
+  pub(crate) fn snapshot_owned(&mut self) {
     let mut resolved = self.with_dereferenced(|ts| ts.clone());
     match &mut resolved {
       TypeState::Known(t) => t.snapshot_nested_type_states(),
@@ -3379,7 +3362,7 @@ impl TypeState {
     }
     *self = resolved;
   }
-  pub fn are_compatible<'a>(a: &'a Self, b: &'a Self) -> bool {
+  pub(crate) fn are_compatible<'a>(a: &'a Self, b: &'a Self) -> bool {
     use TypeState::*;
     a.with_dereferenced(|a| {
       b.with_dereferenced(|b| match (a, b) {
@@ -3396,7 +3379,7 @@ impl TypeState {
       })
     })
   }
-  pub fn constrain(
+  pub(crate) fn constrain(
     &mut self,
     other: &TypeState,
     source_trace: &SourceTrace,
@@ -3573,7 +3556,7 @@ impl TypeState {
   }
   /// `constrain` against a state the caller no longer needs: when this
   /// state is still unknown, `other` is moved in rather than cloned.
-  pub fn constrain_owned(
+  pub(crate) fn constrain_owned(
     &mut self,
     other: TypeState,
     source_trace: &SourceTrace,
@@ -3589,7 +3572,7 @@ impl TypeState {
     self.with_dereferenced_mut(|this| *this = other.simplified());
     true
   }
-  pub fn mutually_constrain(
+  pub(crate) fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
     source_trace: &SourceTrace,
@@ -3599,7 +3582,7 @@ impl TypeState {
     let other_changed = other.constrain(self, source_trace, errors);
     self_changed || other_changed
   }
-  pub fn constrain_fn_by_return_type(
+  pub(crate) fn constrain_fn_by_return_type(
     &mut self,
     return_type: &TypeState,
     source_trace: &SourceTrace,
@@ -3638,7 +3621,7 @@ impl TypeState {
       }
     })
   }
-  pub fn constrain_fn_by_argument_types(
+  pub(crate) fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<&mut TypeState>,
     source_trace: &SourceTrace,
@@ -3765,18 +3748,18 @@ impl TypeState {
       }
     }
   }
-  pub fn simplified(mut self) -> Self {
+  pub(crate) fn simplified(mut self) -> Self {
     self.simplify();
     self
   }
-  pub fn monomorphized_name(
+  pub(crate) fn monomorphized_name(
     &self,
     names: &mut NameContext,
     target: CompilerTarget,
   ) -> String {
     self.unwrap_known().monomorphized_name(names, target)
   }
-  pub fn replace_skolems_with_unification_variables(
+  pub(crate) fn replace_skolems_with_unification_variables(
     &mut self,
     replacements: &HashMap<Arc<str>, ExpTypeInfo>,
     const_replacements: &HashMap<Arc<str>, ConstGenericValue>,
@@ -3833,7 +3816,7 @@ impl VariableKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variable {
   pub kind: VariableKind,
-  pub var_type: ExpTypeInfo,
+  pub(crate) var_type: ExpTypeInfo,
 }
 
 impl Variable {
@@ -3856,7 +3839,7 @@ impl Variable {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum TypeConstraintKind {
+pub(crate) enum TypeConstraintKind {
   Scalar,
   ScalarOrBool,
   Integer,
@@ -3888,7 +3871,7 @@ impl TypeConstraint {
       args: vec![],
     }
   }
-  pub fn scalar_or_bool() -> Self {
+  pub(crate) fn scalar_or_bool() -> Self {
     Self {
       kind: TypeConstraintKind::ScalarOrBool,
       args: vec![],
@@ -3914,7 +3897,7 @@ impl TypeConstraint {
   }
 }
 
-pub fn parse_type_constraint(
+pub(crate) fn parse_type_constraint(
   ast: EaslTree,
   _typedefs: &TypeDefs,
   _generic_args: &Vec<Arc<str>>,
@@ -3958,13 +3941,13 @@ pub fn parse_type_constraint(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GenericArgument {
+pub(crate) enum GenericArgument {
   Type(Vec<TypeConstraint>),
   Constant,
 }
 
 impl GenericArgument {
-  pub fn type_constraints(&self) -> Vec<TypeConstraint> {
+  pub(crate) fn type_constraints(&self) -> Vec<TypeConstraint> {
     match self {
       GenericArgument::Type(type_constraints) => type_constraints.clone(),
       GenericArgument::Constant => vec![],
@@ -3973,12 +3956,12 @@ impl GenericArgument {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GenericArgumentValue {
+pub(crate) enum GenericArgumentValue {
   Type(ExpTypeInfo),
   Constant(ConstGenericValue),
 }
 
-pub fn parse_generic_argument(
+pub(crate) fn parse_generic_argument(
   ast: EaslTree,
   typedefs: &TypeDefs,
   generic_args: &Vec<Arc<str>>,
@@ -4051,10 +4034,10 @@ pub fn parse_generic_argument(
 }
 
 #[derive(Debug)]
-pub struct LocalContext<P: Deref<Target = Program>> {
+pub(crate) struct LocalContext<P: Deref<Target = Program>> {
   pub variables: HashMap<Arc<str>, (Variable, SourceTrace)>,
-  pub enclosing_function_types: Vec<TypeState>,
-  pub inside_pattern: bool,
+  pub(crate) enclosing_function_types: Vec<TypeState>,
+  pub(crate) inside_pattern: bool,
   pub program: P,
 }
 
@@ -4069,7 +4052,10 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
   }
   /// A context for a function body whose function has `const_generics`,
   /// which the body reads as immutable `u32` values.
-  pub fn with_const_generics(program: P, const_generics: &[Arc<str>]) -> Self {
+  pub(crate) fn with_const_generics(
+    program: P,
+    const_generics: &[Arc<str>],
+  ) -> Self {
     let mut context = Self::empty(program);
     for name in const_generics {
       context.bind(
@@ -4080,26 +4066,26 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
     }
     context
   }
-  pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
+  pub(crate) fn push_enclosing_function_type(&mut self, typestate: TypeState) {
     self.enclosing_function_types.push(typestate);
   }
-  pub fn pop_enclosing_function_type(&mut self) {
+  pub(crate) fn pop_enclosing_function_type(&mut self) {
     self.enclosing_function_types.pop();
   }
-  pub fn enclosing_function_type(&mut self) -> Option<&mut TypeState> {
+  pub(crate) fn enclosing_function_type(&mut self) -> Option<&mut TypeState> {
     self.enclosing_function_types.last_mut()
   }
   pub fn bind(&mut self, name: &str, v: Variable, s: SourceTrace) {
     self.variables.insert(name.into(), (v, s));
   }
-  pub fn unbind(&mut self, name: &str) -> Option<Variable> {
+  pub(crate) fn unbind(&mut self, name: &str) -> Option<Variable> {
     self
       .variables
       .remove(name)
       //.unwrap_or_else(|| panic!("failed to unbind {name}"))
       .map(|x| x.0)
   }
-  pub fn is_bound(&self, name: &str) -> bool {
+  pub(crate) fn is_bound(&self, name: &str) -> bool {
     self.variables.contains_key(name)
       || self.program.names_functions(name)
       || self
@@ -4116,7 +4102,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
         .find(|e| e.has_unit_variant_named(name))
         .is_some()
   }
-  pub fn is_globally_bound(&self, name: &str) -> bool {
+  pub(crate) fn is_globally_bound(&self, name: &str) -> bool {
     self.program.names_functions(name)
       || self
         .program
@@ -4132,7 +4118,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
         .find(|e| e.has_unit_variant_named(name))
         .is_some()
   }
-  pub fn get_variable_kind(&self, name: &str) -> VariableKind {
+  pub(crate) fn get_variable_kind(&self, name: &str) -> VariableKind {
     self
       .variables
       .get(name)
@@ -4152,7 +4138,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
         )
       })
   }
-  pub fn get_name_definition_source(
+  pub(crate) fn get_name_definition_source(
     &self,
     name: &str,
   ) -> Option<NameDefinitionSource> {
@@ -4180,11 +4166,11 @@ pub enum NameDefinitionSource {
   LocalBinding(Vec<usize>),
 }
 
-pub type ImmutableProgramLocalContext<'p> = LocalContext<&'p Program>;
+pub(crate) type ImmutableProgramLocalContext<'p> = LocalContext<&'p Program>;
 
-pub type MutableProgramLocalContext<'p> = LocalContext<&'p mut Program>;
+pub(crate) type MutableProgramLocalContext<'p> = LocalContext<&'p mut Program>;
 impl<'p> MutableProgramLocalContext<'p> {
-  pub fn get_variable_ownership(&self, name: &str) -> Option<Ownership> {
+  pub(crate) fn get_variable_ownership(&self, name: &str) -> Option<Ownership> {
     if let Some((var, _)) = self.variables.get(name) {
       Some(var.var_type.ownership)
     } else {
@@ -4227,7 +4213,7 @@ impl<'p> MutableProgramLocalContext<'p> {
       ))
     }
   }
-  pub fn constrain_name_type(
+  pub(crate) fn constrain_name_type(
     &mut self,
     name: &Arc<str>,
     source_trace: &SourceTrace,

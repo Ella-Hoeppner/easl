@@ -54,7 +54,7 @@ fn n_sums(n: u8) -> Vec<Vec<u8>> {
   }
 }
 
-pub trait ArgumentTypeHelpers: Sized {
+pub(crate) trait ArgumentTypeHelpers: Sized {
   fn owned(self) -> (Self, Ownership) {
     (self, Ownership::Owned)
   }
@@ -392,7 +392,7 @@ pub fn matrix(n: usize, m: usize) -> AbstractStruct {
   }
 }
 
-pub fn specialized_matrix_type(
+pub(crate) fn specialized_matrix_type(
   n: usize,
   m: usize,
   suffix: &str,
@@ -412,7 +412,7 @@ pub fn specialized_matrix_type(
   )
 }
 
-pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
+pub(crate) fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
   (2..=4)
     .flat_map(|n| {
       (2..=4).flat_map(move |m| {
@@ -498,7 +498,7 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
 }
 
 /// The element type of `down-midi-notes`: one currently-held MIDI note.
-pub fn midi_note() -> AbstractStruct {
+pub(crate) fn midi_note() -> AbstractStruct {
   AbstractStruct {
     name: ("MidiNote".into(), SourceTrace::empty()),
     fields: vec![
@@ -539,7 +539,7 @@ pub fn midi_note() -> AbstractStruct {
 /// `load-video`, and its fields are `_`-prefixed to signal "internal". It's
 /// CPU-only in practice — every operation on it is `CPUExclusiveFunction`,
 /// so it can never reach shader or audio code.
-pub fn video_struct() -> AbstractStruct {
+pub(crate) fn video_struct() -> AbstractStruct {
   AbstractStruct {
     name: ("Video".into(), SourceTrace::empty()),
     fields: vec![
@@ -570,7 +570,7 @@ pub fn video_struct() -> AbstractStruct {
   }
 }
 
-pub fn built_in_structs() -> Vec<AbstractStruct> {
+pub(crate) fn built_in_structs() -> Vec<AbstractStruct> {
   vec![
     vec2(),
     vec3(),
@@ -592,7 +592,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
 /// the identical shape is a harmless no-op (deduped by name in
 /// `with_enum`), matching the many existing programs that declared their
 /// own before it became builtin.
-pub fn option_enum() -> AbstractEnum {
+pub(crate) fn option_enum() -> AbstractEnum {
   AbstractEnum {
     name: ("Option".into(), SourceTrace::empty()),
     filled_generics: HashMap::new(),
@@ -641,12 +641,12 @@ fn unit_enum(name: &str, variants: &[&str]) -> AbstractEnum {
 
 /// How a `Sampler` reads between texel centers: the nearest texel, or a
 /// blend of the surrounding ones.
-pub fn filter_mode_enum() -> AbstractEnum {
+pub(crate) fn filter_mode_enum() -> AbstractEnum {
   unit_enum("FilterMode", &["Nearest", "Linear"])
 }
 
 /// How a `Sampler` reads coordinates outside `[0, 1]`.
-pub fn address_mode_enum() -> AbstractEnum {
+pub(crate) fn address_mode_enum() -> AbstractEnum {
   unit_enum("AddressMode", &["ClampToEdge", "Repeat", "MirrorRepeat"])
 }
 
@@ -659,7 +659,7 @@ fn render_setting_enums() -> Vec<AbstractEnum> {
     .collect()
 }
 
-pub fn built_in_enums() -> Vec<AbstractEnum> {
+pub(crate) fn built_in_enums() -> Vec<AbstractEnum> {
   let mut enums = vec![option_enum(), filter_mode_enum(), address_mode_enum()];
   enums.extend(render_setting_enums());
   enums
@@ -671,7 +671,7 @@ pub fn built_in_enums() -> Vec<AbstractEnum> {
 /// native WGSL form, so a program whose shaders read
 /// `easl_midi_down_notes` needs its declaration emitted like a user
 /// struct's.
-pub fn built_in_structs_for_target(
+pub(crate) fn built_in_structs_for_target(
   target: CompilerTarget,
 ) -> Vec<AbstractStruct> {
   match target {
@@ -684,7 +684,7 @@ pub fn built_in_structs_for_target(
   }
 }
 
-pub fn built_in_type_aliases() -> Vec<(Arc<str>, Arc<AbstractStruct>)> {
+pub(crate) fn built_in_type_aliases() -> Vec<(Arc<str>, Arc<AbstractStruct>)> {
   [
     ("f", Type::F32),
     ("i", Type::I32),
@@ -732,7 +732,7 @@ pub fn built_in_type_aliases() -> Vec<(Arc<str>, Arc<AbstractStruct>)> {
   .collect()
 }
 
-pub fn get_builtin_struct(name: &str) -> AbstractStruct {
+pub(crate) fn get_builtin_struct(name: &str) -> AbstractStruct {
   built_in_structs()
     .into_iter()
     .find(|s| &*s.name.0 == name)
@@ -1026,7 +1026,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
-pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
+pub(crate) fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
   (2..=4)
     .map(|i| {
       let m = specialized_matrix_type(i, i, "f");
@@ -1366,7 +1366,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
   })
 }
 
-pub fn assignment_function() -> AbstractFunctionSignature {
+pub(crate) fn assignment_function() -> AbstractFunctionSignature {
   AbstractFunctionSignature {
     name: "=".into(),
     generic_args: vec![(
@@ -1390,7 +1390,7 @@ pub fn assignment_function() -> AbstractFunctionSignature {
 /// and `or`), the value of the first operand that decides the result alone:
 /// `false` for `&&`, `true` for `||`. The second operand is evaluated only
 /// when the first isn't this value, on every backend.
-pub fn short_circuit_deciding_value(name: &str) -> Option<bool> {
+pub(crate) fn short_circuit_deciding_value(name: &str) -> Option<bool> {
   match name {
     "&&" | "and" => Some(false),
     "||" | "or" => Some(true),
@@ -1691,7 +1691,7 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
   .collect()
 }
 
-pub fn scalar_bitcast() -> AbstractFunctionSignature {
+pub(crate) fn scalar_bitcast() -> AbstractFunctionSignature {
   AbstractFunctionSignature {
     name: "bitcast".into(),
     generic_args: vec![
@@ -1717,7 +1717,7 @@ pub fn scalar_bitcast() -> AbstractFunctionSignature {
   }
 }
 
-pub fn bitcast_functions() -> Vec<AbstractFunctionSignature> {
+pub(crate) fn bitcast_functions() -> Vec<AbstractFunctionSignature> {
   foreach_vec_type(|t| {
     let t = AbstractType::AbstractStruct(t.into());
     vec![AbstractFunctionSignature {
@@ -4268,7 +4268,7 @@ fn builtin_attribute_lookup_functions() -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
-pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
+pub(crate) fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
   signatures.append(&mut comparison_functions());
@@ -4675,7 +4675,7 @@ pub fn built_in_macros() -> Vec<Macro> {
   vec![if_macro, when_macro, thread_macro]
 }
 
-pub fn rename_builtin_fn(name: &str) -> Option<String> {
+pub(crate) fn rename_builtin_fn(name: &str) -> Option<String> {
   match &*name {
     "dpdx-coarse" => Some("dpdxCoarse"),
     "dpdy-coarse" => Some("dpdyCoarse"),
@@ -4746,22 +4746,16 @@ pub fn rename_builtin_fn(name: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EmulatedFunctionSignature {
+pub(crate) struct EmulatedFunctionSignature {
   pub name: String,
   pub arg_types: Vec<String>,
   pub return_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EmulatedFunctionResult {
-  pub name: String,
-  pub helper_chunks: Vec<String>,
-}
-
 #[derive(Debug, Clone)]
-pub struct EmulatedFunctionRecord {
-  pub emulated_signatures: HashMap<EmulatedFunctionSignature, String>,
-  pub helper_chunks: Vec<String>,
+pub(crate) struct EmulatedFunctionRecord {
+  pub(crate) emulated_signatures: HashMap<EmulatedFunctionSignature, String>,
+  pub(crate) helper_chunks: Vec<String>,
 }
 
 impl EmulatedFunctionRecord {
@@ -5037,7 +5031,7 @@ impl EmulatedFunctionRecord {
     self.emulated_signatures.insert(signature, new_name.clone());
     new_name
   }
-  pub fn track_emulated_builtin(
+  pub(crate) fn track_emulated_builtin(
     &mut self,
     signature: EmulatedFunctionSignature,
     target: CompilerTarget,

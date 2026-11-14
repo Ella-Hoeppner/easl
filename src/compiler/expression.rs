@@ -211,7 +211,7 @@ impl SwizzleField {
       SwizzleField::W => "w",
     }
   }
-  pub fn from_name(name: &str) -> Self {
+  pub(crate) fn from_name(name: &str) -> Self {
     match name {
       "x" => SwizzleField::X,
       "y" => SwizzleField::Y,
@@ -229,7 +229,7 @@ pub enum Accessor {
   ArrayIndex(Box<TypedExp>),
 }
 
-pub fn swizzle_accessor_typestate(
+pub(crate) fn swizzle_accessor_typestate(
   accessed_typestate: &ExpTypeInfo,
   fields: &Vec<SwizzleField>,
 ) -> ExpTypeInfo {
@@ -274,7 +274,7 @@ pub fn swizzle_accessor_typestate(
   }
 }
 
-pub fn swizzle_accessed_possibilities(
+pub(crate) fn swizzle_accessed_possibilities(
   fields: &Vec<SwizzleField>,
 ) -> ExpTypeInfo {
   let max_accessed_index = fields.iter().fold(0, |max_so_far, field| {
@@ -448,9 +448,9 @@ pub enum ExpressionCompilationPosition {
   InnerExpression,
 }
 
-pub type TypedExp = Exp<ExpTypeInfo>;
+pub(crate) type TypedExp = Exp<ExpTypeInfo>;
 
-pub fn arg_list_and_return_type_from_easl_tree(
+pub(crate) fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
   typedefs: &TypeDefs,
   skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
@@ -588,12 +588,12 @@ pub fn arg_list_and_return_type_from_easl_tree(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SyntaxTreeContext {
+pub(crate) enum SyntaxTreeContext {
   Default,
   MatchPattern,
 }
 
-pub fn compile_typed_name(
+pub(crate) fn compile_typed_name(
   name: Arc<str>,
   ownership: Ownership,
   ty: ExpTypeInfo,
@@ -661,10 +661,10 @@ pub struct LocalBindings {
   /// None of these is ever a reference.
   pub values: HashSet<Arc<str>>,
   /// `let` items that aren't `var`s.
-  pub immutable_lets: HashSet<Arc<str>>,
-  pub match_payloads: HashSet<Arc<str>>,
-  pub owned_params: HashSet<Arc<str>>,
-  pub reference_params: HashSet<Arc<str>>,
+  pub(crate) immutable_lets: HashSet<Arc<str>>,
+  pub(crate) match_payloads: HashSet<Arc<str>>,
+  pub(crate) owned_params: HashSet<Arc<str>>,
+  pub(crate) reference_params: HashSet<Arc<str>>,
 }
 
 /// How a call passes one reference argument to a function variant made by
@@ -702,13 +702,13 @@ impl RefArgPassing {
 
 /// The variants `monomorphize_reference_address_spaces` has made, by
 /// (implementation address, each ref arg's `RefArgPassing::key`).
-pub type ReferenceVariants =
+pub(crate) type ReferenceVariants =
   HashMap<(usize, Vec<String>), Arc<RwLock<AbstractFunctionSignature>>>;
 
 impl TypedExp {
   /// Expands n-ary applications of associative functions into nested
   /// binary ones: `(+ a b c)` becomes `(+ (+ a b) c)`.
-  pub fn expand_associative_applications(&mut self) {
+  pub(crate) fn expand_associative_applications(&mut self) {
     self
       .walk_mut::<()>(&mut |exp| {
         loop {
@@ -755,7 +755,7 @@ impl TypedExp {
   }
   /// Rewrites applications that index data (`(arr i)`, `(v i)`, `(m i)`)
   /// into `Access(ArrayIndex(i), ...)` expressions.
-  pub fn normalize_pseudoapplication_data_accesses(&mut self) {
+  pub(crate) fn normalize_pseudoapplication_data_accesses(&mut self) {
     self
       .walk_mut(&mut |exp| {
         if let ExpKind::Application(f, _) = &exp.kind {
@@ -779,7 +779,7 @@ impl TypedExp {
       })
       .unwrap();
   }
-  pub fn extract_non_bound_mutable_references(
+  pub(crate) fn extract_non_bound_mutable_references(
     &mut self,
     names: &RwLock<NameContext>,
   ) -> Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)> {
@@ -910,7 +910,7 @@ impl TypedExp {
     pending
   }
 
-  pub fn function_from_body_tree(
+  pub(crate) fn function_from_body_tree(
     source_trace: SourceTrace,
     body_trees: Vec<EaslTree>,
     return_type: ExpTypeInfo,
@@ -952,7 +952,7 @@ impl TypedExp {
       source_trace,
     })
   }
-  pub fn try_from_easl_tree(
+  pub(crate) fn try_from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
@@ -1779,7 +1779,7 @@ impl TypedExp {
   }
   /// Whether `predicate` holds for this expression or any expression nested
   /// in it. Stops at the first match.
-  pub fn any_subexpression(
+  pub(crate) fn any_subexpression(
     &self,
     mut predicate: impl FnMut(&Self) -> bool,
   ) -> bool {
@@ -1791,7 +1791,7 @@ impl TypedExp {
   /// or reached through an accessor: it applies a function-typed callee
   /// that isn't a name, or binds a function-typed local (a parameter, `let`
   /// value, `match` binding, or loop variable) that such a call could name.
-  pub fn may_apply_local_function(&self) -> bool {
+  pub(crate) fn may_apply_local_function(&self) -> bool {
     let is_function = |t: &TypeState| {
       t.with_dereferenced(|t| matches!(t, TypeState::Known(Type::Function(_))))
     };
@@ -1965,145 +1965,7 @@ impl TypedExp {
     }
     Ok(())
   }
-  pub fn walk_with_ctx<E>(
-    &self,
-    prewalk_handler: &mut impl FnMut(
-      &Self,
-      &ImmutableProgramLocalContext,
-    ) -> Result<bool, E>,
-    ctx: &mut ImmutableProgramLocalContext,
-  ) -> Result<(), E> {
-    if prewalk_handler(self, ctx)? {
-      match &self.kind {
-        Application(f, args) => {
-          f.walk_with_ctx(prewalk_handler, ctx)?;
-          for arg in args.iter() {
-            arg.walk_with_ctx(prewalk_handler, ctx)?;
-          }
-        }
-        Function(arg_names, body) => {
-          let TypeState::Known(Type::Function(f)) = &self.data.kind else {
-            unreachable!()
-          };
-          for ((name, name_source_trace), (arg, _)) in
-            arg_names.iter().zip(f.args.iter())
-          {
-            ctx.bind(name, arg.clone(), name_source_trace.clone());
-          }
-          body.walk_with_ctx(prewalk_handler, ctx)?;
-          for (name, _) in arg_names {
-            ctx.unbind(name);
-          }
-        }
-
-        Access(access, body) => {
-          if let Accessor::ArrayIndex(index_exp) = access {
-            index_exp.walk_with_ctx(prewalk_handler, ctx)?
-          }
-          body.walk_with_ctx(prewalk_handler, ctx)?
-        }
-        Let(bindings, body) => {
-          for (name, name_source_trace, kind, value) in bindings.iter() {
-            value.walk_with_ctx(prewalk_handler, ctx)?;
-            ctx.bind(
-              name,
-              Variable::immutable(value.data.clone()).with_kind(kind.clone()),
-              name_source_trace.clone(),
-            );
-          }
-          body.walk_with_ctx(prewalk_handler, ctx)?;
-          for (name, _, _, _) in bindings {
-            ctx.unbind(name);
-          }
-        }
-        Match(scrutinee, arms) => {
-          scrutinee.walk_with_ctx(prewalk_handler, ctx)?;
-          for (pattern, value) in arms {
-            pattern.walk_with_ctx(prewalk_handler, ctx)?;
-            let mut bound_names = vec![];
-            match &pattern.kind {
-              Name(n) => {
-                bound_names.push(n.clone());
-                ctx.bind(
-                  n,
-                  Variable {
-                    kind: VariableKind::Let,
-                    var_type: scrutinee.data.clone(),
-                  },
-                  pattern.source_trace.clone(),
-                )
-              }
-              Application(f, args) => {
-                if let Some((_, inner_exp, inner_name)) =
-                  Self::try_deconstruct_enum_pattern(f, args)
-                {
-                  bound_names.push(inner_name.clone());
-                  ctx.bind(
-                    &inner_name,
-                    Variable {
-                      kind: VariableKind::Let,
-                      var_type: inner_exp.data.clone(),
-                    },
-                    inner_exp.source_trace.clone(),
-                  );
-                }
-              }
-              _ => {}
-            }
-            value.walk_with_ctx(prewalk_handler, ctx)?;
-            for name in bound_names {
-              ctx.unbind(&name);
-            }
-          }
-        }
-        Block(expressions) => {
-          for subexp in expressions {
-            subexp.walk_with_ctx(prewalk_handler, ctx)?;
-          }
-        }
-        ForLoop {
-          increment_variable_initial_value_expression,
-          continue_condition_expression,
-          update_expression,
-          body_expression,
-          increment_variable_name,
-          increment_variable_type,
-          ..
-        } => {
-          ctx.bind(
-            &increment_variable_name.0,
-            Variable::immutable(increment_variable_type.clone().into())
-              .with_kind(VariableKind::Var),
-            increment_variable_name.1.clone(),
-          );
-          increment_variable_initial_value_expression
-            .walk_with_ctx(prewalk_handler, ctx)?;
-          continue_condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
-          if let Some(update_expression) = update_expression {
-            update_expression.walk_with_ctx(prewalk_handler, ctx)?;
-          }
-          body_expression.walk_with_ctx(prewalk_handler, ctx)?;
-          ctx.unbind(&increment_variable_name.0);
-        }
-        WhileLoop {
-          condition_expression,
-          body_expression,
-        } => {
-          condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
-          body_expression.walk_with_ctx(prewalk_handler, ctx)?;
-        }
-        Return(exp) => exp.walk_with_ctx(prewalk_handler, ctx)?,
-        ArrayLiteral(children) => {
-          for child in children {
-            child.walk_with_ctx(prewalk_handler, ctx)?;
-          }
-        }
-        _ => {}
-      }
-    }
-    Ok(())
-  }
-  pub fn walk_mut_with_ctx<E>(
+  pub(crate) fn walk_mut_with_ctx<E>(
     &mut self,
     prewalk_handler: &mut impl FnMut(
       &mut Self,
@@ -3209,7 +3071,7 @@ impl TypedExp {
   /// `AmbiguousOverload` for a name still choosing between several function
   /// overloads, `CouldntInferTypes` otherwise (unless there's an ambiguous
   /// overload, which explains them).
-  pub fn find_untyped(&mut self) -> Vec<CompileError> {
+  pub(crate) fn find_untyped(&mut self) -> Vec<CompileError> {
     let mut untyped = vec![];
     self
       .walk_mut::<()>(&mut |exp| {
@@ -3242,7 +3104,7 @@ impl TypedExp {
     }
     untyped
   }
-  pub fn validate_match_blocks(&mut self, errors: &mut ErrorLog) {
+  pub(crate) fn validate_match_blocks(&mut self, errors: &mut ErrorLog) {
     self
       .walk_mut(&mut |exp| {
         match &mut exp.kind {
@@ -3410,7 +3272,7 @@ impl TypedExp {
     }
     None
   }
-  pub fn try_deconstruct_enum_pattern<'a>(
+  pub(crate) fn try_deconstruct_enum_pattern<'a>(
     f: &'a Box<TypedExp>,
     args: &'a Vec<TypedExp>,
   ) -> Option<(&'a Box<FunctionSignature>, &'a TypedExp, Arc<str>)> {
@@ -4142,7 +4004,7 @@ impl TypedExp {
   /// Infers what it can of this expression's types. `const_generics` are
   /// the enclosing function's const generics, which its body can read as
   /// `u32` values (see `TypedExp::fill_const_generic_values`).
-  pub fn propagate_types(
+  pub(crate) fn propagate_types(
     &mut self,
     program: &mut Program,
     const_generics: &[Arc<str>],
@@ -4153,7 +4015,7 @@ impl TypedExp {
       errors,
     )
   }
-  pub fn name_or_inner_accessed_name(&self) -> Option<&Arc<str>> {
+  pub(crate) fn name_or_inner_accessed_name(&self) -> Option<&Arc<str>> {
     let mut exp = self;
     loop {
       match &exp.kind {
@@ -4300,7 +4162,7 @@ impl TypedExp {
   }
   /// Checks that every assignment's target can be assigned to. The
   /// function's `const_generics` are immutable values.
-  pub fn validate_assignments(
+  pub(crate) fn validate_assignments(
     &self,
     program: &Program,
     const_generics: &[Arc<str>],
@@ -4312,7 +4174,7 @@ impl TypedExp {
       ),
     )
   }
-  pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
+  pub(crate) fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
     self
       .walk_mut::<()>(&mut |exp| {
         if let Known(t) = &mut exp.data.kind {
@@ -4328,7 +4190,7 @@ impl TypedExp {
   /// substitutions don't leak through unification-variable Arcs shared with the
   /// generic template or sibling specializations (see
   /// `TypeState::snapshot_owned`).
-  pub fn snapshot_types(&mut self) {
+  pub(crate) fn snapshot_types(&mut self) {
     self
       .walk_mut::<()>(&mut |exp| {
         exp.data.kind.snapshot_owned();
@@ -4336,7 +4198,7 @@ impl TypedExp {
       })
       .unwrap()
   }
-  pub fn replace_const_generic_skolems(
+  pub(crate) fn replace_const_generic_skolems(
     &mut self,
     bindings: &HashMap<Arc<str>, u32>,
   ) {
@@ -4353,7 +4215,7 @@ impl TypedExp {
   /// has in this instantiation: a `u32` literal. Deshadowing renamed every
   /// local that shared a const generic's name, so a name in `bindings` is
   /// always the generic.
-  pub fn fill_const_generic_values(
+  pub(crate) fn fill_const_generic_values(
     &mut self,
     bindings: &HashMap<Arc<str>, u32>,
   ) {
@@ -4368,7 +4230,7 @@ impl TypedExp {
       })
       .unwrap()
   }
-  pub fn monomorphize(
+  pub(crate) fn monomorphize(
     &mut self,
     base_program: &Program,
     new_program: &mut Program,
@@ -4745,7 +4607,7 @@ impl TypedExp {
       })
       .unwrap();
   }
-  pub fn monomorphize_reference_address_spaces(
+  pub(crate) fn monomorphize_reference_address_spaces(
     &mut self,
     base_program: &Program,
     new_program: &mut Program,
@@ -5115,7 +4977,7 @@ impl TypedExp {
       Ok(true)
     });
   }
-  pub fn inline_higher_order_arguments(
+  pub(crate) fn inline_higher_order_arguments(
     &mut self,
     new_ctx: &mut Program,
   ) -> CompileResult<bool> {
@@ -5217,7 +5079,7 @@ impl TypedExp {
     })?;
     Ok(changed)
   }
-  pub fn assignment_function(inner_type: ExpTypeInfo) -> Self {
+  pub(crate) fn assignment_function(inner_type: ExpTypeInfo) -> Self {
     TypedExp {
       kind: ExpKind::Name("=".into()),
       data: Type::Function(
@@ -5248,7 +5110,7 @@ impl TypedExp {
   /// `DeshadowScope`). The function's `const_generics` count as bound
   /// throughout, so a local sharing one's name is renamed and the name
   /// always means the generic.
-  pub fn deshadow(
+  pub(crate) fn deshadow(
     &mut self,
     globals: &GlobalNames,
     const_generics: &[Arc<str>],
@@ -5362,7 +5224,7 @@ impl TypedExp {
       })
       .unwrap()
   }
-  pub fn validate_control_flow(
+  pub(crate) fn validate_control_flow(
     &self,
     errors: &mut ErrorLog,
     enclosing_loop_count: usize,
@@ -5446,7 +5308,7 @@ impl TypedExp {
   /// arguments: the writes the application itself performs, as opposed to
   /// those of its callee's body or of its arguments' own subexpressions.
   /// Empty for anything but a function application.
-  pub fn argument_writes(&self) -> EffectType {
+  pub(crate) fn argument_writes(&self) -> EffectType {
     self
       .argument_write_targets()
       .into_iter()
@@ -5458,7 +5320,7 @@ impl TypedExp {
   /// The globals an application writes only part of (an element or field)
   /// through its mutable-reference arguments. Such a write modifies the rest
   /// of the global too, so the CPU copy must be current when it lands.
-  pub fn partially_written_globals(&self) -> Vec<Arc<str>> {
+  pub(crate) fn partially_written_globals(&self) -> Vec<Arc<str>> {
     self
       .argument_write_targets()
       .into_iter()
@@ -5530,7 +5392,7 @@ impl TypedExp {
     self.effects_with(&mut EffectsMemo::default())
   }
   /// [`Self::effects`], reusing `memo`'s callee effects.
-  pub fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
+  pub(crate) fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
     let mut e = match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
       // A statement after one that can exit only runs in the invocations
@@ -5821,7 +5683,7 @@ impl TypedExp {
   /// block, a `let`, a `match`, a loop) depends on everything they read,
   /// which covers what its locals hold and the conditions it's computed
   /// under.
-  pub fn uniformity_sources(
+  pub(crate) fn uniformity_sources(
     &self,
     memo: &mut EffectsMemo,
   ) -> HashSet<UniformitySource> {
@@ -5952,7 +5814,7 @@ impl TypedExp {
       .unwrap();
     written
   }
-  pub fn catch_duplicate_closures_capturing_mutable_variables(
+  pub(crate) fn catch_duplicate_closures_capturing_mutable_variables(
     &mut self,
     program: &Program,
     errors: &mut ErrorLog,
@@ -6082,7 +5944,7 @@ impl TypedExp {
   /// is a reference, but the temporary holding it is a value. Emission
   /// dereferences names by their ownership, so this is settled here, once,
   /// from the bindings.
-  pub fn mark_value_names_owned(&mut self) {
+  pub(crate) fn mark_value_names_owned(&mut self) {
     let values = self.local_bindings().values;
     self
       .walk_mut(&mut |exp| {
@@ -7148,7 +7010,10 @@ impl TypedExp {
     });
     true
   }
-  pub fn throw_away_inner_values_in_blocks(&mut self, program: &Program) {
+  pub(crate) fn throw_away_inner_values_in_blocks(
+    &mut self,
+    program: &Program,
+  ) {
     self
       .walk_mut(&mut |exp| {
         match &mut exp.kind {
@@ -7185,7 +7050,7 @@ impl TypedExp {
   /// in `(arr (next-index))`) to a temporary, so the place can be written
   /// once per vector component while its indices are evaluated exactly
   /// once. Returns the bindings, in evaluation order.
-  pub fn bind_place_indices(
+  pub(crate) fn bind_place_indices(
     &mut self,
     names: &mut NameContext,
   ) -> Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)> {
@@ -7244,7 +7109,10 @@ impl TypedExp {
     walk(self, &mut bindings, &mut bind);
     bindings
   }
-  pub fn desugar_swizzle_assignments(&mut self, names: &mut NameContext) {
+  pub(crate) fn desugar_swizzle_assignments(
+    &mut self,
+    names: &mut NameContext,
+  ) {
     if let ExpKind::Application(f, args) = &self.kind
       && let ExpKind::Name(f_name) = &f.kind
       && &**f_name == "="
@@ -7316,7 +7184,7 @@ impl TypedExp {
       );
     }
   }
-  pub fn is_literal_struct_constructor(&self) -> bool {
+  pub(crate) fn is_literal_struct_constructor(&self) -> bool {
     match &self.kind {
       NumberLiteral(_) | BooleanLiteral(_) => true,
       Application(f, args) => match &f.data.unwrap_known() {
@@ -7344,7 +7212,7 @@ impl TypedExp {
 /// The top-level names a function body can refer to, and the identifiers
 /// every top-level definition (these, types, and enum variants) compiles to,
 /// along with WGSL's predeclared names.
-pub struct GlobalNames {
+pub(crate) struct GlobalNames {
   names: HashSet<Arc<str>>,
   compiled: HashSet<String>,
 }

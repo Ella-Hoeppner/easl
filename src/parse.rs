@@ -263,7 +263,7 @@ impl EaslMultiDocument {
     docs.add_document(document, path, source);
     docs
   }
-  pub fn add_document(
+  pub(crate) fn add_document(
     &mut self,
     mut document: EaslDocument,
     path: String,

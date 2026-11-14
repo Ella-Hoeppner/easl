@@ -47,7 +47,10 @@ impl EntryPoint {
       EntryPoint::Audio => "audio",
     }
   }
-  pub fn should_compile_to_target(&self, target: CompilerTarget) -> bool {
+  pub(crate) fn should_compile_to_target(
+    &self,
+    target: CompilerTarget,
+  ) -> bool {
     use EntryPoint::*;
     match target {
       CompilerTarget::WGSL => {
@@ -114,7 +117,7 @@ impl BuiltinIOAttribute {
       NumWorkgroups,
     ]
   }
-  pub fn value_type(&self) -> Type {
+  pub(crate) fn value_type(&self) -> Type {
     match self {
       VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
       | SampleMask => Type::U32,
@@ -146,7 +149,7 @@ impl BuiltinIOAttribute {
       ),
     }
   }
-  pub fn abstract_type(&self) -> AbstractType {
+  pub(crate) fn abstract_type(&self) -> AbstractType {
     match self {
       VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
       | SampleMask => AbstractType::Type(Type::U32),
@@ -166,7 +169,7 @@ impl BuiltinIOAttribute {
       ),
     }
   }
-  pub fn is_type_compatible(&self, t: &Type) -> bool {
+  pub(crate) fn is_type_compatible(&self, t: &Type) -> bool {
     match self {
       VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
       | SampleMask => *t == Type::U32,
@@ -178,7 +181,7 @@ impl BuiltinIOAttribute {
       FragDepth => *t == Type::F32,
     }
   }
-  pub fn from_name(name: &str) -> Option<Self> {
+  pub(crate) fn from_name(name: &str) -> Option<Self> {
     Some(match name {
       "vertex-index" => VertexIndex,
       "instance-index" => InstanceIndex,
@@ -212,7 +215,7 @@ impl BuiltinIOAttribute {
       NumWorkgroups => "num-workgroups",
     }
   }
-  pub fn compiled_name(&self) -> &'static str {
+  pub(crate) fn compiled_name(&self) -> &'static str {
     match self {
       VertexIndex => "vertex_index",
       InstanceIndex => "instance_index",
@@ -228,7 +231,7 @@ impl BuiltinIOAttribute {
       NumWorkgroups => "num_workgroups",
     }
   }
-  pub fn is_valid_input_for_stage(&self, entry: &EntryPoint) -> bool {
+  pub(crate) fn is_valid_input_for_stage(&self, entry: &EntryPoint) -> bool {
     use EntryPoint::*;
     match (entry, self) {
       (Fragment, Position | FrontFacing | SampleIndex | SampleMask) => true,
@@ -241,7 +244,7 @@ impl BuiltinIOAttribute {
       _ => false,
     }
   }
-  pub fn is_valid_output_for_stage(&self, entry: &EntryPoint) -> bool {
+  pub(crate) fn is_valid_output_for_stage(&self, entry: &EntryPoint) -> bool {
     use EntryPoint::*;
     match (entry, self) {
       (Fragment, FragDepth | SampleMask) => true,
@@ -252,7 +255,7 @@ impl BuiltinIOAttribute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InterpolationKind {
+pub(crate) enum InterpolationKind {
   Perspective,
   Linear,
   Flat,
@@ -269,7 +272,7 @@ impl InterpolationKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InterpolationSampling {
+pub(crate) enum InterpolationSampling {
   Center,
   Centroid,
   Sample,
@@ -317,13 +320,16 @@ impl Interpolation {
     kind: Flat,
     sampling: First,
   };
-  pub fn is_flat(&self) -> bool {
+  pub(crate) fn is_flat(&self) -> bool {
     self.kind == Flat
   }
   /// How a value of `value_type` passed between stages is interpolated:
   /// as `written`, or by default `perspective-center`, except integers,
   /// which are always flat.
-  pub fn between_stages(written: Option<&Self>, value_type: &Type) -> Self {
+  pub(crate) fn between_stages(
+    written: Option<&Self>,
+    value_type: &Type,
+  ) -> Self {
     match written {
       Some(written) => *written,
       None if value_type.is_integer_scalar_or_vector() => Self::FLAT,
@@ -451,7 +457,7 @@ impl IOAttribute {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IOAttributes {
   pub attributes: Vec<IOAttribute>,
-  pub attributed_source: SourceTrace,
+  pub(crate) attributed_source: SourceTrace,
 }
 
 impl IOAttributes {
@@ -464,7 +470,7 @@ impl IOAttributes {
   pub fn is_empty(&self) -> bool {
     self.attributes.is_empty()
   }
-  pub fn has_builtin_io_attribute(
+  pub(crate) fn has_builtin_io_attribute(
     &self,
     attribute: BuiltinIOAttribute,
   ) -> bool {
@@ -472,7 +478,7 @@ impl IOAttributes {
       arg_attribute.kind == IOAttributeKind::Builtin(attribute)
     })
   }
-  pub fn source_trace_if_not_empty(&self) -> Option<SourceTrace> {
+  pub(crate) fn source_trace_if_not_empty(&self) -> Option<SourceTrace> {
     if !self.attributes.is_empty() {
       let mut source_trace = self.attributes[0].source_trace.clone();
       for attribute in &self.attributes[1..] {
@@ -534,7 +540,7 @@ impl IOAttributes {
     }
     s
   }
-  pub fn try_add_attribute(
+  pub(crate) fn try_add_attribute(
     &mut self,
     attribute: IOAttribute,
     errors: &mut ErrorLog,
@@ -552,7 +558,7 @@ impl IOAttributes {
     }
     self.attributes.push(attribute)
   }
-  pub fn parse_from_annotation(
+  pub(crate) fn parse_from_annotation(
     annotation: Annotation,
     arg_or_field_name: Option<(Arc<str>, SourceTrace)>,
     errors: &mut ErrorLog,

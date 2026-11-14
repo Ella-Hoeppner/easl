@@ -48,7 +48,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionArgumentAnnotation {
+pub(crate) struct FunctionArgumentAnnotation {
   pub var: bool,
   pub ownership: Ownership,
   pub attributes: IOAttributes,
@@ -66,10 +66,10 @@ impl FunctionArgumentAnnotation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
-  pub name_source_trace: SourceTrace,
-  pub arg_names: Vec<(Arc<str>, SourceTrace)>,
-  pub arg_annotations: Vec<FunctionArgumentAnnotation>,
-  pub return_attributes: IOAttributes,
+  pub(crate) name_source_trace: SourceTrace,
+  pub(crate) arg_names: Vec<(Arc<str>, SourceTrace)>,
+  pub(crate) arg_annotations: Vec<FunctionArgumentAnnotation>,
+  pub(crate) return_attributes: IOAttributes,
   pub entry_point: Option<EntryPoint>,
   /// A fragment entry the program draws with (`dispatch-render-shaders`),
   /// whose pipelines easl's runtime builds — as opposed to one only
@@ -78,10 +78,10 @@ pub struct TopLevelFunction {
   pub directly_user_written: bool,
   /// A vertex entry's data parameters' layouts, in order, once
   /// `Program::resolve_vertex_inputs` has run.
-  pub vertex_inputs: Vec<VertexInputLayout>,
+  pub(crate) vertex_inputs: Vec<VertexInputLayout>,
   /// Struct parameters this vertex entry flattens because another entry
   /// infers different locations for the struct.
-  pub flattened_vertex_params: Vec<usize>,
+  pub(crate) flattened_vertex_params: Vec<usize>,
   pub expression: TypedExp,
 }
 
@@ -93,7 +93,7 @@ pub struct TopLevelFunction {
 /// it came from alive), which still pins their allocations, so identity
 /// comparisons can't be fooled by a reused address.
 #[derive(Debug, Clone)]
-pub struct SpecializationOrigin {
+pub(crate) struct SpecializationOrigin {
   callee: Weak<RwLock<TopLevelFunction>>,
   argument_index: usize,
   inlined: InlinedFunction,
@@ -145,7 +145,7 @@ impl TopLevelFunction {
   /// parameter rebinding, for parameters that become owned after it (a
   /// stateful function value read out of an array parameter, a scope
   /// parameter whose variant takes it by value).
-  pub fn make_referenced_params_addressable(
+  pub(crate) fn make_referenced_params_addressable(
     &mut self,
     names: &RwLock<NameContext>,
   ) {
@@ -206,7 +206,7 @@ impl TopLevelFunction {
     };
     self.arg_names = expression_names.clone();
   }
-  pub fn derived_from(&self) -> Self {
+  pub(crate) fn derived_from(&self) -> Self {
     let mut derived = self.clone();
     derived.directly_user_written = false;
     derived
@@ -221,7 +221,7 @@ impl TopLevelFunction {
   /// so this runs once per call site; a removal driven by a caller's
   /// indices instead of these lists' own contents over-removed here,
   /// nondeterministically with registry iteration order.
-  pub fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
+  pub(crate) fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
     let mut removed_indices: Vec<usize> = vec![];
     self.expression.data.as_known_mut(|t| {
       if let Type::Function(function_signature) = t {
@@ -348,16 +348,16 @@ pub enum FunctionTargetConfiguration {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub name: Arc<str>,
-  pub generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
+  pub(crate) generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
   pub arg_types: Vec<(AbstractType, Ownership)>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
   pub associative: bool,
-  pub captured_scope: Option<AbstractStruct>,
+  pub(crate) captured_scope: Option<AbstractStruct>,
   pub entry_point: Option<EntryPoint>,
   /// For a higher-order specialization, what it specializes; call sites
   /// needing the same specialization find it in the registry by this.
-  pub specialized_from: Option<SpecializationOrigin>,
+  pub(crate) specialized_from: Option<SpecializationOrigin>,
 }
 
 impl Default for AbstractFunctionSignature {
@@ -380,7 +380,7 @@ impl Default for AbstractFunctionSignature {
   }
 }
 
-pub fn is_vec_name(name: &str) -> bool {
+pub(crate) fn is_vec_name(name: &str) -> bool {
   matches!(
     name,
     "vec2"
@@ -401,7 +401,7 @@ pub fn is_vec_name(name: &str) -> bool {
   )
 }
 
-pub fn extract_vec_size(name: &str) -> Option<usize> {
+pub(crate) fn extract_vec_size(name: &str) -> Option<usize> {
   match name {
     "vec2" | "vec2f" | "vec2i" | "vec2u" | "vec2b" => Some(2usize),
     "vec3" | "vec3f" | "vec3i" | "vec3u" | "vec3b" => Some(3usize),
@@ -410,7 +410,7 @@ pub fn extract_vec_size(name: &str) -> Option<usize> {
   }
 }
 
-pub fn extract_mat_size(name: &str) -> Option<(usize, usize)> {
+pub(crate) fn extract_mat_size(name: &str) -> Option<(usize, usize)> {
   if name.len() < 6 || !name.starts_with("mat") {
     return None;
   }
@@ -439,7 +439,7 @@ impl AbstractFunctionSignature {
   /// This function's name, if it's a builtin WGSL requires to be called in
   /// uniform control flow: a barrier, or one that takes derivatives (all
   /// the fragment-only builtins).
-  pub fn uniform_control_builtin(&self) -> Option<Arc<str>> {
+  pub(crate) fn uniform_control_builtin(&self) -> Option<Arc<str>> {
     let FunctionImplementationKind::Builtin { effect_type, .. } =
       &self.implementation
     else {
@@ -455,7 +455,7 @@ impl AbstractFunctionSignature {
   }
   /// The names of this function's const generics, which its body can read
   /// as `u32` values.
-  pub fn const_generic_names(&self) -> Vec<Arc<str>> {
+  pub(crate) fn const_generic_names(&self) -> Vec<Arc<str>> {
     self
       .generic_args
       .iter()
@@ -465,13 +465,13 @@ impl AbstractFunctionSignature {
       .map(|(name, _, _)| name.clone())
       .collect()
   }
-  pub fn is_builtin_vector_constructor(&self) -> bool {
+  pub(crate) fn is_builtin_vector_constructor(&self) -> bool {
     matches!(
       &self.implementation,
       FunctionImplementationKind::Builtin { .. }
     ) && is_vec_name(&*self.name)
   }
-  pub fn reference_arg_positions(&self) -> Vec<usize> {
+  pub(crate) fn reference_arg_positions(&self) -> Vec<usize> {
     self
       .arg_types
       .iter()
@@ -482,7 +482,7 @@ impl AbstractFunctionSignature {
       })
       .collect()
   }
-  pub fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
+  pub(crate) fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
     if let FunctionImplementationKind::Composite(implementation) =
       &self.implementation
     {
@@ -498,7 +498,7 @@ impl AbstractFunctionSignature {
         .remove_unitlike_arguments(names);
     }
   }
-  pub fn inline_def_array_sizes(&mut self, sizes: &ArraySizeConstants) {
+  pub(crate) fn inline_def_array_sizes(&mut self, sizes: &ArraySizeConstants) {
     for (arg_type, _) in self.arg_types.iter_mut() {
       arg_type
         .walk_mut(&mut |t| {
@@ -535,7 +535,10 @@ impl AbstractFunctionSignature {
       })
       .unwrap();
   }
-  pub fn representative_type(&self, names: &mut NameContext) -> AbstractStruct {
+  pub(crate) fn representative_type(
+    &self,
+    names: &mut NameContext,
+  ) -> AbstractStruct {
     if let Some(captured_scope) = &self.captured_scope {
       return captured_scope.clone();
     }
@@ -872,7 +875,7 @@ impl AbstractFunctionSignature {
       rename_generics(self.return_type.clone()),
     )
   }
-  pub fn arg_names(
+  pub(crate) fn arg_names(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<Vec<(Arc<str>, SourceTrace)>> {
@@ -880,16 +883,6 @@ impl AbstractFunctionSignature {
       Ok(f.read().unwrap().arg_names.clone())
     } else {
       err(ExpectedCompositeFunction, source_trace.clone())
-    }
-  }
-  pub fn arg_annotations(
-    &self,
-    source_trace: SourceTrace,
-  ) -> CompileResult<Vec<FunctionArgumentAnnotation>> {
-    if let FunctionImplementationKind::Composite(f) = &self.implementation {
-      Ok(f.read().unwrap().arg_annotations.clone())
-    } else {
-      err(ExpectedCompositeFunction, source_trace)
     }
   }
   pub fn implementation(
@@ -902,7 +895,7 @@ impl AbstractFunctionSignature {
       err(ExpectedCompositeFunction, source_trace)
     }
   }
-  pub fn generate_monomorphized(
+  pub(crate) fn generate_monomorphized(
     &self,
     arg_types: Vec<Type>,
     return_type: Type,
@@ -1011,7 +1004,7 @@ impl AbstractFunctionSignature {
     }
     Ok(monomorphized)
   }
-  pub fn generate_higher_order_argument_inlined_version(
+  pub(crate) fn generate_higher_order_argument_inlined_version(
     &self,
     f_name: Arc<str>,
     argument_index: usize,
@@ -1144,7 +1137,10 @@ impl AbstractFunctionSignature {
   /// it rejects every concretization, either by arity or by a parameter
   /// whose concrete form doesn't depend on generics
   /// (`AbstractType::may_be_compatible_with`).
-  pub fn may_accept_arguments(&self, arg_types: &[&mut TypeState]) -> bool {
+  pub(crate) fn may_accept_arguments(
+    &self,
+    arg_types: &[&mut TypeState],
+  ) -> bool {
     if arg_types.len() == self.arg_types.len() {
       self
         .arg_types
@@ -1159,7 +1155,7 @@ impl AbstractFunctionSignature {
         })
     }
   }
-  pub fn concretize(
+  pub(crate) fn concretize(
     f: Arc<RwLock<Self>>,
     typedefs: &TypeDefs,
     source_trace: &SourceTrace,
@@ -1313,7 +1309,7 @@ impl AbstractFunctionSignature {
 
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
-  pub abstract_ancestor: Option<Arc<RwLock<AbstractFunctionSignature>>>,
+  pub(crate) abstract_ancestor: Option<Arc<RwLock<AbstractFunctionSignature>>>,
   pub args: Vec<(Variable, Vec<TypeConstraint>)>,
   pub return_type: ExpTypeInfo,
 }
@@ -1328,7 +1324,7 @@ impl FunctionSignature {
   /// The scope struct a closure value of this type carries: the captured
   /// scope of the function it denotes. `None` for a function without
   /// captures, or one not yet resolved to a function.
-  pub fn closure_scope(&self) -> Option<AbstractStruct> {
+  pub(crate) fn closure_scope(&self) -> Option<AbstractStruct> {
     self
       .abstract_ancestor
       .as_ref()?
@@ -1352,7 +1348,10 @@ impl FunctionSignature {
         })
         .is_some()
   }
-  pub fn are_args_compatible(&self, arg_types: &[&mut TypeState]) -> bool {
+  pub(crate) fn are_args_compatible(
+    &self,
+    arg_types: &[&mut TypeState],
+  ) -> bool {
     if arg_types.len() != self.args.len() {
       if let Some(ancestor) = &self.abstract_ancestor {
         if ancestor.read().unwrap().associative {
@@ -1392,7 +1391,7 @@ impl FunctionSignature {
     }
     true
   }
-  pub fn mutually_constrain_arguments(
+  pub(crate) fn mutually_constrain_arguments(
     &mut self,
     mut args: Vec<&mut TypeState>,
     source_trace: SourceTrace,
@@ -1441,7 +1440,7 @@ impl FunctionSignature {
     Self::callee_effects(&self.abstract_ancestor, &mut EffectsMemo::default())
   }
   /// The effects of calling a function whose type has this ancestor.
-  pub fn callee_effects(
+  pub(crate) fn callee_effects(
     abstract_ancestor: &Option<Arc<RwLock<AbstractFunctionSignature>>>,
     memo: &mut EffectsMemo,
   ) -> EffectType {
@@ -1457,7 +1456,7 @@ impl FunctionSignature {
       Effect::InvokesUnknownFunction.into()
     }
   }
-  pub fn unwrap_type_signature(&self) -> Vec<Type> {
+  pub(crate) fn unwrap_type_signature(&self) -> Vec<Type> {
     self
       .args
       .iter()
@@ -1468,15 +1467,10 @@ impl FunctionSignature {
   }
 }
 
-pub struct BuiltInFunction {
-  pub name: Arc<str>,
-  pub signature: AbstractFunctionSignature,
-}
-
 impl TopLevelFunction {
   /// Whether this function's output includes a `@{builtin frag-depth}`:
   /// its return value, or a field of the struct it returns.
-  pub fn writes_frag_depth(&self) -> bool {
+  pub(crate) fn writes_frag_depth(&self) -> bool {
     let is_frag_depth = |attributes: &IOAttributes| {
       matches!(
         attributes.builtin(),
@@ -1501,7 +1495,7 @@ impl TopLevelFunction {
   /// one isn't emitted to WGSL. A `@ref` runtime-sized param is fine: the
   /// only runtime-sized lvalues in GPU code are whole storage globals,
   /// which the reference monomorphizer inlines in place of the param.
-  pub fn wgsl_runtime_sized_errors(&self) -> Vec<CompileError> {
+  pub(crate) fn wgsl_runtime_sized_errors(&self) -> Vec<CompileError> {
     let mut errors = vec![];
     let Type::Function(signature) = self.expression.data.unwrap_known() else {
       return errors;
@@ -1554,7 +1548,7 @@ impl TopLevelFunction {
   /// a reference anyway), or through an entry-point marking the target
   /// doesn't compile. `unemittable_globals` is
   /// `Program::wgsl_unemittable_globals` (empty for other targets).
-  pub fn is_valid_for_target(
+  pub(crate) fn is_valid_for_target(
     &self,
     program: &Program,
     target: CompilerTarget,
@@ -1827,7 +1821,7 @@ impl TopLevelFunction {
   /// [`Self::effects`], reusing `memo`'s callee effects. A uniformity
   /// requirement on a parameter becomes one on the argument at its index,
   /// which each call resolves into what it passes.
-  pub fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
+  pub(crate) fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
     let ExpKind::Function(params, _) = &self.expression.kind else {
       return EffectType::empty();
     };
@@ -1846,7 +1840,7 @@ impl TopLevelFunction {
     }
     effects
   }
-  pub fn compile_to_bytecode(
+  pub(crate) fn compile_to_bytecode(
     &self,
     f_name: &Arc<str>,
     state: &mut BytecodeCompilationState,
@@ -1898,7 +1892,7 @@ impl TopLevelFunction {
 /// while no function body is rewritten: one effects computation (what
 /// `effects()` does), or a pass that only reads bodies.
 #[derive(Default)]
-pub struct EffectsMemo {
+pub(crate) struct EffectsMemo {
   /// By implementation address. Each entry holds its implementation, so no
   /// address is reused while the memo exists.
   callees: HashMap<usize, (Arc<RwLock<TopLevelFunction>>, EffectType)>,

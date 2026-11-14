@@ -149,7 +149,10 @@ impl Program {
   /// within WebGPU's default limits. Runs before the dispatched-closure
   /// lift and implicit entry marking, which then treat each copy like any
   /// dispatched function.
-  pub fn specialize_dispatch_workgroup_sizes(&mut self, errors: &mut ErrorLog) {
+  pub(crate) fn specialize_dispatch_workgroup_sizes(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
     let two_argument_dispatch = self
       .abstract_functions
       .get("dispatch-compute-shader")
@@ -255,7 +258,7 @@ impl Program {
   /// of different sizes read the running one's. Runs after implicit entry
   /// marking (every compute entry's size is known) and context
   /// exclusivity (which rejects the calls outside compute shaders).
-  pub fn extract_workgroup_size(&mut self) {
+  pub(crate) fn extract_workgroup_size(&mut self) {
     let var_name: Arc<str> = WORKGROUP_SIZE_VAR.into();
     let mut size_type: Option<Type> = None;
     let implementations: Vec<_> = self

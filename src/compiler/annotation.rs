@@ -66,7 +66,7 @@ impl Display for Annotation {
 }
 
 impl Annotation {
-  pub fn from_annotation_tree(ast: EaslTree) -> CompileResult<Self> {
+  pub(crate) fn from_annotation_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
       EaslTree::Leaf(pos, singular) => {
         let source_trace: SourceTrace = pos.into();
@@ -155,13 +155,6 @@ impl Annotation {
         }
       })
   }
-  pub fn compile_optional(maybe_self: Option<Self>) -> String {
-    if let Some(annotation) = maybe_self {
-      annotation.compile()
-    } else {
-      String::new()
-    }
-  }
   pub fn properties(
     &self,
   ) -> Vec<(Arc<str>, SourceTrace, Option<(Arc<str>, SourceTrace)>)> {
@@ -190,7 +183,7 @@ impl Annotation {
         .collect(),
     }
   }
-  pub fn validate_as_top_level_var_data(
+  pub(crate) fn validate_as_top_level_var_data(
     &self,
   ) -> CompileResult<(
     Option<GroupAndBinding>,
@@ -404,7 +397,7 @@ impl Default for FunctionAnnotation {
   }
 }
 
-pub fn extract_annotation(
+pub(crate) fn extract_annotation(
   exp: EaslTree,
   errors: &mut ErrorLog,
 ) -> (EaslTree, Option<Annotation>) {

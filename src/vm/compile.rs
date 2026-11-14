@@ -41,15 +41,15 @@ use crate::vm::bytecode::{
 // compiler emits a Code, the VM executes it.
 
 #[derive(Debug, Clone)]
-pub struct IntermediateBytecodeFunction {
+pub(crate) struct IntermediateBytecodeFunction {
   pub name: Arc<str>,
-  pub instructions: Range<u32>,
-  pub stack_frame_start: u16,
-  pub arg_positions: Vec<u16>,
-  pub arg_sizes: Vec<u16>,
+  pub(crate) instructions: Range<u32>,
+  pub(crate) stack_frame_start: u16,
+  pub(crate) arg_positions: Vec<u16>,
+  pub(crate) arg_sizes: Vec<u16>,
   /// Scratch slots (start, size) that every value copy in this function
   /// shares for the destination's old words (see `emit_copy_with_plan`).
-  pub copy_scratch: Option<(u16, u16)>,
+  pub(crate) copy_scratch: Option<(u16, u16)>,
 }
 
 /// Where a per-usage-specialized function's argument lives at one call
@@ -60,23 +60,12 @@ pub struct IntermediateBytecodeFunction {
 /// `DynStore`) as reads of the global itself: true aliasing, no
 /// per-call copy of the array.
 #[derive(Clone, Copy)]
-pub enum RefArgBinding {
+pub(crate) enum RefArgBinding {
   Slot(u16),
   DynRegion { region: u16, stride: u16 },
 }
 
-impl RefArgBinding {
-  /// The stack slot of an owned arg's binding (owned args are always
-  /// slot-backed; only ref args can bind to a region).
-  pub fn owned_slot(&self) -> u16 {
-    match self {
-      RefArgBinding::Slot(slot) => *slot,
-      RefArgBinding::DynRegion { .. } => {
-        panic!("owned function argument bound to a dynamic-memory region")
-      }
-    }
-  }
-}
+impl RefArgBinding {}
 
 /// A write-back recorded while compiling a mutable-position element
 /// lookup, emitted when the enclosing application's arguments and call
@@ -97,14 +86,14 @@ impl RefArgBinding {
 /// assignment left-hand sides) — the full preload + pending-write-back
 /// convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompilePosition {
+pub(crate) enum CompilePosition {
   Value,
   Ref,
   MutRef,
 }
 
 impl CompilePosition {
-  pub fn from_ownership(ownership: Ownership) -> Self {
+  pub(crate) fn from_ownership(ownership: Ownership) -> Self {
     match ownership {
       Ownership::Owned => CompilePosition::Value,
       Ownership::Reference
@@ -117,7 +106,7 @@ impl CompilePosition {
   }
 }
 
-pub enum PendingWriteBack {
+pub(crate) enum PendingWriteBack {
   Raw(Instruction),
   /// Ownership-correct element write-back into an embedding-element
   /// container (see `emit_owned_element_write_back`).
@@ -153,18 +142,18 @@ pub enum PendingWriteBack {
   },
 }
 
-pub struct PendingRefFnUsage {
+pub(crate) struct PendingRefFnUsage {
   pub name: Arc<str>,
-  pub fn_dispatch_position: u32,
+  pub(crate) fn_dispatch_position: u32,
   /// `(arg index, patch group)` of the placeholder copy group emitted for
   /// each *owned* arg — ref args get no placeholders at all (they aren't
   /// copied at the call boundary; the per-usage specialization binds them
   /// directly to the caller's storage). The group's source slots, sizes,
   /// and jump targets are all filled at emission; resolution patches only
   /// the destination-relative operands the group recorded.
-  pub arg_move_positions: Vec<(usize, PendingCopyGroup)>,
-  pub return_move_position: u32,
-  pub arg_positions: Vec<RefArgBinding>,
+  pub(crate) arg_move_positions: Vec<(usize, PendingCopyGroup)>,
+  pub(crate) return_move_position: u32,
+  pub(crate) arg_positions: Vec<RefArgBinding>,
 }
 
 enum PatchedOperand {
@@ -186,7 +175,7 @@ struct PendingPatch {
 /// sources, sizes, condition/constant slots, jump targets (absolute
 /// instruction indices; the group is patched in place, never relocated) —
 /// is final at emission.
-pub struct PendingCopyGroup {
+pub(crate) struct PendingCopyGroup {
   start_position: u32,
   patches: Vec<PendingPatch>,
 }
@@ -228,40 +217,40 @@ impl PendingCopyGroup {
 /// `InvokeFunction` instruction, so what gets patched after the deferred
 /// compile is the `HostOp::SpawnWindow` payload instead of a call
 /// instruction.
-pub struct PendingFrameFnUsage {
+pub(crate) struct PendingFrameFnUsage {
   pub name: Arc<str>,
-  pub host_op_index: usize,
-  pub scope_slot: u16,
+  pub(crate) host_op_index: usize,
+  pub(crate) scope_slot: u16,
 }
 
-pub struct BytecodeCompilationState {
-  pub consumed_stack_space: u16,
+pub(crate) struct BytecodeCompilationState {
+  pub(crate) consumed_stack_space: u16,
   /// CPU-runtime mode: compile the `@cpu` entry and its callees, lowering
   /// CPU-exclusive builtins to host ops and emitting sync-check
   /// instructions. False for audio-mode compilation (the current default),
   /// which never emits `Op::HostCall`.
-  pub cpu_mode: bool,
-  pub host_ops: Vec<HostOp>,
-  pub host_types: Vec<Type>,
-  pub host_strings: Vec<Arc<str>>,
-  pub host_bindings: Vec<HostBinding>,
-  pub host_dispatches: Vec<HostDispatch>,
+  pub(crate) cpu_mode: bool,
+  pub(crate) host_ops: Vec<HostOp>,
+  pub(crate) host_types: Vec<Type>,
+  pub(crate) host_strings: Vec<Arc<str>>,
+  pub(crate) host_bindings: Vec<HostBinding>,
+  pub(crate) host_dispatches: Vec<HostDispatch>,
   /// Name → index into `host_bindings` for GPU-bound globals.
-  pub binding_indices: HashMap<Arc<str>, u16>,
+  pub(crate) binding_indices: HashMap<Arc<str>, u16>,
   /// Globals whose values live host-side (textures) rather than in VM
   /// stack slots or dynamic memory; also includes runtime-sized arrays (for
   /// binding-indexed host ops like `PrintBinding` and the sync checks).
-  pub dynamic_globals: HashMap<Arc<str>, u16>,
+  pub(crate) dynamic_globals: HashMap<Arc<str>, u16>,
   /// Runtime-sized array globals: name → (region index into
   /// `BytecodeProgram::dyn_memory`, element stride in words). Element and
   /// length accesses compile to the direct `Dyn*` opcodes.
-  pub dynamic_array_memory: HashMap<Arc<str>, (u16, u16)>,
+  pub(crate) dynamic_array_memory: HashMap<Arc<str>, (u16, u16)>,
   /// Regions of runtime-sized globals whose elements are heap values;
   /// carried into `Code::cell_regions`.
-  pub cell_regions: Vec<u16>,
+  pub(crate) cell_regions: Vec<u16>,
   /// Thread-shared globals: name → index into `shared_vars`. Populated for
   /// both compilation modes; drives `MarkSharedDirty` emission.
-  pub shared_var_indices: HashMap<Arc<str>, u16>,
+  pub(crate) shared_var_indices: HashMap<Arc<str>, u16>,
   /// The shared globals holding atomics (`SharedVarInfo::atomic`), which
   /// live in shared words: reads load them, writes store them, and atomic
   /// ops act on them directly.
@@ -274,38 +263,38 @@ pub struct BytecodeCompilationState {
   /// Name, base stack slot, and size in u32 slots of each global, in
   /// declaration order. Carried into `Code::globals` by `finalize` so
   /// external integrations can locate globals in the running program.
-  pub global_slots: Vec<(Arc<str>, u16, u16)>,
+  pub(crate) global_slots: Vec<(Arc<str>, u16, u16)>,
   pub locals: HashMap<Arc<str>, u16>,
   /// Monomorphized name → base name, from the program's `NameContext`. Used
   /// to resolve monomorphized unit-variant constant names (e.g.
   /// `None_Option_f32`) back to the base variant names (`None`) that enum
   /// types' variant lists hold.
-  pub monomorphized_to_base_names: HashMap<Arc<str>, Arc<str>>,
-  pub instructions: Vec<Instruction>,
-  pub finished_functions: Vec<IntermediateBytecodeFunction>,
-  pub loop_start_instructions: Vec<u32>,
-  pub break_jump_instruction_positions: Vec<Vec<u32>>,
-  pub continue_jump_instruction_positions: Vec<Vec<u32>>,
-  pub ref_arg_functions: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
-  pub current_function: Option<IntermediateBytecodeFunction>,
-  pub pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
-  pub pending_frame_fn_usages: Vec<PendingFrameFnUsage>,
-  pub array_mut_ref_store_instructions: Vec<Vec<PendingWriteBack>>,
+  pub(crate) monomorphized_to_base_names: HashMap<Arc<str>, Arc<str>>,
+  pub(crate) instructions: Vec<Instruction>,
+  pub(crate) finished_functions: Vec<IntermediateBytecodeFunction>,
+  pub(crate) loop_start_instructions: Vec<u32>,
+  pub(crate) break_jump_instruction_positions: Vec<Vec<u32>>,
+  pub(crate) continue_jump_instruction_positions: Vec<Vec<u32>>,
+  pub(crate) ref_arg_functions: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
+  pub(crate) current_function: Option<IntermediateBytecodeFunction>,
+  pub(crate) pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
+  pub(crate) pending_frame_fn_usages: Vec<PendingFrameFnUsage>,
+  pub(crate) array_mut_ref_store_instructions: Vec<Vec<PendingWriteBack>>,
   /// Lifted-capture records by entry fn name, copied from the validated
   /// `Program` (see `LiftedCaptures`); consumed by the audio-seed and
   /// dispatched-capture emitters.
-  pub lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
-  pub lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  pub(crate) lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  pub(crate) lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
   /// Region bindings for the function currently being compiled as a
   /// per-usage ref-arg specialization, keyed by arg index. Set by
   /// `TopLevelFunction::compile_to_bytecode` just before the body
   /// compiles; the `Function` arm consumes it, registering each such
   /// param in `dynamic_array_memory` (and unregistering it after the
   /// body) instead of binding a local slot.
-  pub pending_ref_region_params: HashMap<usize, (u16, u16)>,
+  pub(crate) pending_ref_region_params: HashMap<usize, (u16, u16)>,
   /// Callee effects for the whole compilation, which only reads function
   /// bodies (so no memoized entry can go stale).
-  pub effects_memo: EffectsMemo,
+  pub(crate) effects_memo: EffectsMemo,
   /// `Code::source_positions` and `Code::instruction_sources` so far, and
   /// each position's index.
   source_positions: Vec<DocumentPosition>,
@@ -397,7 +386,7 @@ impl BytecodeCompilationState {
     }
     start
   }
-  pub fn take_stack_slot(&mut self, size: u16) -> u16 {
+  pub(crate) fn take_stack_slot(&mut self, size: u16) -> u16 {
     let i = self.consumed_stack_space;
     self.consumed_stack_space = self
       .consumed_stack_space
@@ -413,7 +402,7 @@ impl BytecodeCompilationState {
       });
     i as u16
   }
-  pub fn open_function(&mut self, name: Arc<str>, return_size: u16) {
+  pub(crate) fn open_function(&mut self, name: Arc<str>, return_size: u16) {
     let instruction_start = self.instructions.len() as u32;
     self.current_function = Some(IntermediateBytecodeFunction {
       name,
@@ -432,12 +421,12 @@ impl BytecodeCompilationState {
     self.take_stack_slot(return_size);
     self.current_source = u32::MAX;
   }
-  pub fn close_function(&mut self) {
+  pub(crate) fn close_function(&mut self) {
     let mut f = self.current_function.take().unwrap();
     f.instructions.end = self.instructions.len() as u32;
     self.finished_functions.push(f);
   }
-  pub fn push_instruction(&mut self, instruction: Instruction) {
+  pub(crate) fn push_instruction(&mut self, instruction: Instruction) {
     if self.instruction_sources.last().map(|&(_, source)| source)
       != Some(self.current_source)
     {
@@ -457,7 +446,7 @@ impl BytecodeCompilationState {
   /// Replaces the contents of the runtime-sized global in region `memory`
   /// with those of the heap value in `src_slot`, whose elements are of type
   /// `element_type`.
-  pub fn emit_region_assignment(
+  pub(crate) fn emit_region_assignment(
     &mut self,
     memory: u16,
     src_slot: u16,
@@ -489,7 +478,13 @@ impl BytecodeCompilationState {
       );
     }
   }
-  pub fn emit_value_copy(&mut self, src: u16, size: u16, dest: u16, t: &Type) {
+  pub(crate) fn emit_value_copy(
+    &mut self,
+    src: u16,
+    size: u16,
+    dest: u16,
+    t: &Type,
+  ) {
     if size == 0 {
       return;
     }
@@ -1088,7 +1083,7 @@ impl BytecodeCompilationState {
   // --- Basic emit helpers ---
 
   /// Emit a 1-slot unary op and return the result slot.
-  pub fn emit_unary(&mut self, op: Op, arg: u16) -> u16 {
+  pub(crate) fn emit_unary(&mut self, op: Op, arg: u16) -> u16 {
     let result = self.take_stack_slot(1);
     self.push_instruction(Instruction {
       op,
@@ -1112,7 +1107,7 @@ impl BytecodeCompilationState {
       return_position: dest,
     });
   }
-  pub fn emit_binary(&mut self, op: Op, arg0: u16, arg1: u16) -> u16 {
+  pub(crate) fn emit_binary(&mut self, op: Op, arg0: u16, arg1: u16) -> u16 {
     let result = self.take_stack_slot(1);
     self.push_instruction(Instruction {
       op,
@@ -1124,7 +1119,12 @@ impl BytecodeCompilationState {
   /// Emit a u32 Constant into a fresh slot and return that slot.
   /// A slot holding whether the value at `a` equals the one at `b`, for a
   /// `match` arm: numbers and booleans directly, vectors component-wise.
-  pub fn emit_match_equality(&mut self, t: &Type, a: u16, b: u16) -> u16 {
+  pub(crate) fn emit_match_equality(
+    &mut self,
+    t: &Type,
+    a: u16,
+    b: u16,
+  ) -> u16 {
     let (count, element) = match t {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => (1, t.clone()),
       _ => vec_kind(t).expect("`match` on a non-vector struct"),
@@ -1142,7 +1142,7 @@ impl BytecodeCompilationState {
     }
     result
   }
-  pub fn emit_u32_constant(&mut self, value: u32) -> u16 {
+  pub(crate) fn emit_u32_constant(&mut self, value: u32) -> u16 {
     let slot = self.take_stack_slot(1);
     self.push_instruction(Instruction {
       op: Op::Constant,
@@ -1152,11 +1152,11 @@ impl BytecodeCompilationState {
     slot
   }
   /// Emit an f32 Constant into a fresh slot and return that slot.
-  pub fn emit_f32_constant(&mut self, value: f32) -> u16 {
+  pub(crate) fn emit_f32_constant(&mut self, value: f32) -> u16 {
     self.emit_u32_constant(value.to_bits())
   }
   /// Emit a 1-slot ternary op and return the result slot.
-  pub fn emit_ternary(
+  pub(crate) fn emit_ternary(
     &mut self,
     op: Op,
     arg0: u16,
@@ -1172,7 +1172,12 @@ impl BytecodeCompilationState {
     result
   }
   /// Fan-out unary op across `size` consecutive slots, return base of result.
-  pub fn emit_fanout_unary(&mut self, op: Op, arg: u16, size: u16) -> u16 {
+  pub(crate) fn emit_fanout_unary(
+    &mut self,
+    op: Op,
+    arg: u16,
+    size: u16,
+  ) -> u16 {
     let result = self.take_stack_slot(size);
     for i in 0..size {
       self.push_instruction(Instruction {
@@ -1184,7 +1189,7 @@ impl BytecodeCompilationState {
     result
   }
   /// Fan-out binary op across `size` consecutive slots, return base of result.
-  pub fn emit_fanout_binary(
+  pub(crate) fn emit_fanout_binary(
     &mut self,
     op: Op,
     arg0: u16,
@@ -1203,7 +1208,7 @@ impl BytecodeCompilationState {
   }
   /// Fan-out binary op where the right-hand side is a single scalar broadcast
   /// across all `size` element positions on the left.
-  pub fn emit_fanout_binary_scalar_rhs(
+  pub(crate) fn emit_fanout_binary_scalar_rhs(
     &mut self,
     op: Op,
     arg0: u16,
@@ -1224,7 +1229,7 @@ impl BytecodeCompilationState {
   /// Binary op whose operands may independently be vec/mat or scalar,
   /// matching WGSL's broadcast semantics: (vec,vec) elementwise,
   /// (vec,scalar)/(scalar,vec) broadcast, (scalar,scalar) plain.
-  pub fn emit_mixed_shape_binary(
+  pub(crate) fn emit_mixed_shape_binary(
     &mut self,
     arg_types: &[Type],
     arg_positions: &[u16],
@@ -1256,7 +1261,7 @@ impl BytecodeCompilationState {
       ),
     }
   }
-  pub fn emit_fanout_binary_scalar_lhs(
+  pub(crate) fn emit_fanout_binary_scalar_lhs(
     &mut self,
     op: Op,
     scalar_lhs: u16,
@@ -1268,25 +1273,6 @@ impl BytecodeCompilationState {
       self.push_instruction(Instruction {
         op,
         arg_positions: [scalar_lhs, arg1 + i, 0],
-        return_position: result + i,
-      });
-    }
-    result
-  }
-  /// Fan-out ternary op across `size` slots (each operand is also `size` slots).
-  pub fn emit_fanout_ternary(
-    &mut self,
-    op: Op,
-    arg0: u16,
-    arg1: u16,
-    arg2: u16,
-    size: u16,
-  ) -> u16 {
-    let result = self.take_stack_slot(size);
-    for i in 0..size {
-      self.push_instruction(Instruction {
-        op,
-        arg_positions: [arg0 + i, arg1 + i, arg2 + i],
         return_position: result + i,
       });
     }
@@ -2956,7 +2942,7 @@ impl BytecodeCompilationState {
     self.emit_binary(Op::PlusF32, am1_minus_bm2, cm3)
   }
 
-  pub fn finalize(
+  pub(crate) fn finalize(
     self,
     init_function_index: Option<usize>,
   ) -> (BytecodeProgram, Vec<Arc<str>>) {
@@ -3031,7 +3017,7 @@ impl BytecodeCompilationState {
 
   /// Append `op` to the host-op table and emit a `HostCall` instruction
   /// referencing it.
-  pub fn emit_host_op(&mut self, op: HostOp) {
+  pub(crate) fn emit_host_op(&mut self, op: HostOp) {
     let index = self.host_ops.len() as u16;
     self.host_ops.push(op);
     self.push_instruction(Instruction {
@@ -3040,7 +3026,7 @@ impl BytecodeCompilationState {
       return_position: 0,
     });
   }
-  pub fn host_type_index(&mut self, ty: &Type) -> u16 {
+  pub(crate) fn host_type_index(&mut self, ty: &Type) -> u16 {
     if let Some(i) = self.host_types.iter().position(|t| t == ty) {
       i as u16
     } else {
@@ -3048,7 +3034,7 @@ impl BytecodeCompilationState {
       (self.host_types.len() - 1) as u16
     }
   }
-  pub fn host_string_index(&mut self, s: &str) -> u16 {
+  pub(crate) fn host_string_index(&mut self, s: &str) -> u16 {
     if let Some(i) = self.host_strings.iter().position(|t| &**t == s) {
       i as u16
     } else {
@@ -3065,7 +3051,7 @@ impl BytecodeCompilationState {
   /// the binding since the CPU last read it. Every read of a GPU-bound
   /// global gets one, since the GPU may have written it since whatever
   /// check preceded the enclosing application.
-  pub fn emit_read_check(&mut self, name: &Arc<str>) {
+  pub(crate) fn emit_read_check(&mut self, name: &Arc<str>) {
     if !self.cpu_mode {
       return;
     }
@@ -3097,7 +3083,7 @@ impl BytecodeCompilationState {
   /// (CPU-runtime mode only), and `MarkSharedDirty` for thread-shared
   /// globals (both modes — the audio thread tracks its own writes the same
   /// way).
-  pub fn emit_write_marks(&mut self, names: &[Arc<str>]) {
+  pub(crate) fn emit_write_marks(&mut self, names: &[Arc<str>]) {
     for name in names {
       if self.cpu_mode
         && let Some(binding) = self.binding_indices.get(name).copied()
@@ -3458,7 +3444,7 @@ fn reads_array_element(e: &TypedExp) -> bool {
 /// dynamic-memory region (globals). Regions are never `Arc`-shared, so
 /// only cells need ensure-unique treatment.
 #[derive(Clone, Copy)]
-pub enum EmbeddingContainer {
+pub(crate) enum EmbeddingContainer {
   Cell(u16),
   Region(u16),
 }
@@ -3497,7 +3483,7 @@ pub enum HeapCopyPlan {
 /// compare-and-skip dispatch per heap-bearing variant (heap-free variants
 /// fall through with zero instructions).
 #[derive(Default)]
-pub struct HeapFixups {
+pub(crate) struct HeapFixups {
   static_offsets: Vec<u16>,
   enum_regions: Vec<EnumRegion>,
 }
@@ -3519,7 +3505,7 @@ struct EnumRegion {
 }
 
 impl HeapCopyPlan {
-  pub fn for_type(t: &Type) -> Self {
+  pub(crate) fn for_type(t: &Type) -> Self {
     if is_heap_value_type(t) {
       return HeapCopyPlan::WholeHeap;
     }
@@ -5064,7 +5050,7 @@ impl TypedExp {
   /// are compiled from its source position (see
   /// `BytecodeCompilationState::compiling_from`), so a runtime error in
   /// them is reported there, as the tree-walker reports it.
-  pub fn compile_to_bytecode(
+  pub(crate) fn compile_to_bytecode(
     &self,
     position: CompilePosition,
     state: &mut BytecodeCompilationState,

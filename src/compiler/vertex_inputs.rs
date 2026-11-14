@@ -41,11 +41,11 @@ use crate::compiler::{
 /// locations. Its limit on a vertex buffer's stride (2048 bytes) needs no
 /// check of its own: a layout is its attributes, each at most 16 bytes, and
 /// padding before each smaller than that.
-pub const MAX_VERTEX_ATTRIBUTES: usize = 16;
+pub(crate) const MAX_VERTEX_ATTRIBUTES: usize = 16;
 
 /// The scalar type of a vertex attribute's components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum VertexScalar {
+pub(crate) enum VertexScalar {
   F32,
   U32,
   I32,
@@ -54,7 +54,7 @@ pub enum VertexScalar {
 /// One vertex attribute: a scalar or vector at `offset` bytes into each
 /// element, read at the shader input `location`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VertexAttribute {
+pub(crate) struct VertexAttribute {
   pub scalar: VertexScalar,
   /// 1 to 4.
   pub components: u8,
@@ -64,9 +64,9 @@ pub struct VertexAttribute {
 
 /// How one data parameter's values sit in its array's buffer.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct VertexInputLayout {
+pub(crate) struct VertexInputLayout {
   /// Bytes from one element to the next.
-  pub stride: u32,
+  pub(crate) stride: u32,
   pub attributes: Vec<VertexAttribute>,
 }
 
@@ -82,12 +82,12 @@ struct VertexLeaf {
 }
 
 /// A location inferred for a struct field of an entry's input or output.
-pub struct InferredFieldLocation {
+pub(crate) struct InferredFieldLocation {
   pub definition: Arc<AbstractStruct>,
-  pub field_name: Arc<str>,
+  pub(crate) field_name: Arc<str>,
   pub location: usize,
   /// The vertex entry taking the struct as an input, when one is.
-  pub vertex_entry: Option<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
+  pub(crate) vertex_entry: Option<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
 }
 
 /// A struct definition holds one location per field, but vertex entries can
@@ -96,7 +96,7 @@ pub struct InferredFieldLocation {
 /// (or any other entry using it) keeps it as written; the entries that
 /// disagree flatten it, so the attributes take locations of their own.
 /// Returns the locations left to write on the definitions.
-pub fn flatten_conflicting_vertex_inputs(
+pub(crate) fn flatten_conflicting_vertex_inputs(
   inferred: Vec<InferredFieldLocation>,
 ) -> Vec<InferredFieldLocation> {
   // (struct name, vertex entry name) -> that entry's locations
@@ -308,7 +308,7 @@ impl Type {
 
   /// The WGSL expression rebuilding a value of this type from its vertex
   /// attributes, named in order by `attributes`.
-  pub fn vertex_input_expression(
+  pub(crate) fn vertex_input_expression(
     &self,
     attributes: &mut impl Iterator<Item = String>,
     names: &mut NameContext,
@@ -374,7 +374,7 @@ impl TopLevelFunction {
 
   /// The indices of this vertex entry's data parameters: those that
   /// aren't builtins or structs of only builtins.
-  pub fn vertex_data_params(&self) -> Vec<usize> {
+  pub(crate) fn vertex_data_params(&self) -> Vec<usize> {
     self
       .param_types()
       .iter()
@@ -389,7 +389,7 @@ impl TopLevelFunction {
 
   /// Whether this vertex entry's `param`th parameter is a flattened data
   /// parameter.
-  pub fn flattens_vertex_param(&self, param: usize) -> bool {
+  pub(crate) fn flattens_vertex_param(&self, param: usize) -> bool {
     self.flattened_vertex_params.contains(&param)
       || (self.arg_annotations[param].attributes.builtin().is_none()
         && self.param_types()[param].flattens_as_vertex_input())
@@ -412,7 +412,7 @@ impl TopLevelFunction {
   /// that land on the same location, which WGSL can't express. A written
   /// location counts up across a composite, so a matrix's can overlap
   /// another field's. Runs before any location is inferred.
-  pub fn validate_vertex_input_locations(&self, errors: &mut ErrorLog) {
+  pub(crate) fn validate_vertex_input_locations(&self, errors: &mut ErrorLog) {
     let mut used = HashSet::new();
     for param in self.vertex_data_params() {
       for leaf in self.vertex_leaves(param).unwrap_or_default() {
@@ -490,14 +490,14 @@ impl TopLevelFunction {
 
 impl VertexAttribute {
   /// The WGSL name of the vertex entry input this attribute is read into.
-  pub fn input_name(&self, names: &mut NameContext) -> String {
+  pub(crate) fn input_name(&self, names: &mut NameContext) -> String {
     compile_word(
       names.local_name(&format!("easl-vertex-input-{}", self.location)),
     )
   }
 
   /// The WGSL type of this attribute's input.
-  pub fn wgsl_type(&self) -> String {
+  pub(crate) fn wgsl_type(&self) -> String {
     let scalar = match self.scalar {
       VertexScalar::F32 => "f32",
       VertexScalar::U32 => "u32",
@@ -513,7 +513,7 @@ impl VertexAttribute {
 /// The positions of a draw application's arguments after its shaders, by
 /// role.
 #[derive(Debug, Clone, Copy)]
-pub struct DrawPositions {
+pub(crate) struct DrawPositions {
   /// The index array of `dispatch-indexed-render-shaders`.
   pub indices: Option<usize>,
   /// The vertex count or vertex data array.
@@ -553,7 +553,7 @@ impl DrawPositions {
 }
 
 /// A draw application's arguments after its shaders, by role.
-pub struct DrawArgs<'a> {
+pub(crate) struct DrawArgs<'a> {
   /// The index array of `dispatch-indexed-render-shaders`.
   pub indices: Option<&'a TypedExp>,
   /// The vertex count or vertex data array.
@@ -563,7 +563,7 @@ pub struct DrawArgs<'a> {
 }
 
 /// Whether `arg` is a draw's data array rather than a count.
-pub fn is_draw_array(arg: &TypedExp) -> bool {
+pub(crate) fn is_draw_array(arg: &TypedExp) -> bool {
   arg.data.with_known(|t| matches!(t, Type::Array(..)))
 }
 
@@ -581,7 +581,7 @@ impl<'a> DrawArgs<'a> {
   }
 
   /// The arrays feeding the vertex shader's data parameters, in order.
-  pub fn data_arrays(&self) -> Vec<&'a TypedExp> {
+  pub(crate) fn data_arrays(&self) -> Vec<&'a TypedExp> {
     [self.vertices, self.instances]
       .into_iter()
       .flatten()
@@ -702,7 +702,7 @@ impl Program {
 
   /// Resolves every vertex entry's vertex input layouts. Runs after
   /// `validate_entry_points`, which infers the locations they read.
-  pub fn resolve_vertex_inputs(&mut self) {
+  pub(crate) fn resolve_vertex_inputs(&mut self) {
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap();
       if f.entry_point == Some(EntryPoint::Vertex)

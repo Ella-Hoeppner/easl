@@ -31,7 +31,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UntypedEnumVariant {
+pub(crate) struct UntypedEnumVariant {
   name: Arc<str>,
   source: SourceTrace,
   type_ast: Option<EaslTree>,
@@ -70,14 +70,14 @@ impl UntypedEnumVariant {
       }
     }
   }
-  pub fn references_type_name(&self, name: &Arc<str>) -> bool {
+  pub(crate) fn references_type_name(&self, name: &Arc<str>) -> bool {
     if let Some(type_ast) = &self.type_ast {
       contains_name_leaf(&name, &type_ast)
     } else {
       false
     }
   }
-  pub fn assign_type(
+  pub(crate) fn assign_type(
     self,
     typedefs: &TypeDefs,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
@@ -95,20 +95,20 @@ impl UntypedEnumVariant {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UntypedEnum {
+pub(crate) struct UntypedEnum {
   pub name: (Arc<str>, SourceTrace),
   pub variants: Vec<UntypedEnumVariant>,
-  pub generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
+  pub(crate) generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
   pub source_trace: SourceTrace,
 }
 impl UntypedEnum {
-  pub fn references_type_name(&self, name: &Arc<str>) -> bool {
+  pub(crate) fn references_type_name(&self, name: &Arc<str>) -> bool {
     self
       .variants
       .iter()
       .fold(false, |acc, v| acc || v.references_type_name(name))
   }
-  pub fn from_field_trees(
+  pub(crate) fn from_field_trees(
     name: (Arc<str>, SourceTrace),
     generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
     variant_asts: Vec<EaslTree>,
@@ -124,7 +124,7 @@ impl UntypedEnum {
       source_trace,
     })
   }
-  pub fn assign_types(
+  pub(crate) fn assign_types(
     self,
     typedefs: &TypeDefs,
   ) -> CompileResult<AbstractEnum> {
@@ -156,11 +156,11 @@ impl UntypedEnum {
 pub struct AbstractEnumVariant {
   pub name: Arc<str>,
   pub source: SourceTrace,
-  pub inner_type: AbstractType,
+  pub(crate) inner_type: AbstractType,
 }
 
 impl AbstractEnumVariant {
-  pub fn fill_generics(
+  pub(crate) fn fill_generics(
     &self,
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
@@ -177,7 +177,7 @@ impl AbstractEnumVariant {
       )?,
     })
   }
-  pub fn concretize(
+  pub(crate) fn concretize(
     &self,
     typedefs: &TypeDefs,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
@@ -207,15 +207,15 @@ impl AbstractEnumVariant {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractEnum {
   pub name: (Arc<str>, SourceTrace),
-  pub filled_generics: HashMap<Arc<str>, AbstractType>,
-  pub generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
+  pub(crate) filled_generics: HashMap<Arc<str>, AbstractType>,
+  pub(crate) generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
   pub variants: Vec<AbstractEnumVariant>,
-  pub abstract_ancestor: Option<Arc<Self>>,
+  pub(crate) abstract_ancestor: Option<Arc<Self>>,
   pub source_trace: SourceTrace,
 }
 
 impl AbstractEnum {
-  pub fn has_unit_variant_named(&self, name: &str) -> bool {
+  pub(crate) fn has_unit_variant_named(&self, name: &str) -> bool {
     self
       .variants
       .iter()
@@ -225,14 +225,14 @@ impl AbstractEnum {
       })
       .is_some()
   }
-  pub fn original_ancestor(&self) -> &Self {
+  pub(crate) fn original_ancestor(&self) -> &Self {
     &self
       .abstract_ancestor
       .as_ref()
       .map(|ancestor| ancestor.original_ancestor())
       .unwrap_or(&self)
   }
-  pub fn fill_generics(
+  pub(crate) fn fill_generics(
     s: Arc<Self>,
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
@@ -257,7 +257,7 @@ impl AbstractEnum {
       variants: new_variants,
     })
   }
-  pub fn concretize(
+  pub(crate) fn concretize(
     s: Arc<Self>,
     typedefs: &TypeDefs,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
@@ -273,7 +273,7 @@ impl AbstractEnum {
       abstract_ancestor: s,
     })
   }
-  pub fn partially_fill_abstract_generics(
+  pub(crate) fn partially_fill_abstract_generics(
     self,
     generics: HashMap<Arc<str>, AbstractType>,
   ) -> AbstractEnum {
@@ -299,7 +299,7 @@ impl AbstractEnum {
       source_trace: self.source_trace,
     }
   }
-  pub fn fill_generics_ordered(
+  pub(crate) fn fill_generics_ordered(
     s: Arc<Self>,
     generics: Vec<GenericArgumentValue>,
     typedefs: &TypeDefs,
@@ -344,7 +344,7 @@ impl AbstractEnum {
       &source_trace,
     )
   }
-  pub fn fill_generics_with_unification_variables(
+  pub(crate) fn fill_generics_with_unification_variables(
     s: Arc<Self>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
@@ -363,7 +363,7 @@ impl AbstractEnum {
       .collect();
     Self::fill_generics_ordered(s, generic_values, typedefs, source_trace)
   }
-  pub fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
+  pub(crate) fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
       self
         .variants
@@ -375,7 +375,7 @@ impl AbstractEnum {
         .unwrap_or(0),
     )
   }
-  pub fn compile_if_non_generic(
+  pub(crate) fn compile_if_non_generic(
     self,
     typedefs: &TypeDefs,
     names: &mut NameContext,
@@ -476,7 +476,7 @@ impl AbstractEnum {
       })
       .map_or(Ok(None), |v| v.map(Some))
   }
-  pub fn generic_arg_monomorphized_names(
+  pub(crate) fn generic_arg_monomorphized_names(
     &self,
     variant_types: &Vec<Type>,
     names: &mut NameContext,
@@ -513,7 +513,7 @@ impl AbstractEnum {
       })
       .collect()
   }
-  pub fn monomorphized_name(
+  pub(crate) fn monomorphized_name(
     &self,
     variant_types: &Vec<Type>,
     names: &mut NameContext,
@@ -523,7 +523,7 @@ impl AbstractEnum {
       self.generic_arg_monomorphized_names(variant_types, names, target);
     names.get_monomorphized_name(self.name.0.clone(), generic_arg_names)
   }
-  pub fn fill_abstract_generics(
+  pub(crate) fn fill_abstract_generics(
     self,
     generics: Vec<AbstractType>,
   ) -> AbstractEnum {
@@ -536,7 +536,7 @@ impl AbstractEnum {
       .collect();
     self.partially_fill_abstract_generics(generics_map)
   }
-  pub fn fill_const_generics(
+  pub(crate) fn fill_const_generics(
     self,
     bindings: &HashMap<Arc<str>, u32>,
   ) -> AbstractEnum {
@@ -564,7 +564,7 @@ impl AbstractEnum {
       source_trace: self.source_trace,
     }
   }
-  pub fn extract_generic_bindings(
+  pub(crate) fn extract_generic_bindings(
     &self,
     concrete_enum: &Enum,
     type_bindings: &mut HashMap<Arc<str>, Type>,
@@ -578,7 +578,7 @@ impl AbstractEnum {
       );
     }
   }
-  pub fn generate_monomorphized(
+  pub(crate) fn generate_monomorphized(
     &self,
     concrete_enum: Enum,
   ) -> Option<AbstractEnum> {
@@ -633,40 +633,19 @@ impl AbstractEnum {
       source_trace: self.source_trace.clone(),
     })
   }
-  pub fn concretized_name(
-    e: Arc<Self>,
-    typedefs: &TypeDefs,
-    source_trace: SourceTrace,
-    names: &mut NameContext,
-    target: CompilerTarget,
-  ) -> CompileResult<Arc<str>> {
-    let concretized =
-      Self::concretize(e.clone(), typedefs, &vec![], source_trace)?;
-    Ok(
-      e.monomorphized_name(
-        &concretized
-          .variants
-          .iter()
-          .map(|variant| variant.inner_type.unwrap_known())
-          .collect(),
-        names,
-        target,
-      ),
-    )
-  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumVariant {
   pub name: Arc<str>,
-  pub inner_type: ExpTypeInfo,
+  pub(crate) inner_type: ExpTypeInfo,
 }
 
 #[derive(Debug, Clone)]
 pub struct Enum {
   pub name: Arc<str>,
   pub variants: Vec<EnumVariant>,
-  pub abstract_ancestor: Arc<AbstractEnum>,
+  pub(crate) abstract_ancestor: Arc<AbstractEnum>,
 }
 
 impl PartialEq for Enum {
@@ -702,7 +681,7 @@ impl Enum {
       },
     )
   }
-  pub fn monomorphized_name(
+  pub(crate) fn monomorphized_name(
     &self,
     names: &mut NameContext,
     target: CompilerTarget,
@@ -717,7 +696,7 @@ impl Enum {
       target,
     )
   }
-  pub fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
+  pub(crate) fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
     // The tagged-union `data` array holds only the active variant's payload, so
     // it's sized to the largest variant, matching the struct-declaration path
     // (`AbstractEnum::inner_flat_data_size_in_u32s`) and `vm_stack_size`.
@@ -971,7 +950,7 @@ impl Program {
   /// function). `!=` negates it. Runs right after monomorphization, when
   /// every enum is concrete; the generated functions are deexpressionified
   /// here, having missed that pass.
-  pub fn lower_enum_comparisons(
+  pub(crate) fn lower_enum_comparisons(
     &mut self,
     target: CompilerTarget,
     errors: &mut ErrorLog,

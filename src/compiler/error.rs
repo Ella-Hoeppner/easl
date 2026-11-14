@@ -32,7 +32,7 @@ impl SourceTrace {
       secondary_positions: vec![],
     }
   }
-  pub fn insert_as_secondary(mut self, other: Self) -> Self {
+  pub(crate) fn insert_as_secondary(mut self, other: Self) -> Self {
     for pos in other.into_document_positions_iter() {
       self.secondary_positions.push(pos);
     }
@@ -46,7 +46,7 @@ impl SourceTrace {
       .iter()
       .chain(self.secondary_positions.iter())
   }
-  pub fn into_document_positions_iter(
+  pub(crate) fn into_document_positions_iter(
     self,
   ) -> impl Iterator<Item = DocumentPosition> {
     self
@@ -64,7 +64,7 @@ impl SourceTrace {
   /// Where a runtime error at this trace happened, described against the
   /// program's `documents`: the failing application, then the calls that
   /// led to it.
-  pub fn describe_runtime_location(
+  pub(crate) fn describe_runtime_location(
     &self,
     documents: &EaslMultiDocument,
   ) -> String {
@@ -82,7 +82,7 @@ impl SourceTrace {
   }
   /// Where a runtime error happened, from the descriptions of its position
   /// (`primary`) and of the calls that led to it, innermost first.
-  pub fn join_location_descriptions(
+  pub(crate) fn join_location_descriptions(
     primary: String,
     secondaries: impl Iterator<Item = String>,
   ) -> String {
@@ -832,7 +832,7 @@ pub enum CompileErrorKind {
 }
 
 impl CompileErrorKind {
-  pub fn priority(&self) -> usize {
+  pub(crate) fn priority(&self) -> usize {
     use CompileErrorKind::*;
     match self {
       InvalidName | UnboundName(_) => 10,
@@ -1170,7 +1170,7 @@ impl CompileError {
     }
     description
   }
-  pub fn priority(&self) -> usize {
+  pub(crate) fn priority(&self) -> usize {
     self.kind.priority()
   }
 }
@@ -1183,7 +1183,7 @@ impl Display for CompileError {
 
 impl Error for CompileError {}
 
-pub type CompileResult<T> = Result<T, CompileError>;
+pub(crate) type CompileResult<T> = Result<T, CompileError>;
 
 pub fn err<T>(
   kind: CompileErrorKind,
@@ -1206,7 +1206,10 @@ impl ErrorLog {
   pub fn log(&mut self, err: CompileError) {
     self.errors.insert(err);
   }
-  pub fn log_all(&mut self, errs: impl IntoIterator<Item = CompileError>) {
+  pub(crate) fn log_all(
+    &mut self,
+    errs: impl IntoIterator<Item = CompileError>,
+  ) {
     for err in errs.into_iter() {
       self.log(err);
     }

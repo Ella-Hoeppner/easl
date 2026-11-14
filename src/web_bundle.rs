@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// The page that runs the program on a full-window canvas.
-pub const INDEX_HTML: &str = include_str!("web_templates/index.html");
+pub(crate) const INDEX_HTML: &str = include_str!("web_templates/index.html");
 
 /// The runtime that runs precompiled programs (`web/build.sh` builds it):
 /// its JS bindings and its wasm module.
@@ -85,7 +85,7 @@ pub const PROGRAM_DATA_FILE: &str = "easl-program.bin";
 /// Alongside them go the [`RUNTIME_FILES`] and the
 /// [`RUNTIME_SUPPORT_FILES`], which are the same for every program.
 pub struct WebBundle {
-  /// `index.html`: see [`INDEX_HTML`].
+  /// `index.html`: see `INDEX_HTML`.
   pub index_html: &'static str,
   /// The precompiled program, which the program's module loads from the
   /// file named when making it ([`Self::program_js`]).
@@ -106,7 +106,7 @@ impl WebBundle {
 /// the browser. Alongside them go the [`COMPILER_RUNTIME_FILES`], the
 /// [`RUNTIME_FILES`], and the [`RUNTIME_SUPPORT_FILES`].
 pub struct SourcesWebBundle {
-  /// `index.html`: see [`INDEX_HTML`].
+  /// `index.html`: see `INDEX_HTML`.
   pub index_html: &'static str,
   /// `easl-program.js`: the program's sources, and the `startEaslProgram`
   /// export that compiles and runs them.

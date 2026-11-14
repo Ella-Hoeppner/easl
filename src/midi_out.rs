@@ -54,7 +54,7 @@ impl MidiOutKind {
 
   /// The message a call of builtin `name` with `arg_count` arguments sends,
   /// if `name` is a `send-midi-*` builtin.
-  pub fn of_builtin(name: &str, arg_count: usize) -> Option<Self> {
+  pub(crate) fn of_builtin(name: &str, arg_count: usize) -> Option<Self> {
     Some(match name {
       "send-midi-note-on" => MidiOutKind::NoteOn,
       "send-midi-note-off" => MidiOutKind::NoteOff,
@@ -73,7 +73,7 @@ impl MidiOutKind {
   }
 
   /// Every `send-midi-*` builtin's name.
-  pub const BUILTIN_NAMES: [&'static str; 8] = [
+  pub(crate) const BUILTIN_NAMES: [&'static str; 8] = [
     "send-midi-note-on",
     "send-midi-note-off",
     "send-midi-cc",
@@ -84,7 +84,7 @@ impl MidiOutKind {
     "send-midi-message",
   ];
 
-  pub fn from_u16(value: u16) -> Self {
+  pub(crate) fn from_u16(value: u16) -> Self {
     Self::ALL[value as usize]
   }
 }
@@ -291,7 +291,7 @@ impl MidiMessage {
 
 /// A system-exclusive message carrying `data` (the bytes between its
 /// `0xF0` and `0xF7`, each `0..127`): `send-midi-sysex`.
-pub fn sysex_message(data: &[u32]) -> Result<Vec<u8>, MidiOutError> {
+pub(crate) fn sysex_message(data: &[u32]) -> Result<Vec<u8>, MidiOutError> {
   let mut bytes = Vec::with_capacity(data.len() + 2);
   bytes.push(0xF0);
   for byte in data {

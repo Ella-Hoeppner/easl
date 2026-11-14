@@ -8,7 +8,7 @@ use std::collections::BinaryHeap;
 /// its `dependencies` entry, taking the lowest-numbered ready node at each
 /// step: nodes keep their numbering's order wherever dependencies allow.
 /// When some can't be ordered, returns the graph's [`cycles`] instead.
-pub fn topological_order(
+pub(crate) fn topological_order(
   dependencies: &[Vec<usize>],
 ) -> Result<Vec<usize>, Vec<Vec<usize>>> {
   let mut unmet: Vec<usize> = dependencies.iter().map(Vec::len).collect();
@@ -43,7 +43,7 @@ pub fn topological_order(
 /// order, one per dependency that leads back to a node on the walk's path:
 /// each lists the nodes along it, every one depending on the next and the
 /// last on the first.
-pub fn cycles(dependencies: &[Vec<usize>]) -> Vec<Vec<usize>> {
+pub(crate) fn cycles(dependencies: &[Vec<usize>]) -> Vec<Vec<usize>> {
   #[derive(Clone, Copy, PartialEq)]
   enum State {
     Unvisited,

@@ -1850,7 +1850,7 @@ impl Program {
   /// position as a `BoxedFunction`, inserting `fnbox-make` wraps and
   /// `fnbox-apply` calls. A strict no-op for programs without function
   /// values.
-  pub fn box_function_values(&mut self, errors: &mut ErrorLog) {
+  pub(crate) fn box_function_values(&mut self, errors: &mut ErrorLog) {
     if !program_has_function_values(self) {
       return;
     }
@@ -5467,7 +5467,10 @@ impl Program {
   /// per-usage representation. Must run after the extraction / inlining loop
   /// (every member needs an identity and scope struct) and before any pass
   /// that sizes or emits types.
-  pub fn defunctionalize_boxed_functions(&mut self, errors: &mut ErrorLog) {
+  pub(crate) fn defunctionalize_boxed_functions(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
     if !program_has_boxed_functions(self) {
       self.validate_copied_stateful_closures(None, errors);
       return;
@@ -5777,7 +5780,7 @@ impl Program {
   /// references to one closure's mutable scope would make the result depend
   /// on the runtime's calling convention. Closures that never mutate their
   /// scope may be passed twice (`(compose f f)`).
-  pub fn validate_closure_state_aliasing(&self, errors: &mut ErrorLog) {
+  pub(crate) fn validate_closure_state_aliasing(&self, errors: &mut ErrorLog) {
     // Which closure scope structs belong to closures that mutate them.
     let mut scope_mutates: HashMap<Arc<str>, bool> = HashMap::new();
     // Only reads function bodies, so one memo serves the whole loop.

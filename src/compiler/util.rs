@@ -14,7 +14,7 @@ pub fn indent(s: String) -> String {
   s.replace("\n", "\n  ")
 }
 
-pub fn read_leaf(ast: EaslTree) -> CompileResult<Arc<str>> {
+pub(crate) fn read_leaf(ast: EaslTree) -> CompileResult<Arc<str>> {
   if let EaslTree::Leaf(_, word) = ast {
     Ok(word.into())
   } else {
@@ -22,7 +22,7 @@ pub fn read_leaf(ast: EaslTree) -> CompileResult<Arc<str>> {
   }
 }
 
-pub fn read_type_annotated_name(
+pub(crate) fn read_type_annotated_name(
   ast: EaslTree,
 ) -> CompileResult<(Arc<str>, EaslTree)> {
   if let EaslTree::Inner(
@@ -46,7 +46,7 @@ pub fn read_type_annotated_name(
 /// treats as separators (whitespace, `,`).
 const NON_NAME_CHARACTERS: &str = "' |~.@:;/#()[]{},\t\n";
 
-pub fn compile_word(word: Arc<str>) -> String {
+pub(crate) fn compile_word(word: Arc<str>) -> String {
   let compiled_word = match &*word {
     "!"
     | "/"
@@ -108,13 +108,13 @@ pub fn compile_word(word: Arc<str>) -> String {
 /// Whether `word` is a valid internal name: module resolution qualifies
 /// names with `/`-separated module prefixes (`lib/sort`), whose segments
 /// must each be valid names.
-pub fn is_valid_qualified_name(word: &Arc<str>) -> bool {
+pub(crate) fn is_valid_qualified_name(word: &Arc<str>) -> bool {
   word
     .split('/')
     .all(|segment| is_valid_name(&Arc::from(segment)))
 }
 
-pub fn is_valid_name(word: &Arc<str>) -> bool {
+pub(crate) fn is_valid_name(word: &Arc<str>) -> bool {
   match &**word {
     "defn" | "def" | "struct" | "enum" | "let" | "return" | "if" | "when"
     | "match" | "break" | "continue" => false,

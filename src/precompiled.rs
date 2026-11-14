@@ -26,7 +26,7 @@ pub struct PrecompiledProgram {
   /// runtime starts whichever one it's given (see [`Self::entry`]).
   pub entry_points: Vec<Arc<str>>,
   pub cpu: Code,
-  pub cpu_function_names: Vec<Arc<str>>,
+  pub(crate) cpu_function_names: Vec<Arc<str>>,
   /// What `start-audio` runs, for a program with audio entry points.
   pub audio: Option<(Code, Vec<Arc<str>>)>,
   pub environment: EnvironmentSpec,

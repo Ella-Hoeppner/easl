@@ -14,16 +14,14 @@
 //! the cost of re-decoding — a keyframe-seek optimization is future work).
 
 /// Metadata about an opened video source.
-pub struct VideoInfo {
-  pub width: u32,
-  pub height: u32,
+pub(crate) struct VideoInfo {
   /// Total frame count, counted exactly when the source is opened (by
   /// decoding it the way frames are later read).
   pub frame_count: u32,
 }
 
 /// A decoded frame's RGBA8 pixels.
-pub struct DecodedFrame {
+pub(crate) struct DecodedFrame {
   pub width: u32,
   pub height: u32,
   pub rgba: Vec<u8>,
@@ -56,7 +54,7 @@ mod backend {
     }
   }
 
-  pub struct VideoSource {
+  pub(crate) struct VideoSource {
     path: String,
     width: u32,
     height: u32,
@@ -153,23 +151,22 @@ mod backend {
         decoder: None,
         cached: None,
       },
-      VideoInfo {
-        width: video_stream.width,
-        height: video_stream.height,
-        frame_count,
-      },
+      VideoInfo { frame_count },
     ))
   }
 
   impl VideoSource {
     /// How many frames the stream actually has, by decoding it (tests).
     #[cfg(test)]
-    pub fn decoded_frame_count(&self) -> u32 {
+    pub(crate) fn decoded_frame_count(&self) -> u32 {
       let mut decoder = spawn_decoder(&self.path).unwrap();
       decoder.frames.by_ref().count() as u32
     }
 
-    pub fn decode_frame(&mut self, frame: u32) -> Result<DecodedFrame, String> {
+    pub(crate) fn decode_frame(
+      &mut self,
+      frame: u32,
+    ) -> Result<DecodedFrame, String> {
       let target = frame.min(self.frame_count.saturating_sub(1));
       if let Some((cached_index, pixels)) = &self.cached
         && *cached_index == target
@@ -220,7 +217,7 @@ mod backend {
 /// thread only — a decoder can't cross to the audio thread). Present on every
 /// build; the decoding methods error without the `video` feature.
 #[derive(Default)]
-pub struct VideoRegistry {
+pub(crate) struct VideoRegistry {
   #[cfg(feature = "video")]
   sources: Vec<backend::VideoSource>,
 }
@@ -249,7 +246,7 @@ impl VideoRegistry {
   }
 
   #[cfg(feature = "video")]
-  pub fn decode_frame(
+  pub(crate) fn decode_frame(
     &mut self,
     source_index: u32,
     frame: u32,
@@ -262,7 +259,7 @@ impl VideoRegistry {
   }
 
   #[cfg(not(feature = "video"))]
-  pub fn decode_frame(
+  pub(crate) fn decode_frame(
     &mut self,
     _source_index: u32,
     _frame: u32,

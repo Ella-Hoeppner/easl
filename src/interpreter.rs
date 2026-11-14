@@ -63,6 +63,8 @@ use crate::vm::compile::{involves_heap_values, vm_stack_size};
 #[cfg(feature = "window")]
 use crate::window::ScreenTarget;
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum Primitive {
   F32(f32),
@@ -442,6 +444,8 @@ impl Function {
   }
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
   Unit,
@@ -509,13 +513,14 @@ impl TextureHandle {
   pub fn height(&self) -> u32 {
     self.0.height
   }
+  #[cfg(feature = "window")]
   /// Takes the initial contents; `None` once the GPU texture exists.
-  pub fn take_init(&self) -> Option<TextureInit> {
+  pub(crate) fn take_init(&self) -> Option<TextureInit> {
     self.0.init.lock().unwrap().take()
   }
   /// `(width, height, rgba8_pixels)` of a texture the GPU hasn't created
   /// yet, when its initial contents are known without one.
-  pub fn initial_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+  pub(crate) fn initial_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
     let (width, height) = (self.width(), self.height());
     match &*self.0.init.lock().unwrap() {
       Some(TextureInit::Pixels(data)) => Some((width, height, data.clone())),
@@ -527,7 +532,7 @@ impl TextureHandle {
   }
   /// Takes the initial contents when they're pixels the GPU hasn't been
   /// given yet.
-  pub fn take_initial_pixels(&self) -> Option<Vec<u8>> {
+  pub(crate) fn take_initial_pixels(&self) -> Option<Vec<u8>> {
     let mut init = self.0.init.lock().unwrap();
     match init.take() {
       Some(TextureInit::Pixels(data)) => Some(data),
@@ -538,7 +543,7 @@ impl TextureHandle {
     }
   }
   /// Whether `other` refers to the same texture.
-  pub fn same_texture(&self, other: &Self) -> bool {
+  pub(crate) fn same_texture(&self, other: &Self) -> bool {
     self.id() == other.id()
   }
   /// A weak reference, for a GPU store that frees a texture once no
@@ -586,7 +591,7 @@ impl TextureValue {
   }
   /// Whether this is the only value holding the texture, so its contents
   /// can change in place.
-  pub fn is_unique(&self) -> bool {
+  pub(crate) fn is_unique(&self) -> bool {
     self.0.0.value_refs.load(Ordering::Acquire) == 1
   }
 }
@@ -633,7 +638,7 @@ pub struct SamplerSettings {
 impl SamplerSettings {
   /// The settings `(Sampler filter address)` makes, from the variants'
   /// declaration-order indices (their discriminants).
-  pub fn from_discriminants(filter: u32, address: u32) -> Self {
+  pub(crate) fn from_discriminants(filter: u32, address: u32) -> Self {
     Self {
       filter: match filter {
         0 => SamplerFilter::Nearest,
@@ -3279,7 +3284,7 @@ impl Value {
   }
   /// Serializes this value to raw bytes for uploading to a uniform buffer.
   /// The `ty` parameter is used to determine field ordering for struct types.
-  pub fn to_uniform_bytes(&self, ty: &Type) -> Vec<u8> {
+  pub(crate) fn to_uniform_bytes(&self, ty: &Type) -> Vec<u8> {
     // A closure is laid out as its scope data, whether typed as a function
     // or as the scope struct its stored position lowered to.
     if let Some(data_type) = ty.closure_data_type() {
@@ -3384,7 +3389,7 @@ impl Value {
   /// value shapes produced match the tree-walking interpreter's exactly
   /// (e.g. matrices as arrays of column vectors), so printing and GPU
   /// serialization behave identically across both runtimes.
-  pub fn from_vm_words(t: &Type, words: &[u32]) -> Value {
+  pub(crate) fn from_vm_words(t: &Type, words: &[u32]) -> Value {
     fn words_of(t: &Type) -> usize {
       t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap() as usize
@@ -3469,7 +3474,7 @@ impl Value {
 
   /// Serializes a `Value` into the bytecode VM's flat stack layout — the
   /// inverse of `from_vm_words`.
-  pub fn to_vm_words(&self, t: &Type) -> Vec<u32> {
+  pub(crate) fn to_vm_words(&self, t: &Type) -> Vec<u32> {
     fn words_of(t: &Type) -> usize {
       t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap() as usize
@@ -3550,7 +3555,7 @@ impl Value {
   }
 
   /// Deserializes a `Value` from raw GPU bytes, given the expected `Type`.
-  pub fn from_gpu_bytes(bytes: &[u8], ty: &Type) -> Value {
+  pub(crate) fn from_gpu_bytes(bytes: &[u8], ty: &Type) -> Value {
     use crate::compiler::types::ConcreteArraySize;
     // Unsized arrays: the type carries no element count, so derive it from
     // how many whole elements fit in the returned byte slice.
@@ -3695,7 +3700,7 @@ pub struct DrawGeometry {
   /// The arrays feeding the vertex shader's data parameters, in order:
   /// stepping per vertex, then per instance.
   pub vertex_data: Option<(u8, u8)>,
-  pub instance_data: Option<(u8, u8)>,
+  pub(crate) instance_data: Option<(u8, u8)>,
 }
 
 impl DrawGeometry {
@@ -3778,13 +3783,13 @@ pub enum WindowEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GpuEntryInfo {
   pub name: String,
-  pub used_bindings: Vec<(u8, u8)>,
+  pub(crate) used_bindings: Vec<(u8, u8)>,
   /// A vertex entry's data parameters' layouts, in order (see
   /// `vertex_inputs`).
-  pub vertex_inputs: Vec<VertexInputLayout>,
+  pub(crate) vertex_inputs: Vec<VertexInputLayout>,
   /// A fragment entry with a `frag-depth` output: its pipelines need a
   /// depth attachment even with depth testing off.
-  pub writes_frag_depth: bool,
+  pub(crate) writes_frag_depth: bool,
 }
 
 /// A single observable event emitted by the interpreter, recorded by StringIO
@@ -3862,11 +3867,12 @@ impl Default for MidiState {
 }
 
 impl MidiState {
+  #[cfg(feature = "window")]
   /// Applies one raw MIDI message (status byte first) to the state, merging
   /// all channels, and bumps `generation` if it changed anything. Returns
   /// whether it did: messages easl doesn't track (clock, sysex, program
   /// change, pressure on a note that isn't held) leave the state untouched.
-  pub fn apply_message(&mut self, message: &[u8]) -> bool {
+  pub(crate) fn apply_message(&mut self, message: &[u8]) -> bool {
     if message.is_empty() {
       return false;
     }
@@ -3932,7 +3938,7 @@ impl MidiState {
   /// `None`. Matches `Value::to_vm_words` for `[128: (Option MidiNote)]`,
   /// so the tree-walker's value-built uploads and the VM's slot words
   /// agree byte-for-byte (pinned by the `get_midi_note_gpu` round trip).
-  pub fn note_table_words(&self) -> Vec<u32> {
+  pub(crate) fn note_table_words(&self) -> Vec<u32> {
     let mut words = Vec::with_capacity(128 * 4);
     for note_num in 0..128u32 {
       match self.down_notes.iter().find(|n| n.note == note_num) {
@@ -3953,7 +3959,7 @@ impl MidiState {
   /// `Some`/`None` (built by variant name, so it's independent of the
   /// enum's discriminant order; the GPU upload serializes it through the
   /// binding's concrete type).
-  pub fn note_table_value(&self) -> Value {
+  pub(crate) fn note_table_value(&self) -> Value {
     Value::Array(
       (0..128u32)
         .map(|note_num| {
@@ -4009,7 +4015,7 @@ pub struct SpoofedWindowInfo {
 /// The current value of one window-info binding source, as flat u32 words
 /// in the VM/GPU layout (shared by both CPU runtimes so their refreshes
 /// agree).
-pub fn window_info_words<IO: IOManager>(
+pub(crate) fn window_info_words<IO: IOManager>(
   source: &WindowInfoBindingSource,
   io: &IO,
 ) -> Vec<u32> {
@@ -4083,13 +4089,13 @@ pub struct GpuBindingInfo {
   pub name: Arc<str>,
   pub kind: GpuBufferKind,
   /// Static size in bytes; 0 for dynamically-sized (unsized array) bindings.
-  pub byte_size: u64,
+  pub(crate) byte_size: u64,
   pub stages: BindingStages,
   /// For a read-only view of a storage-write var (see
   /// [`crate::compiler::storage_views`]): the var's binding, whose buffer
   /// is bound here too. A view has no buffer, uploads, or readbacks of its
   /// own.
-  pub alias_of: Option<(u8, u8)>,
+  pub(crate) alias_of: Option<(u8, u8)>,
 }
 
 /// Describes the GPU buffer type for a top-level variable binding.
@@ -4109,7 +4115,7 @@ pub enum GpuBufferKind {
 
 /// Tracks whether a GPU-bound buffer is in sync between CPU and GPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SharedBufferState {
+pub(crate) enum SharedBufferState {
   /// CPU and GPU hold the same data.
   Synced,
   /// The GPU wrote to this buffer; the CPU value is stale.
@@ -4126,15 +4132,15 @@ pub enum SharedBufferState {
 /// derivation.
 #[derive(Serialize, Deserialize)]
 pub struct DerivedGpuInterface {
-  pub binding_vars:
+  pub(crate) binding_vars:
     Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>,
-  pub binding_stages: HashMap<Arc<str>, BindingStages>,
+  pub(crate) binding_stages: HashMap<Arc<str>, BindingStages>,
   pub gpu_entries: Vec<GpuEntryInfo>,
   /// Source-level entry name -> dense id into `gpu_entries`.
-  pub gpu_entry_ids: HashMap<Arc<str>, u16>,
+  pub(crate) gpu_entry_ids: HashMap<Arc<str>, u16>,
   /// The bindings of the read-only views render shaders read storage-write
   /// vars through, each an alias of its var's binding.
-  pub read_view_infos: Vec<GpuBindingInfo>,
+  pub(crate) read_view_infos: Vec<GpuBindingInfo>,
 }
 
 impl DerivedGpuInterface {
@@ -4486,7 +4492,7 @@ pub trait FrameDriver {
 
 /// Tree-walking-interpreter frame driver: evaluates the callback body once
 /// per frame.
-pub struct AstFrameDriver<'a, IO: IOManager> {
+pub(crate) struct AstFrameDriver<'a, IO: IOManager> {
   pub body: Exp<ExpTypeInfo>,
   pub env: &'a mut EvaluationEnvironment<IO>,
 }
@@ -5849,6 +5855,8 @@ pub struct PendingReadback {
   ty: Type,
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 pub struct EvaluationEnvironment<IO: IOManager> {
   bindings: HashMap<Arc<str>, Vec<(Value, Type)>>,
   structs: HashMap<Arc<str>, AbstractStruct>,
@@ -6014,28 +6022,22 @@ impl EnvironmentSpec {
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
-  pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
+  pub(crate) fn from_program(
+    program: Program,
+    io: IO,
+  ) -> Result<Self, EvalError> {
     #[cfg(feature = "window")]
     return Self::from_program_with_audio_source(program, io, None);
     #[cfg(not(feature = "window"))]
     return Self::build_inner(program, io, None);
   }
   #[cfg(feature = "window")]
-  pub fn from_program_with_audio_source(
+  pub(crate) fn from_program_with_audio_source(
     program: Program,
     io: IO,
     audio_source: Option<crate::audio::AudioSource>,
   ) -> Result<Self, EvalError> {
     Self::build_inner(program, io, audio_source, None)
-  }
-  #[cfg(feature = "window")]
-  pub fn from_program_with_audio_source_and_external(
-    program: Program,
-    io: IO,
-    audio_source: Option<crate::audio::AudioSource>,
-    external_vars: Option<Arc<ExternalVars>>,
-  ) -> Result<Self, EvalError> {
-    Self::build_inner(program, io, audio_source, external_vars)
   }
   fn build_inner(
     program: Program,
@@ -6282,7 +6284,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// thread's copies are refreshed per batch by `VmAudioDriver`
   /// instead, and the sharing analysis excludes the vars, so the
   /// publish/adopt machinery never overwrites either side's refresh.
-  pub fn refresh_midi_state(&mut self) {
+  pub(crate) fn refresh_midi_state(&mut self) {
     if !self.bindings.contains_key("easl_midi_cc")
       && !self.bindings.contains_key("easl_midi_aftertouch")
       && !self.bindings.contains_key("easl_midi_pitch_bend")
@@ -6349,7 +6351,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     write("easl_midi_notes", midi.note_table_value());
     self.mark_cpu_written(&written);
   }
-  pub fn refresh_window_info_bindings(&mut self) {
+  pub(crate) fn refresh_window_info_bindings(&mut self) {
     if self.window_info_bindings.is_empty() {
       return;
     }
@@ -6383,71 +6385,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       gpu_binding_infos_from(&self.binding_vars, &self.binding_stages);
     infos.extend(self.read_view_infos.iter().cloned());
     infos
-  }
-
-  /// Returns the current byte representation of each GPU-bound variable,
-  /// padded to a 16-byte multiple.
-  pub fn binding_buffer_data(&self) -> Vec<((u8, u8), BufferUpload)> {
-    self
-      .binding_vars
-      .iter()
-      .filter_map(|(gb, name, ty, addr)| {
-        let value = self
-          .bindings
-          .get(name)
-          .and_then(|v| v.last())
-          .map(|(v, _)| v);
-        let upload = match value {
-          Some(Value::ZeroedArray { length }) => {
-            let Type::Array(_, inner_type_info) = ty else {
-              panic!()
-            };
-            let inner_ty = inner_type_info.unwrap_known();
-            let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
-            let align = inner_ty.wgsl_alignment_in_u32s();
-            let stride = ((elem_size + align - 1) / align) * align;
-            // Minimum one element: wgpu rejects storage bindings
-            // smaller than the element stride.
-            let raw_bytes =
-              (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
-            let padded = padded_buffer_bytes(
-              raw_bytes,
-              matches!(
-                addr,
-                VariableAddressSpace::StorageRead
-                  | VariableAddressSpace::StorageReadWrite
-              ),
-            );
-            BufferUpload::Clear { byte_count: padded }
-          }
-          Some(Value::Texture(texture)) => {
-            BufferUpload::Texture(texture.handle().clone())
-          }
-          Some(Value::Sampler(settings)) => BufferUpload::Sampler(*settings),
-          _ if *addr == VariableAddressSpace::Handle => {
-            // Uninitialized texture — skip; placeholder texture is used on GPU.
-            return None;
-          }
-          _ => {
-            let mut bytes = value
-              .map(|v| v.to_uniform_bytes(ty))
-              .unwrap_or(vec![0u8; 4]);
-            let target = padded_buffer_bytes(
-              (bytes.len() as u64)
-                .max(unsized_array_min_bytes(ty).unwrap_or(0)),
-              matches!(
-                addr,
-                VariableAddressSpace::StorageRead
-                  | VariableAddressSpace::StorageReadWrite
-              ),
-            ) as usize;
-            bytes.resize(target, 0);
-            BufferUpload::Data(bytes)
-          }
-        };
-        Some(((gb.group, gb.binding), upload))
-      })
-      .collect()
   }
 
   fn is_binding_var(&self, name: &Arc<str>) -> bool {
@@ -6715,7 +6652,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// cost, paid only for genuinely-shared GPU-written variables and only
   /// while another thread is live; the `gpu_write_audio_read` /
   /// `gpu_write_no_audio_no_readback` goldens pin both sides.
-  pub fn publish_shared_globals(&mut self, force_mask: u32) {
+  pub(crate) fn publish_shared_globals(&mut self, force_mask: u32) {
     let live_others = self.shared_table.live_others(participant::MAIN);
     if live_others == 0 {
       return;
@@ -6781,7 +6718,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// `@external` vars live in GPU-space address spaces and so can't have
   /// initializers — seeding is the embedder's job, through the handle.
   /// No-op unless an external handle is live.
-  pub fn bootstrap_external_globals(&mut self) {
+  pub(crate) fn bootstrap_external_globals(&mut self) {
     if self.shared_table.live_others(participant::MAIN) & participant::EXTERNAL
       == 0
     {
@@ -6797,7 +6734,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// adopted value marks the buffer GPUOutOfDate directly (not via
   /// `mark_cpu_written`, which would re-dirty the shared flag and
   /// ping-pong the value back at the next boundary).
-  pub fn adopt_shared_globals(&mut self) {
+  pub(crate) fn adopt_shared_globals(&mut self) {
     if self.shared_table.live_others(participant::MAIN) == 0 {
       return;
     }
@@ -7056,7 +6993,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
 
   /// The GPU-written bindings among `names` whose CPU copies are stale, each
   /// with the byte size of its readback.
-  pub fn pending_readbacks(&self, names: &[Arc<str>]) -> Vec<PendingReadback> {
+  pub(crate) fn pending_readbacks(
+    &self,
+    names: &[Arc<str>],
+  ) -> Vec<PendingReadback> {
     self
       .binding_vars
       .iter()
@@ -7133,7 +7073,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
 
   /// Stores a readback's bytes as the binding's CPU-side value, marking it
   /// synced.
-  pub fn apply_readback(&mut self, readback: &PendingReadback, bytes: &[u8]) {
+  pub(crate) fn apply_readback(
+    &mut self,
+    readback: &PendingReadback,
+    bytes: &[u8],
+  ) {
     let value = Value::from_gpu_bytes(bytes, &readback.ty);
     if let Some(stack) = self.bindings.get_mut(&readback.name) {
       if let Some(slot) = stack.last_mut() {
@@ -7159,7 +7103,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// externally and need the interpreter's CPU-side copy to match without a
   /// GPU readback.  Returns false if no variable is bound at
   /// `(group, binding)`.
-  pub fn overwrite_binding_from_gpu_bytes(
+  pub(crate) fn overwrite_binding_from_gpu_bytes(
     &mut self,
     group: u8,
     binding: u8,
@@ -7247,29 +7191,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  /// Syncs all GPU-written (CPUOutOfDate) buffers back to CPU, then marks
-  /// them GPUOutOfDate so that when a new GPU is created (e.g. transitioning
-  /// from headless to windowed), it will receive the correct data on next use.
-  pub fn sync_gpu_written_to_cpu(&mut self) {
-    let names: Vec<Arc<str>> = self
-      .buffer_states
-      .iter()
-      .filter(|(_, s)| **s == SharedBufferState::CPUOutOfDate)
-      .map(|(n, _)| n.clone())
-      .collect();
-    if names.is_empty() {
-      return;
-    }
-    self.check_cpu_readable(&names);
-    for name in &names {
-      if self.buffer_states.get(name) == Some(&SharedBufferState::Synced) {
-        self
-          .buffer_states
-          .insert(name.clone(), SharedBufferState::GPUOutOfDate);
-      }
-    }
-  }
-
   fn bind(&mut self, name: Arc<str>, value: Value, ty: Type) {
     if let Some(bindings) = self.bindings.get_mut(&name) {
       bindings.push((value, ty));
@@ -7297,6 +7218,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub enum EvalException {
   Error(EvalError),
@@ -8912,7 +8835,7 @@ pub enum CpuRuntime {
 
 /// Resolve the `@cpu` entry point's *name* with the same selection rules as
 /// `pick_entry_point_body`.
-pub fn pick_entry_point_name(
+pub(crate) fn pick_entry_point_name(
   program: &Program,
   entry_point_name: Option<&str>,
 ) -> Result<Arc<str>, EvalError> {
@@ -10834,7 +10757,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
 
   /// [`Self::new`] with an [`ExternalVars`] handle whose
   /// table the runtime will share with the embedder.
-  pub fn new_with_external(
+  pub(crate) fn new_with_external(
     program: Program,
     io: IO,
     #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,

@@ -50,11 +50,11 @@ use crate::{
 
 /// The resolved program: every definition from every module, with names
 /// rewritten to internal names.
-pub struct ResolvedModules {
+pub(crate) struct ResolvedModules {
   pub trees: Vec<EaslTree>,
   /// Each overload group's name and the names of the function registry
   /// buckets it draws candidates from.
-  pub overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
+  pub(crate) overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
   pub main_file_index: MainFileIndex,
 }
 
@@ -96,7 +96,7 @@ pub enum NameKind {
 
 /// How a name written in source should be displayed to a user: an internal
 /// name's last segment, without any overload-group marker.
-pub fn display_name(name: &str) -> &str {
+pub(crate) fn display_name(name: &str) -> &str {
   let name = name.split_once('@').map_or(name, |(base, _)| base);
   match name.rsplit_once('/') {
     Some((_, last)) if !last.is_empty() => last,
@@ -413,7 +413,7 @@ fn file_stem(path: &str) -> String {
 
 /// Resolves the modules of `trees` (each document's top-level forms,
 /// already macroexpanded, in document order).
-pub fn resolve_modules(
+pub(crate) fn resolve_modules(
   documents: &EaslMultiDocument,
   trees: Vec<Vec<EaslTree>>,
   builtin_functions: HashSet<Arc<str>>,

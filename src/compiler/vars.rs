@@ -45,19 +45,19 @@ impl Default for VariableAddressSpace {
 use VariableAddressSpace::*;
 
 impl VariableAddressSpace {
-  pub fn may_write_from_gpu(&self) -> bool {
+  pub(crate) fn may_write_from_gpu(&self) -> bool {
     match self {
       Function | Local | Workgroup | StorageReadWrite => true,
       Uniform | StorageRead | Handle => false,
     }
   }
-  pub fn needs_group_and_binding(&self) -> bool {
+  pub(crate) fn needs_group_and_binding(&self) -> bool {
     match self {
       Local | Workgroup => false,
       _ => true,
     }
   }
-  pub fn disallows_initialization(&self) -> bool {
+  pub(crate) fn disallows_initialization(&self) -> bool {
     *self != Local
   }
   pub fn compile(&self) -> Option<&'static str> {
@@ -99,7 +99,7 @@ impl VariableAddressSpace {
   /// are context-gated instead (`validate_context_exclusivity`: legal in
   /// cpu/audio code, rejected where the call site can run on the GPU,
   /// since base WGSL only permits function/private pointer params).
-  pub fn may_never_be_passed_as_reference(&self) -> bool {
+  pub(crate) fn may_never_be_passed_as_reference(&self) -> bool {
     matches!(self, Workgroup | Handle)
   }
 }
@@ -117,7 +117,7 @@ pub struct GroupAndBinding {
 
 impl GroupAndBinding {
   /// The first (group, binding) not in `used`, in group-then-binding order.
-  pub fn first_free(used: &HashSet<GroupAndBinding>) -> Self {
+  pub(crate) fn first_free(used: &HashSet<GroupAndBinding>) -> Self {
     (0u8..=u8::MAX)
       .flat_map(|group| {
         (0u8..=u8::MAX).map(move |binding| GroupAndBinding { group, binding })
@@ -166,7 +166,7 @@ pub enum TopLevelVariableKind {
 pub struct TopLevelVar {
   pub name: Arc<str>,
   pub kind: TopLevelVariableKind,
-  pub var_type: Type,
+  pub(crate) var_type: Type,
   pub value: Option<TypedExp>,
   pub source_trace: SourceTrace,
   /// Marked `@external`: an embedder may read/write this var through an
@@ -187,7 +187,7 @@ pub struct TopLevelVar {
 
 impl TopLevelVar {
   /// Whether this is in the handle space: a texture or a sampler.
-  pub fn is_handle(&self) -> bool {
+  pub(crate) fn is_handle(&self) -> bool {
     matches!(
       self.kind,
       TopLevelVariableKind::Var {
@@ -440,7 +440,7 @@ impl TopLevelVar {
     }
     None
   }
-  pub fn variable_kind(&self) -> VariableKind {
+  pub(crate) fn variable_kind(&self) -> VariableKind {
     match self.kind {
       TopLevelVariableKind::Const => VariableKind::Let,
       TopLevelVariableKind::Override => VariableKind::Override,
@@ -745,7 +745,7 @@ impl Program {
   /// they run once at startup, ordered only by what they read, so an
   /// effect (a print, a write to a global, a file read) would happen at a
   /// time, and in an order, the program doesn't say.
-  pub fn validate_pure_initializers(&self, errors: &mut ErrorLog) {
+  pub(crate) fn validate_pure_initializers(&self, errors: &mut ErrorLog) {
     let mut memo = EffectsMemo::default();
     for v in self.top_level_vars.iter() {
       let Some(value) = &v.value else {

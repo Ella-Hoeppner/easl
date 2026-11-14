@@ -132,7 +132,7 @@ static AUDIO_STATE: Mutex<Option<AudioState>> = Mutex::new(None);
 /// if the stream is already running this is a benign repeat (typical
 /// "called inside the frame callback" pattern); if not, the run was
 /// started without audio support.
-pub fn is_audio_thread_started() -> bool {
+pub(crate) fn is_audio_thread_started() -> bool {
   AUDIO_STATE.lock().unwrap().is_some()
 }
 
@@ -349,7 +349,7 @@ static AUDIO_INPUT_STREAM: Mutex<Option<AudioInputState>> = Mutex::new(None);
 /// padding with silence on underrun and yielding all-silence when nothing
 /// is listening. Called once per output batch by the audio driver, so the
 /// ring is locked once per batch rather than once per sample.
-pub fn drain_audio_input(buf: &mut Vec<f32>, frames: usize) {
+pub(crate) fn drain_audio_input(buf: &mut Vec<f32>, frames: usize) {
   buf.clear();
   buf.resize(frames, 0.0);
   if let Some(ring) = AUDIO_INPUT_RING.get() {
@@ -584,6 +584,8 @@ pub struct VmAudioDriver {
   stop_taken: bool,
 }
 
+// Public for easl's own integration tests, not a stable API.
+#[doc(hidden)]
 /// An audio program as compiled, before any of it ran, to start over once
 /// its audio code has stopped with a runtime error: a later `start-audio`
 /// gives the program a fresh run (its state initialized again, adopting the
@@ -1084,7 +1086,7 @@ pub fn stop_audio() {
 /// Boot the audio thread with the C backend (JIT-compiled dylib). Requires
 /// the `c_audio` feature.
 #[cfg(feature = "c_audio")]
-pub fn start_audio_thread_c(
+pub(crate) fn start_audio_thread_c(
   entry_name: &str,
   c_source: &str,
 ) -> Result<(), String> {
@@ -1092,7 +1094,7 @@ pub fn start_audio_thread_c(
 }
 
 #[cfg(not(feature = "c_audio"))]
-pub fn start_audio_thread_c(
+pub(crate) fn start_audio_thread_c(
   _entry_name: &str,
   _c_source: &str,
 ) -> Result<(), String> {
@@ -1121,9 +1123,9 @@ mod c_audio {
   type AudioFn = unsafe extern "C" fn(f32, f32) -> f32;
 
   pub(super) struct CAudioState {
-    pub _lib: libloading::Library,
-    pub _counter: Arc<AtomicU64>,
-    pub _fn_ptr: Arc<AtomicPtr<()>>,
+    pub(crate) _lib: libloading::Library,
+    pub(crate) _counter: Arc<AtomicU64>,
+    pub(crate) _fn_ptr: Arc<AtomicPtr<()>>,
   }
 
   fn easl_fn_name_to_c(name: &str) -> String {
