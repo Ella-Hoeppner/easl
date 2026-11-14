@@ -10,6 +10,15 @@ homepage = "https://easl-lang.org"
 readme = "README.md"
 keywords = ["shader", "wgsl", "webgpu", "lisp", "language"]
 categories = ["compilers", "graphics", "rendering", "multimedia::audio"]
+# What the crates.io package holds: the library, without the tests and their
+# programs. `web_runtime/` is the prebuilt web runtime `publish.sh` builds.
+include = [
+  "/src/**/*",
+  "/build.rs",
+  "/web_runtime/*",
+  "/README.md",
+  "/LICENSE.md",
+]
 
 [dependencies]
 lazy_static = "1.5.0"
@@ -44,6 +53,17 @@ c_audio = ["window", "dep:libloading"]
 # (subprocess, `ffmpeg-sidecar`) — no linking, needs `ffmpeg` on PATH at
 # runtime.
 video = ["window", "dep:ffmpeg-sidecar"]
+# `web-runtime` embeds the prebuilt web runtime in `web_bundle`
+# (`WEB_RUNTIME`, `COMPILER_WEB_RUNTIME`), so a program can be compiled to a
+# complete web page. A checkout of the repository builds it from `web/`
+# (`build.rs`), which needs the wasm32 target
+# (`rustup target add wasm32-unknown-unknown`); the crate from crates.io
+# carries it prebuilt.
+web-runtime = ["dep:wasm-bindgen-cli-support"]
+
+[build-dependencies]
+# Must match the `wasm-bindgen` version `web/` pins.
+wasm-bindgen-cli-support = { version = "=0.2.129", optional = true }
 
 [dev-dependencies]
 naga = { version = "29.0.3", features = ["wgsl-in"] }

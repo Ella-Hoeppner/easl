@@ -31,6 +31,8 @@ pub struct DecodedFrame {
 
 #[cfg(feature = "video")]
 mod backend {
+  use std::io::{self, ErrorKind};
+
   use super::{DecodedFrame, VideoInfo};
   use ffmpeg_sidecar::child::FfmpegChild;
   use ffmpeg_sidecar::command::FfmpegCommand;
@@ -71,6 +73,18 @@ mod backend {
   /// it, so frame indices agree.
   const PASSTHROUGH_FRAMES: [&str; 2] = ["-fps_mode", "passthrough"];
 
+  /// Why `ffmpeg` couldn't be started: when it isn't installed, that it's
+  /// needed and where to get it.
+  fn spawn_error(error: io::Error) -> String {
+    if error.kind() == ErrorKind::NotFound {
+      "easl decodes video with the `ffmpeg` program, which isn't installed \
+       or isn't on the PATH (see https://ffmpeg.org/download.html)"
+        .to_string()
+    } else {
+      format!("couldn't run ffmpeg: {error}")
+    }
+  }
+
   fn spawn_decoder(path: &str) -> Result<Decoder, String> {
     let mut child = FfmpegCommand::new()
       .hide_banner()
@@ -80,7 +94,7 @@ mod backend {
       .args(PASSTHROUGH_FRAMES)
       .arg("-")
       .spawn()
-      .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+      .map_err(spawn_error)?;
     let frames = Box::new(
       child
         .iter()
@@ -105,9 +119,7 @@ mod backend {
       .format("null")
       .arg("-")
       .spawn()
-      .map_err(|e| {
-        format!("failed to spawn ffmpeg to probe \"{path}\": {e}")
-      })?;
+      .map_err(spawn_error)?;
     let mut iter = probe
       .iter()
       .map_err(|e| format!("failed to probe \"{path}\": {e}"))?;

@@ -17,18 +17,10 @@ For documentation, check out **[easl-lang.org](https://easl-lang.org/)**. To qui
 
 ## Local development
 
-To run easl programs locally, install the [easl CLI](https://github.com/Ella-Hoeppner/easl_cli). (it needs the wasm32 target, for compiling programs to web pages):
+To run easl programs locally, install the [easl CLI](https://github.com/Ella-Hoeppner/easl_cli) with cargo:
 
 ```
-git clone https://github.com/Ella-Hoeppner/easl_cli
-cd easl_cli && cargo install --path .
-easl run examples/simple.easl
-```
-
-To compile easl programs to the web, you'll need to add the `wasm32` target for rust installed. If you use rustup, that should be as simple as:
-
-```
-rustup target add wasm32-unknown-unknown 
+cargo install --locked easl_cli
 ```
 
 `easl run my_file.easl` runs a program, `easl compile my_file.easl` compiles it to WGSL (or, with `--web`, to a web page), and `easl format` formats it.

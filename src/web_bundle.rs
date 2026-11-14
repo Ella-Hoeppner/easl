@@ -28,6 +28,34 @@ pub const RUNTIME_FILES: [&str; 2] = ["easl_web.js", "easl_web_bg.wasm"];
 pub const COMPILER_RUNTIME_FILES: [&str; 2] =
   ["easl_web_compiler.js", "easl_web_compiler_bg.wasm"];
 
+/// The runtime that runs precompiled programs: each of [`RUNTIME_FILES`]
+/// with its contents (see `build.rs`).
+#[cfg(feature = "web-runtime")]
+pub const WEB_RUNTIME: [(&str, &[u8]); 2] = [
+  (
+    RUNTIME_FILES[0],
+    include_bytes!(concat!(env!("OUT_DIR"), "/easl_web.js")),
+  ),
+  (
+    RUNTIME_FILES[1],
+    include_bytes!(concat!(env!("OUT_DIR"), "/easl_web_bg.wasm")),
+  ),
+];
+
+/// The runtime built with the compiler: each of [`COMPILER_RUNTIME_FILES`]
+/// with its contents (see `build.rs`).
+#[cfg(feature = "web-runtime")]
+pub const COMPILER_WEB_RUNTIME: [(&str, &[u8]); 2] = [
+  (
+    COMPILER_RUNTIME_FILES[0],
+    include_bytes!(concat!(env!("OUT_DIR"), "/easl_web_compiler.js")),
+  ),
+  (
+    COMPILER_RUNTIME_FILES[1],
+    include_bytes!(concat!(env!("OUT_DIR"), "/easl_web_compiler_bg.wasm")),
+  ),
+];
+
 /// Files every web build includes alongside the runtime, the same for every
 /// program: the audio worklet that runs a program's audio thread, and the
 /// text-encoding polyfill it needs.
