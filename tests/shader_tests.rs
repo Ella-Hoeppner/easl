@@ -469,7 +469,22 @@ error_test!(
   CompileErrorKind::NonConstantArraySize("fractional".to_string()),
   CompileErrorKind::NonConstantArraySize("from-float".to_string()),
   CompileErrorKind::NegativeArraySize("negative".to_string(), -2),
-  CompileErrorKind::ArraySizeDividesByZero("by-zero".to_string())
+  CompileErrorKind::ArraySizeDividesByZero("by-zero".to_string()),
+  CompileErrorKind::NonConstantArraySize("counter".to_string())
+);
+error_test!(
+  unbound_array_size_failure,
+  CompileErrorKind::UnboundName("max-segment-length".into()),
+  CompileErrorKind::UnboundName("ring-spare".into()),
+  CompileErrorKind::UnboundName("corner-count".into()),
+  CompileErrorKind::UnboundName("total-count".into()),
+  CompileErrorKind::UnboundName("missing-size".into()),
+  CompileErrorKind::UnboundName("weight-count".into()),
+  CompileErrorKind::UnboundName("extra-count".into()),
+  CompileErrorKind::UnboundName("result-count".into()),
+  CompileErrorKind::UnboundName("local-count".into()),
+  CompileErrorKind::UnboundName("fn-arg-count".into()),
+  CompileErrorKind::UnboundName("ascribed-count".into())
 );
 error_test!(
   non_constant_initializer_in_shader_failure,

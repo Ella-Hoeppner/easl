@@ -1,0 +1,45 @@
+; Array sizes naming nothing: each is an unbound name, reported at the
+; size, wherever the size is written (for a component, `missing-size.x`, at
+; the name it's a component of). Sizes naming a `def` or a const generic of
+; the enclosing definition are fine.
+(def max-path-length: u32
+     8u)
+
+(def max-segment-count: u32
+     (- max-path-length 1u))
+
+(struct Path
+  points: [max-path-length: vec2f]
+  colors: [max-segment-length: vec3f]
+  length: u32)
+
+(struct (Ring T N: u32)
+  items: [N: T]
+  spare: [ring-spare: T])
+
+(enum Shape
+  (Polygon [corner-count: vec2f])
+  (Line [2: vec2f]))
+
+(var paths: [Path])
+(var totals: [total-count: f32])
+(var dotted: [missing-size.x: f32])
+(def weights: [weight-count: f32] (zeroed-array))
+
+(defn (sum N: u32)
+      [arr: [N: f32]
+       extra: [extra-count: f32]]: [result-count: f32]
+      (let [copy: [N: f32] arr
+            other: [local-count: f32] (zeroed-array)]
+        (zeroed-array)))
+
+(defn takes-fn [f: (Fn [[fn-arg-count: f32]] f32)]: f32
+  0.)
+
+@cpu
+(defn main []
+  (= paths
+     ~[(Path (zeroed-array)
+             (zeroed-array)
+             2u)])
+  (print (array-length (zeroed-array): [ascribed-count: f32])))

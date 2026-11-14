@@ -1,7 +1,7 @@
 ; `def`s used as array sizes whose values aren't constant integers: one
 ; calls a function, one isn't an integer, one converts a float, one is
-; negative, and one divides by zero. The `def` that calls a function but
-; isn't a size is fine.
+; negative, and one divides by zero; and a `var` used as an array size. The
+; `def` that calls a function but isn't a size is fine.
 (defn twice [x: u32]: u32
   (* 2u x))
 
@@ -11,6 +11,7 @@
 (def negative: i32 (- 1i 3i))
 (def by-zero: u32 (/ 4u (- 2u 2u)))
 (def unused-as-size: u32 (twice 3u))
+@local (var counter: u32 3u)
 
 @cpu
 (defn main []
@@ -19,4 +20,5 @@
   (print (array-length (zeroed-array): [from-float: f32]))
   (print (array-length (zeroed-array): [negative: f32]))
   (print (array-length (zeroed-array): [by-zero: f32]))
+  (print (array-length (zeroed-array): [counter: f32]))
   (print unused-as-size))

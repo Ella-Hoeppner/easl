@@ -1562,10 +1562,23 @@ impl<'a> Resolver<'a> {
         ),
         children,
       ) => {
-        let children: Vec<EaslTree> = children
-          .into_iter()
-          .map(|child| self.rewrite(child, position, id, generics))
-          .collect();
+        let children: Vec<EaslTree> = match (position, encloser) {
+          (Position::Type, Encloser::Square) => {
+            self.rewrite_array_type(children, id, generics)
+          }
+          (Position::Type, Encloser::Parens)
+            if matches!(
+              children.first(),
+              Some(EaslTree::Leaf(_, head)) if head == "Fn"
+            ) =>
+          {
+            self.rewrite_function_type(children, id, generics)
+          }
+          _ => children
+            .into_iter()
+            .map(|child| self.rewrite(child, position, id, generics))
+            .collect(),
+        };
         let mut tree =
           EaslTree::Inner((tree_position, EO::Encloser(encloser)), children);
         if encloser == Encloser::Parens {
@@ -1575,6 +1588,112 @@ impl<'a> Resolver<'a> {
         tree
       }
     }
+  }
+
+  /// The contents of an array type's `[...]`: `[size: T]`, whose size is
+  /// resolved by `resolve_array_size`, or, runtime-sized, `[T]`.
+  fn rewrite_array_type(
+    &mut self,
+    children: Vec<EaslTree>,
+    id: ModuleId,
+    generics: &HashSet<Arc<str>>,
+  ) -> Vec<EaslTree> {
+    let sized = children.len() == 1;
+    children
+      .into_iter()
+      .map(|child| match child {
+        EaslTree::Inner(
+          (
+            ascription_position,
+            EncloserOrOperator::Operator(Operator::TypeAscription),
+          ),
+          ascription,
+        ) if sized => {
+          let output = ascription
+            .into_iter()
+            .enumerate()
+            .map(|(i, child)| match child {
+              EaslTree::Leaf(size_position, name) if i == 0 => {
+                let source: SourceTrace = (&size_position).into();
+                let resolved =
+                  self.resolve_array_size(&name, id, generics, &source);
+                EaslTree::Leaf(size_position, resolved)
+              }
+              child => self.rewrite(child, Position::Type, id, generics),
+            })
+            .collect();
+          EaslTree::Inner(
+            (
+              ascription_position,
+              EncloserOrOperator::Operator(Operator::TypeAscription),
+            ),
+            output,
+          )
+        }
+        child => self.rewrite(child, Position::Type, id, generics),
+      })
+      .collect()
+  }
+
+  /// The contents of a function type's `(Fn [args] return)`, whose `[args]`
+  /// is a list of types rather than an array type.
+  fn rewrite_function_type(
+    &mut self,
+    children: Vec<EaslTree>,
+    id: ModuleId,
+    generics: &HashSet<Arc<str>>,
+  ) -> Vec<EaslTree> {
+    children
+      .into_iter()
+      .enumerate()
+      .map(|(i, child)| match child {
+        EaslTree::Inner(
+          (args_position, EncloserOrOperator::Encloser(Encloser::Square)),
+          args,
+        ) if i == 1 => EaslTree::Inner(
+          (
+            args_position,
+            EncloserOrOperator::Encloser(Encloser::Square),
+          ),
+          args
+            .into_iter()
+            .map(|arg| self.rewrite(arg, Position::Type, id, generics))
+            .collect(),
+        ),
+        child => self.rewrite(child, Position::Type, id, generics),
+      })
+      .collect()
+  }
+
+  /// An array size: an integer literal, a const generic of the enclosing
+  /// definition, or another name in scope (a `def`'s value is computed by
+  /// `Program::inline_def_array_sizes`). A name bound to nothing is
+  /// reported here, where it's written.
+  fn resolve_array_size(
+    &mut self,
+    name: &str,
+    id: ModuleId,
+    generics: &HashSet<Arc<str>>,
+    source: &SourceTrace,
+  ) -> String {
+    // `a.b` names a component of whatever `a` names.
+    let head = name.split_once('.').map_or(name, |(head, _)| head);
+    let unbound = !head.starts_with(|c: char| c.is_ascii_digit())
+      && !is_path(head)
+      && !generics.contains(head)
+      && !self.builtin_functions.contains(head)
+      && !self.builtin_types.contains(head)
+      && self.scopes[id]
+        .get(head)
+        .is_none_or(|origins| origins.is_empty());
+    if unbound {
+      self.error(
+        CompileErrorKind::UnboundName(head.to_string()),
+        source.clone(),
+      );
+      return name.to_string();
+    }
+    self.resolve_leaf(name, Position::Type, id, generics, source)
   }
 
   /// Makes relative paths relative to the file a call is written in.

@@ -6495,14 +6495,16 @@ impl Program {
   /// `def`s with `+`, `-`, `*`, `/`, and `%`, the integer conversions
   /// (`u32`, `i32`), integer vectors (`vec2u`, ...), and their components,
   /// as the runtime would compute it (`fold_size_expression`). A size naming
-  /// a `def` with any other value is an error, reported at the `def`.
+  /// a `def` with any other value, or a `var`, is an error, reported at the
+  /// `def` or `var`. (A size naming nothing is reported by the module
+  /// resolver.)
   pub fn inline_def_array_sizes(&mut self, errors: &mut ErrorLog) {
     let mut memo: HashMap<Arc<str>, Result<SizeValue, SizeFoldError>> =
       HashMap::new();
     let folded: Vec<(Arc<str>, Result<i64, SizeFoldError>)> = self
       .top_level_vars
       .iter()
-      .filter(|v| v.kind == TopLevelVariableKind::Const)
+      .filter(|v| v.kind != TopLevelVariableKind::Override)
       .map(|v| {
         let result = self
           .fold_size_constant(&v.name, &mut memo, &mut HashSet::new())
