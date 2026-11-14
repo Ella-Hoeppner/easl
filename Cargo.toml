@@ -61,6 +61,14 @@ video = ["window", "dep:ffmpeg-sidecar"]
 # carries it prebuilt.
 web-runtime = ["dep:wasm-bindgen-cli-support"]
 
+[package.metadata.docs.rs]
+# Documents the runtime too (the interpreter, the GPU and audio runtimes,
+# `ExternalVars`), which is behind `window`. Only on Linux: docs.rs builds
+# the other targets by cross-compiling, which the audio and MIDI backends'
+# system libraries don't support, and the API is the same everywhere.
+features = ["window"]
+targets = ["x86_64-unknown-linux-gnu"]
+
 [build-dependencies]
 # Must match the `wasm-bindgen` version `web/` pins.
 wasm-bindgen-cli-support = { version = "=0.2.129", optional = true }

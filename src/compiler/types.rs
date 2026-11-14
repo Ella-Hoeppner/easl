@@ -1810,7 +1810,7 @@ impl Type {
     })
   }
   /// Returns the WGSL AlignOf for this type, in u32s (bytes / 4).
-  /// See https://www.w3.org/TR/WGSL/#alignment-and-size
+  /// See <https://www.w3.org/TR/WGSL/#alignment-and-size>
   pub fn wgsl_alignment_in_u32s(&self) -> usize {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
@@ -1839,7 +1839,7 @@ impl Type {
   /// For vec3, this is 3 (12 bytes), NOT rounded up to its AlignOf of 16.
   /// For user-defined structs and arrays, inter-field / stride padding IS
   /// included.
-  /// See https://www.w3.org/TR/WGSL/#alignment-and-size
+  /// See <https://www.w3.org/TR/WGSL/#alignment-and-size>
   pub fn wgsl_flat_data_size_in_u32s(&self) -> usize {
     fn round_up(align: usize, size: usize) -> usize {
       if align == 0 {

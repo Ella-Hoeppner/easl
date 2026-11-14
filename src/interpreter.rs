@@ -11552,9 +11552,9 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
 }
 
 /// Like `run_program_entry_with_io_from_path`, but also accepts an explicit
-/// [`AudioBackend`] choice (defaults to `VM`). Use this when the caller wants
-/// to opt into the C audio backend (requires `c_audio` feature) instead of
-/// the default bytecode VM.
+/// [`AudioBackend`](crate::audio::AudioBackend) choice (defaults to `VM`).
+/// Use this when the caller wants to opt into the C audio backend (requires
+/// `c_audio` feature) instead of the default bytecode VM.
 #[cfg(feature = "window")]
 pub fn run_program_entry_with_io_and_audio_backend_from_path<IO: IOManager>(
   program: Program,
