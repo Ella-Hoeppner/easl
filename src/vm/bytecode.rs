@@ -454,6 +454,10 @@ pub struct Instruction {
   pub return_position: u16,
 }
 
+// SAFETY (for every unchecked stack access in an instruction's execution):
+// the stack has more slots than any instruction's `max_touched_index`, which
+// covers every slot it reads or writes, since `without_initializing` sizes it
+// from them after `Code::validate` has bounded them.
 impl Instruction {
   fn f32_unary(&self, stack: &mut [u32], f: impl Fn(f32) -> f32) {
     unsafe {
@@ -556,7 +560,15 @@ impl Instruction {
       ) as u32;
     }
   }
-  fn max_touched_index(&self) -> u16 {
+  /// The highest stack slot this instruction can touch, given its operands
+  /// (a slot index, or 0 when it touches none). The stack is sized from it
+  /// (`BytecodeProgram::without_initializing`), which is what makes the
+  /// unchecked slot accesses in `execute_with_host` sound, so it must cover
+  /// every slot an op reads or writes. Computed in `u64`, where no operands
+  /// can overflow it.
+  fn max_touched_index(&self) -> u64 {
+    let [a0, a1, a2] = self.arg_positions.map(u64::from);
+    let r = u64::from(self.return_position);
     match self.op {
       // HostCall operands are metadata-table indices, not slots; the slots
       // host ops touch are covered by `Code::min_stack_size`.
@@ -566,47 +578,57 @@ impl Instruction {
       | Op::HostCall
       | Op::ResetAudioTime => 0,
       // The length operand is an immediate.
-      Op::CheckIndex | Op::CheckNonNegativeIndex => self.arg_positions[0],
-      Op::Constant => self.return_position,
+      Op::CheckIndex | Op::CheckNonNegativeIndex => a0,
+      Op::Constant => r,
       Op::Move => {
-        if self.arg_positions[1] == 0 {
+        if a1 == 0 {
           0
         } else {
-          self.return_position.max(self.arg_positions[0])
-            + self.arg_positions[1]
-            - 1
+          r.max(a0) + a1 - 1
         }
       }
-      Op::ArrayLookup | Op::ArrayStore => self
-        .return_position
-        .max(self.arg_positions[0])
-        .max(self.arg_positions[1]),
+      // Copies span `inner_data_size` (arg 2) slots; the array element's own
+      // slots depend on a runtime index, so those ops check them as they
+      // run.
+      Op::ArrayLookup => (r + a2.saturating_sub(1)).max(a0).max(a1),
+      Op::ArrayStore => (a0 + a2.saturating_sub(1)).max(r).max(a1),
+      // Packing reads, and unpacking writes, consecutive slots.
+      Op::PackSnorm4x8
+      | Op::PackUnorm4x8
+      | Op::Pack4xU8
+      | Op::Pack4xI8
+      | Op::Pack4xI8Clamp
+      | Op::Pack4xU8Clamp => r.max(a0 + 3),
+      Op::PackSnorm2x16 | Op::PackUnorm2x16 | Op::Pack2x16Float => {
+        r.max(a0 + 1)
+      }
+      Op::UnpackSnorm4x8
+      | Op::UnpackUnorm4x8
+      | Op::Unpack4xU8
+      | Op::Unpack4xI8 => (r + 3).max(a0),
+      Op::UnpackSnorm2x16 | Op::UnpackUnorm2x16 | Op::Unpack2x16Float => {
+        (r + 1).max(a0)
+      }
       // arg_positions[0] is a dyn-memory region index, not a slot; stride
       // and count operands aren't slots either.
-      Op::DynLen => self.return_position,
+      Op::DynLen => r,
       Op::DynLoad => {
         // dest spans stride slots
-        (self.return_position + self.arg_positions[2].saturating_sub(1))
-          .max(self.arg_positions[1])
+        (r + a2.saturating_sub(1)).max(a1)
       }
       Op::DynStore => {
         // src spans stride (held in return_position) slots
-        (self.arg_positions[2] + self.return_position.saturating_sub(1))
-          .max(self.arg_positions[1])
+        (a2 + r.saturating_sub(1)).max(a1)
       }
-      Op::DynResize => self.arg_positions[1],
+      Op::DynResize => a1,
       Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
-      Op::LoopedAudioTime => self.arg_positions[0].max(self.return_position),
+      Op::LoopedAudioTime => a0.max(r),
       // The message kind in `return_position` is an immediate.
-      Op::SendMidi => *self.arg_positions.iter().max().unwrap(),
+      Op::SendMidi => a0.max(a1).max(a2),
       // The var's slots are a global's, covered by the globals' range.
       Op::SharedAtomicLoad | Op::SharedAtomicStore => 0,
-      Op::SharedAtomicLoadWord => {
-        self.return_position.max(self.arg_positions[1])
-      }
-      Op::SharedAtomicStoreWord => {
-        self.arg_positions[1].max(self.arg_positions[2])
-      }
+      Op::SharedAtomicLoadWord => r.max(a1),
+      Op::SharedAtomicStoreWord => a1.max(a2),
       Op::SharedAtomicExchange
       | Op::SharedAtomicAdd
       | Op::SharedAtomicSub
@@ -616,75 +638,41 @@ impl Instruction {
       | Op::SharedAtomicMinI32
       | Op::SharedAtomicAnd
       | Op::SharedAtomicOr
-      | Op::SharedAtomicXor => self
-        .return_position
-        .max(self.arg_positions[1])
-        .max(self.arg_positions[2]),
-      Op::HeapLen | Op::HeapCopy => {
-        self.return_position.max(self.arg_positions[0])
-      }
-      Op::HeapRelease | Op::HeapPromote => self.return_position,
+      | Op::SharedAtomicXor => r.max(a1).max(a2),
+      Op::HeapLen | Op::HeapCopy => r.max(a0),
+      Op::HeapRelease | Op::HeapPromote => r,
       Op::HeapLoad => {
         // dest spans stride (arg 2) slots
-        (self.return_position + self.arg_positions[2].saturating_sub(1))
-          .max(self.arg_positions[0])
-          .max(self.arg_positions[1])
+        (r + a2.saturating_sub(1)).max(a0).max(a1)
       }
       Op::HeapStore => {
         // src spans stride (held in return_position) slots
-        (self.arg_positions[2] + self.return_position.saturating_sub(1))
-          .max(self.arg_positions[0])
-          .max(self.arg_positions[1])
+        (a2 + r.saturating_sub(1)).max(a0).max(a1)
       }
       Op::HeapFromSlots => {
         // src spans count (arg 1) * stride (arg 2) slots
-        self.return_position.max(
-          self.arg_positions[0]
-            + (self.arg_positions[1] * self.arg_positions[2]).saturating_sub(1),
-        )
+        r.max(a0 + (a1 * a2).saturating_sub(1))
       }
-      Op::HeapPush => self
-        .return_position
-        .max(self.arg_positions[0])
-        .max(self.arg_positions[1] + self.arg_positions[2].max(1) - 1),
-      Op::HeapInsert => self
-        .return_position
-        .max(self.arg_positions[0])
-        .max(self.arg_positions[1] + self.arg_positions[2].max(1)),
-      Op::HeapRemove => self
-        .return_position
-        .max(self.arg_positions[0])
-        .max(self.arg_positions[1]),
-      Op::HeapConcat => self
-        .return_position
-        .max(self.arg_positions[0])
-        .max(self.arg_positions[1]),
-      Op::HeapReverse => self.return_position.max(self.arg_positions[0]),
+      Op::HeapPush => r.max(a0).max(a1 + a2.max(1) - 1),
+      Op::HeapInsert => r.max(a0).max(a1 + a2.max(1)),
+      Op::HeapRemove => r.max(a0).max(a1),
+      Op::HeapConcat => r.max(a0).max(a1),
+      Op::HeapReverse => r.max(a0),
       // arg 2 is a stride, and the range spans two slots
-      Op::HeapSubarray => self
-        .return_position
-        .max(self.arg_positions[0])
-        .max(self.arg_positions[1] + 1),
-      Op::HeapZeroed | Op::HeapZeroedCells => {
-        self.return_position.max(self.arg_positions[0])
-      }
-      Op::HeapFromSlotsCells => self
-        .return_position
-        .max(self.arg_positions[0] + self.arg_positions[1].saturating_sub(1)),
+      Op::HeapSubarray => r.max(a0).max(a1 + 1),
+      Op::HeapZeroed | Op::HeapZeroedCells => r.max(a0),
+      Op::HeapFromSlotsCells => r.max(a0 + a1.saturating_sub(1)),
       // arg 0 is a region id, not a slot
-      Op::HeapFromRegion => self.return_position,
+      Op::HeapFromRegion => r,
       // arg 0 is a host_strings index, not a slot
-      Op::StrConst => self.return_position,
-      Op::RegionFromHeap => self.arg_positions[1],
+      Op::StrConst => r,
+      Op::RegionFromHeap => a1,
       Op::DynAssignFromSlots => {
         // src spans count (arg 2) * stride (return_position) slots
-        self.arg_positions[1]
-          + (self.arg_positions[2] * self.return_position).saturating_sub(1)
+        a1 + (a2 * r).saturating_sub(1)
       }
-      Op::JumpWhen | Op::JumpWhenNot => self.arg_positions[0],
-      _ => self
-        .return_position
-        .max(self.arg_positions.iter().copied().max().unwrap()),
+      Op::JumpWhen | Op::JumpWhenNot => a0,
+      _ => r.max(a0).max(a1).max(a2),
     }
   }
 }
@@ -1366,8 +1354,8 @@ impl VmHost for AudioHost<'_> {
 /// precompiled program (`crate::precompiled`) runs without the compiler.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Code {
-  pub function_instructions: Vec<Instruction>,
-  pub functions: Vec<Function>,
+  pub(crate) function_instructions: Vec<Instruction>,
+  pub(crate) functions: Vec<Function>,
   /// Index of a synthetic function that populates global var slots with
   /// their initial values. `Some` when the program has at least one
   /// initialized global; `from_code` runs it once on construction so the
@@ -1379,7 +1367,7 @@ pub struct Code {
   /// frames, and persist across `execute` calls; external integrations can
   /// use these to read or write globals in a running program (e.g.
   /// mirroring live uniform values into an audio VM).
-  pub globals: Vec<(Arc<str>, u16, u16)>,
+  pub(crate) globals: Vec<(Arc<str>, u16, u16)>,
   /// Total stack slots the compiler's bump allocator consumed. Some slots
   /// are only ever written by host ops (whose operands aren't visible to
   /// `max_touched_index`), so stack sizing takes the max of this and the
@@ -1407,7 +1395,7 @@ pub struct Code {
   /// Thread-shared globals, sorted by name; empty when the program has no
   /// cross-thread sharing. `Op::MarkSharedDirty` indices and the runtime
   /// `ThreadSharedTable` slots address into this list.
-  pub shared_vars: Vec<SharedVarInfo>,
+  pub(crate) shared_vars: Vec<SharedVarInfo>,
   /// The source positions instructions were compiled from, which runtime
   /// errors are reported at (see `Code::source_trace`).
   #[serde(skip)]
@@ -1420,7 +1408,7 @@ pub struct Code {
   /// The documents the program was compiled from, which runtime errors are
   /// described against.
   #[serde(skip)]
-  pub documents: Option<Arc<EaslMultiDocument>>,
+  pub(crate) documents: Option<Arc<EaslMultiDocument>>,
   /// The source map with its positions already described, which serializes:
   /// how a runtime without the documents describes where errors happened
   /// (see [`Code::describe_sources`]).
@@ -1454,6 +1442,78 @@ fn source_index(
 }
 
 impl Code {
+  /// The functions, by index (the index `prepare_to_run_function` takes).
+  pub fn functions(&self) -> &[Function] {
+    &self.functions
+  }
+  /// Every function's instructions, each function's a range of them.
+  pub fn function_instructions(&self) -> &[Instruction] {
+    &self.function_instructions
+  }
+  /// Each global's name and its slots: (name, first slot, slot count).
+  pub fn globals(&self) -> &[(Arc<str>, u16, u16)] {
+    &self.globals
+  }
+  /// The thread-shared globals, by shared index.
+  pub fn shared_vars(&self) -> &[SharedVarInfo] {
+    &self.shared_vars
+  }
+  /// The documents the program was compiled from, if they're kept.
+  pub fn documents(&self) -> Option<&Arc<EaslMultiDocument>> {
+    self.documents.as_ref()
+  }
+  /// Checks what running this code relies on without checking as it runs
+  /// (the VM's unchecked accesses): every function's instructions are among
+  /// the instructions, every function an instruction invokes exists, and
+  /// every slot an instruction can touch (`Instruction::max_touched_index`)
+  /// is below `MAX_STACK_SLOTS`, the most the stack is ever sized to. It
+  /// runs on all code, the compiler's included (every `BytecodeProgram` is
+  /// made by `without_initializing`, which runs it): the compiler's code
+  /// should always pass, and code from anywhere else, like bytes, can't
+  /// reach outside the VM's memory.
+  pub(crate) fn validate(&self) -> Result<(), String> {
+    let instruction_count = self.function_instructions.len() as u64;
+    for (index, function) in self.functions.iter().enumerate() {
+      let Range { start, end } = function.instructions;
+      if start > end || u64::from(end) > instruction_count {
+        return Err(format!(
+          "function {index}'s instructions ({start}..{end}) aren't among \
+           the {instruction_count} instructions"
+        ));
+      }
+    }
+    if let Some(index) = self.init_function_index
+      && index >= self.functions.len()
+    {
+      return Err(format!("the initializer function {index} doesn't exist"));
+    }
+    if self.min_stack_size as u64 > MAX_STACK_SLOTS {
+      return Err(format!(
+        "it needs {} stack slots, more than {MAX_STACK_SLOTS}",
+        self.min_stack_size
+      ));
+    }
+    for (index, instruction) in self.function_instructions.iter().enumerate() {
+      if instruction.op == Op::InvokeFunction
+        && usize::from(instruction.arg_positions[0]) >= self.functions.len()
+      {
+        return Err(format!(
+          "instruction {index} invokes function {}, which doesn't exist",
+          instruction.arg_positions[0]
+        ));
+      }
+      let touched = instruction.max_touched_index();
+      if touched >= MAX_STACK_SLOTS {
+        return Err(format!(
+          "instruction {index} ({:?}) touches stack slot {touched}, past the \
+           last ({})",
+          instruction.op,
+          MAX_STACK_SLOTS - 1
+        ));
+      }
+    }
+    Ok(())
+  }
   /// The source position instruction `instruction` was compiled from.
   fn instruction_source(&self, instruction: u32) -> Option<&DocumentPosition> {
     self
@@ -1525,10 +1585,45 @@ impl Code {
   pub fn to_bytes(&self) -> Vec<u8> {
     postcard::to_allocvec(self).expect("serializing bytecode failed")
   }
+  /// Code from its encoding (`to_bytes`), checked as `validate` does, so
+  /// running it can't reach outside the VM's memory however the bytes were
+  /// made.
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-    postcard::from_bytes(bytes)
-      .map_err(|e| format!("invalid serialized bytecode: {e}"))
+    let code: Self = postcard::from_bytes(bytes)
+      .map_err(|e| format!("invalid serialized bytecode: {e}"))?;
+    code
+      .validate()
+      .map_err(|e| format!("invalid serialized bytecode: {e}"))?;
+    Ok(code)
   }
+}
+
+/// The most stack slots a program has: slot positions are `u16`s.
+const MAX_STACK_SLOTS: u64 = 1 << 16;
+
+/// The slots of element `stack[index_slot]` of the fixed-size array whose
+/// elements are `element_size` slots each, starting at slot `array`. The
+/// index is a runtime value, so it's checked here against the stack (the
+/// compiler checks it against the array's length first, with
+/// `Op::CheckIndex`): code that skipped that check panics rather than
+/// reaching past the stack.
+fn element_slots(
+  stack: &[u32],
+  array: u16,
+  index_slot: u16,
+  element_size: u16,
+) -> Range<usize> {
+  let start = u64::from(array)
+    + u64::from(stack[index_slot as usize]) * u64::from(element_size);
+  let end = start + u64::from(element_size);
+  if end > stack.len() as u64 {
+    panic!(
+      "easl bytecode indexed an array past the end of the stack (slots \
+       {start}..{end} of {})",
+      stack.len()
+    );
+  }
+  start as usize..end as usize
 }
 
 // Public for easl's own integration tests, not a stable API.
@@ -1621,18 +1716,18 @@ pub(crate) fn heap_string_words(
 }
 
 pub struct BytecodeProgram {
-  pub code: Code,
-  pub stack: Vec<u32>,
+  pub(crate) code: Code,
+  pub(crate) stack: Vec<u32>,
   pub(crate) call_stack: Vec<Range<u32>>,
   /// Backing store for runtime-sized array globals, indexed by the
   /// compile-time region ids baked into the `Dyn*` opcodes. Lives outside
   /// the u16-addressed stack, so these arrays aren't subject to its 2^16
   /// word limit.
-  pub dyn_memory: Vec<DynMemory>,
+  pub(crate) dyn_memory: Vec<DynMemory>,
   /// Backing store for first-class dynamic-array *values* (the `Heap*`
   /// opcodes): Arc'd cells addressed by heap-id words. `None` entries are
   /// free (their indices sit in `heap_free`).
-  pub heap: Vec<Option<std::sync::Arc<HeapCell>>>,
+  pub(crate) heap: Vec<Option<std::sync::Arc<HeapCell>>>,
   /// Free-list of released `heap` indices.
   pub(crate) heap_free: Vec<u32>,
   /// Per-shared-variable "written since my last publish" flags, aligned
@@ -1649,7 +1744,7 @@ pub struct BytecodeProgram {
   /// Per-shared-variable shared words, for the vars holding atomics
   /// (`SharedVarInfo::atomic`), aligned with `Code::shared_vars`. Set by
   /// `attach_shared_atomics`.
-  pub shared_atomics: Vec<Option<SharedAtomic>>,
+  pub(crate) shared_atomics: Vec<Option<SharedAtomic>>,
   /// Per-host-binding "the GPU may have written this since the CPU last
   /// read it back" flags, aligned with `Code::host_bindings`. Set by
   /// `Op::MarkGpuNewer`, cleared by `Op::CheckGpuRead`; a flag may stay set
@@ -1668,10 +1763,41 @@ pub struct BytecodeProgram {
 }
 
 impl BytecodeProgram {
+  pub fn code(&self) -> &Code {
+    &self.code
+  }
+  pub fn into_code(self) -> Code {
+    self.code
+  }
+  /// The stack: function arguments, return values, and globals' slots.
+  pub fn stack(&self) -> &[u32] {
+    &self.stack
+  }
+  /// The stack, to write arguments and globals into. A slice, so its length
+  /// (which every instruction's slots fit in) can't change.
+  pub fn stack_mut(&mut self) -> &mut [u32] {
+    &mut self.stack
+  }
+  pub fn dyn_memory(&self) -> &[DynMemory] {
+    &self.dyn_memory
+  }
+  // Public for easl's own integration tests, not a stable API.
+  #[doc(hidden)]
+  pub fn dyn_memory_mut(&mut self) -> &mut [DynMemory] {
+    &mut self.dyn_memory
+  }
+  pub fn heap(&self) -> &[Option<std::sync::Arc<HeapCell>>] {
+    &self.heap
+  }
   /// A program from `code` whose top-level initializers haven't run: the
   /// caller runs `code.init_function_index` (as the CPU runtime does, with
   /// its host).
   pub(crate) fn without_initializing(code: Code) -> Self {
+    // Code that reaches here unchecked (deserialized some way other than
+    // `Code::from_bytes`) must not run past the stack.
+    if let Err(error) = code.validate() {
+      panic!("invalid easl bytecode: {error}");
+    }
     let max_stack_size = code
       .function_instructions
       .iter()
@@ -1903,12 +2029,17 @@ impl BytecodeProgram {
         ip = return_ip;
         continue;
       };
+      // SAFETY: `ip` is always within a function's instructions, which
+      // `Code::validate` (run when the program was made) checked are all
+      // among `function_instructions`; a jump only moves `ip.start`, and a
+      // start past the end ends the function.
       let instruction = unsafe {
         *code
           .function_instructions
           .get_unchecked(instruction_index as usize)
       };
       match instruction.op {
+        // SAFETY: `Code::validate` checked the function exists.
         Op::InvokeFunction => unsafe {
           call_stack.push(ip.clone());
           ip = code
@@ -2449,18 +2580,12 @@ impl BytecodeProgram {
           }
         }),
 
-        Op::ArrayLookup => unsafe {
+        Op::ArrayLookup => {
           let [arr_pos, index_pos, inner_data_size] = instruction.arg_positions;
-          let idx = *stack.get_unchecked(index_pos as usize);
-          let src =
-            (arr_pos as usize) + (idx as usize) * (inner_data_size as usize);
-          let base = stack.as_mut_ptr();
-          std::ptr::copy(
-            base.add(src),
-            base.add(instruction.return_position as usize),
-            inner_data_size as usize,
-          );
-        },
+          let element =
+            element_slots(stack, arr_pos, index_pos, inner_data_size);
+          stack.copy_within(element, instruction.return_position as usize);
+        }
 
         Op::CheckIndex => {
           let [index_slot, length, _] = instruction.arg_positions;
@@ -2478,18 +2603,17 @@ impl BytecodeProgram {
             trap!(Trap::NegativeIndex(index));
           }
         }
-        Op::ArrayStore => unsafe {
+        Op::ArrayStore => {
           let [src_pos, index_pos, inner_data_size] = instruction.arg_positions;
-          let idx = *stack.get_unchecked(index_pos as usize);
-          let dst = (instruction.return_position as usize)
-            + (idx as usize) * (inner_data_size as usize);
-          let base = stack.as_mut_ptr();
-          std::ptr::copy(
-            base.add(src_pos as usize),
-            base.add(dst),
-            inner_data_size as usize,
+          let element = element_slots(
+            stack,
+            instruction.return_position,
+            index_pos,
+            inner_data_size,
           );
-        },
+          let src = src_pos as usize;
+          stack.copy_within(src..src + inner_data_size as usize, element.start);
+        }
 
         Op::DynLen => {
           let [memory, stride, _] = instruction.arg_positions;
@@ -3134,5 +3258,161 @@ impl BytecodeProgram {
         }
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod validation_tests {
+  use std::panic::{AssertUnwindSafe, catch_unwind};
+
+  use super::*;
+
+  /// Every op: `Op`'s variants are all unit variants, encoded as their
+  /// index.
+  fn all_ops() -> Vec<Op> {
+    (0u32..)
+      .map_while(|index| {
+        postcard::from_bytes::<Op>(&postcard::to_allocvec(&index).unwrap()).ok()
+      })
+      .collect()
+  }
+
+  /// Code with one function: `instructions` then a return.
+  fn one_function(instructions: &[Instruction]) -> Code {
+    let mut function_instructions = instructions.to_vec();
+    function_instructions.push(Instruction {
+      op: Op::Return,
+      arg_positions: [0; 3],
+      return_position: 0,
+    });
+    Code {
+      functions: vec![Function {
+        instructions: 0..function_instructions.len() as u32,
+        return_position: 0,
+        arg_words: 0,
+        first_arg_position: 0,
+      }],
+      function_instructions,
+      init_function_index: None,
+      globals: vec![],
+      min_stack_size: 0,
+      host_ops: vec![],
+      host_types: vec![],
+      host_strings: vec![],
+      host_bindings: vec![],
+      host_dispatches: vec![],
+      dyn_memory_count: 0,
+      cell_regions: vec![],
+      dyn_memory_regions: vec![],
+      shared_vars: vec![],
+      source_positions: vec![],
+      instruction_sources: vec![],
+      documents: None,
+      described_sources: None,
+    }
+  }
+
+  fn instruction(op: Op, [a0, a1, a2, r]: [u16; 4]) -> Instruction {
+    Instruction {
+      op,
+      arg_positions: [a0, a1, a2],
+      return_position: r,
+    }
+  }
+
+  /// Runs every op (but jumps and calls, which could loop) with random
+  /// operands on a stack sized exactly to the op's `max_touched_index`, so
+  /// the highest slot it claims is the stack's last. An op touching a slot
+  /// past it would be an out-of-bounds unchecked access, which debug builds
+  /// abort on; an op that panics on its operands (a missing heap value, no
+  /// host) is fine. Operands stay small (they're also counts and strides,
+  /// which size allocations); `validation_rejects_code_reaching_outside_memory`
+  /// covers the largest.
+  #[test]
+  fn ops_stay_within_their_slots() {
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut random = move || {
+      seed ^= seed << 13;
+      seed ^= seed >> 7;
+      seed ^= seed << 17;
+      seed
+    };
+    let ops = all_ops();
+    assert!(ops.len() > 150, "only found {} ops", ops.len());
+    for op in ops {
+      if matches!(
+        op,
+        Op::Jump | Op::JumpWhen | Op::JumpWhenNot | Op::InvokeFunction
+      ) {
+        continue;
+      }
+      for _ in 0..200 {
+        let mut operand = || (random() % 24) as u16;
+        let operands = [operand(), operand(), operand(), operand()];
+        let code = one_function(&[instruction(op, operands)]);
+        if code.validate().is_err() {
+          continue;
+        }
+        let mut program = BytecodeProgram::without_initializing(code);
+        for slot in program.stack.iter_mut() {
+          *slot = (random() % 4) as u32;
+        }
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+          program.prepare_to_run_function(0);
+          let _ = program.execute_with_host(&mut NoopHost);
+        }));
+      }
+    }
+  }
+
+  #[test]
+  fn validation_rejects_code_reaching_outside_memory() {
+    let reject = |code: Code, what: &str| {
+      assert!(code.validate().is_err(), "accepted {what}");
+    };
+    // A copy whose end would wrap a `u16`.
+    reject(
+      one_function(&[instruction(Op::Move, [u16::MAX, 2, 0, 0])]),
+      "a wrapping move",
+    );
+    // Packing reads the three slots after its operand.
+    reject(
+      one_function(&[instruction(Op::Pack4xU8, [u16::MAX - 1, 0, 0, 0])]),
+      "a pack past the last slot",
+    );
+    reject(
+      one_function(&[instruction(Op::InvokeFunction, [1, 0, 0, 0])]),
+      "a call to a missing function",
+    );
+    let mut code = one_function(&[]);
+    code.functions[0].instructions = 0..2;
+    reject(code, "a function past the instructions");
+    let mut code = one_function(&[]);
+    code.init_function_index = Some(1);
+    reject(code, "a missing initializer");
+    let mut code = one_function(&[]);
+    code.min_stack_size = usize::MAX;
+    reject(code, "a huge stack");
+    assert!(
+      one_function(&[instruction(Op::Move, [u16::MAX - 1, 2, 0, 0])])
+        .validate()
+        .is_ok()
+    );
+  }
+
+  #[test]
+  fn array_access_past_the_stack_panics() {
+    // An index no `CheckIndex` checked: the element would be past the stack.
+    let mut program =
+      BytecodeProgram::without_initializing(one_function(&[instruction(
+        Op::ArrayLookup,
+        [0, 1, 2, 4],
+      )]));
+    program.stack[1] = 1000;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+      program.prepare_to_run_function(0);
+      let _ = program.execute_with_host(&mut NoopHost);
+    }));
+    assert!(result.is_err());
   }
 }

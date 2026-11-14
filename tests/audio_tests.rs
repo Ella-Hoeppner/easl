@@ -113,18 +113,18 @@ fn start_audio_bootstrap_publishes_current_globals() {
   // artifacts
   let shared_names = |code: &easl::vm::bytecode::Code| {
     code
-      .shared_vars
+      .shared_vars()
       .iter()
       .map(|info| info.name.to_string())
       .collect::<Vec<_>>()
   };
-  assert_eq!(shared_names(&main_program.code), vec!["gain", "sample"]);
-  assert_eq!(shared_names(&audio_program.code), vec!["gain", "sample"]);
+  assert_eq!(shared_names(main_program.code()), vec!["gain", "sample"]);
+  assert_eq!(shared_names(audio_program.code()), vec!["gain", "sample"]);
 
   // simulate what the cpu program would have computed by start-audio time
   main_program.write_global("gain", &[0.75f32.to_bits()]);
   let (region, _) = main_program.get_dyn_memory_region("sample").unwrap();
-  main_program.dyn_memory[region as usize] = DynMemory::Words(
+  main_program.dyn_memory_mut()[region as usize] = DynMemory::Words(
     [1.0f32, 2.0, 3.0, 4.0]
       .iter()
       .map(|s| s.to_bits())
@@ -134,7 +134,7 @@ fn start_audio_bootstrap_publishes_current_globals() {
   // the start-audio bootstrap: the audio participant joins and main
   // force-publishes everything in its audience, then the audio replica's
   // first boundary adopts everything
-  let table = ThreadSharedTable::new(main_program.code.shared_vars.len());
+  let table = ThreadSharedTable::new(main_program.code().shared_vars().len());
   table.join(participant::AUDIO);
   let mut published = Vec::new();
   main_program.publish_shared(
@@ -152,7 +152,7 @@ fn start_audio_bootstrap_publishes_current_globals() {
   audio_program.prepare_to_run_function(f_index);
   audio_program.execute();
   let slot = audio_program.get_function_return_position(f_index);
-  let result = f32::from_bits(audio_program.stack[slot as usize]);
+  let result = f32::from_bits(audio_program.stack()[slot as usize]);
   // gain (0.75) * sample[2] (3.0)
   assert_eq!(result, 2.25);
 }
@@ -263,7 +263,7 @@ fn serialized_audio_error_location() {
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
     let (program, names) = program.compile_to_bytecode_program();
-    let mut code = program.code;
+    let mut code = program.into_code();
     if describe {
       code.describe_sources();
     }
@@ -318,22 +318,22 @@ fn serialized_audio_program() {
     .find(|name| name.ends_with("_audio"))
     .expect("no audio clone of the closure entry")
     .to_string();
-  let bytes = original.code.to_bytes();
+  let bytes = original.code().to_bytes();
   let copy = BytecodeProgram::from_code(Code::from_bytes(&bytes).unwrap());
   let shared_names = |program: &BytecodeProgram| -> Vec<Arc<str>> {
     program
-      .code
-      .shared_vars
+      .code()
+      .shared_vars()
       .iter()
       .map(|v| v.name.clone())
       .collect()
   };
   assert_eq!(shared_names(&original), shared_names(&copy));
-  assert!(!original.code.shared_vars.is_empty());
+  assert!(!original.code().shared_vars().is_empty());
 
   let run = |program: BytecodeProgram| {
     let table =
-      Arc::new(ThreadSharedTable::new(program.code.shared_vars.len()));
+      Arc::new(ThreadSharedTable::new(program.code().shared_vars().len()));
     table.join(participant::AUDIO);
     let mut driver =
       VmAudioDriver::new(&entry, program, &names, Some(table.clone())).unwrap();
@@ -450,9 +450,10 @@ fn shared_atomic_contention() {
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
   common::assert_valid_wgsl(&program);
   let (audio_program, names) = program.compile_to_bytecode_program();
-  assert!(audio_program.code.shared_vars.iter().all(|v| v.atomic));
-  let table =
-    Arc::new(ThreadSharedTable::new(audio_program.code.shared_vars.len()));
+  assert!(audio_program.code().shared_vars().iter().all(|v| v.atomic));
+  let table = Arc::new(ThreadSharedTable::new(
+    audio_program.code().shared_vars().len(),
+  ));
   table.join(participant::AUDIO);
   const BATCHES: usize = 2000;
   const FRAMES: usize = 64;
@@ -460,7 +461,7 @@ fn shared_atomic_contention() {
     .into_iter()
     .map(|entry| {
       let copy = BytecodeProgram::from_code(
-        Code::from_bytes(&audio_program.code.to_bytes()).unwrap(),
+        Code::from_bytes(&audio_program.code().to_bytes()).unwrap(),
       );
       let mut driver =
         VmAudioDriver::new(entry, copy, &names, Some(table.clone())).unwrap();
@@ -477,12 +478,13 @@ fn shared_atomic_contention() {
   let samples = (BATCHES * FRAMES) as u32;
   let words = |name: &str| -> Vec<u32> {
     let index = audio_program
-      .code
-      .shared_vars
+      .code()
+      .shared_vars()
       .iter()
       .position(|v| &*v.name == name)
       .unwrap();
-    let words = audio_program.code.shared_vars[index].layout.words() as usize;
+    let words =
+      audio_program.code().shared_vars()[index].layout.words() as usize;
     let atomic_words = table.slots[index]
       .atomic_words(words, || unreachable!("the drivers made the words"));
     (0..words).map(|word| atomic_words.load(word)).collect()

@@ -168,8 +168,8 @@ pub fn start(entry: &str, source: Option<AudioSource>) -> Result<(), String> {
   let table =
     shared_table.expect("start-audio attaches the shared table to its source");
   let shared_names: Vec<Arc<str>> = program
-    .code
-    .shared_vars
+    .code()
+    .shared_vars()
     .iter()
     .map(|info| info.name.clone())
     .collect();
@@ -196,7 +196,7 @@ pub fn start(entry: &str, source: Option<AudioSource>) -> Result<(), String> {
   ]));
   // The code describes its source map, when it has one (the runtime built
   // with the compiler), so the worklet's errors say where they happened.
-  let mut code = program.code;
+  let mut code = program.into_code();
   code.describe_sources();
   let program = Uint8Array::from(&code.to_bytes()[..]);
   let function_names = names_array(&function_names);

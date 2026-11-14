@@ -157,8 +157,19 @@ impl PrecompiledProgram {
       .expect("serializing a precompiled program failed")
   }
 
+  /// A program from its encoding (`to_bytes`), its code checked as
+  /// `Code::from_bytes` checks it, so running it can't reach outside the
+  /// VM's memory however the bytes were made.
   pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-    postcard::from_bytes(bytes)
-      .map_err(|e| format!("invalid precompiled program: {e}"))
+    let program: Self = postcard::from_bytes(bytes)
+      .map_err(|e| format!("invalid precompiled program: {e}"))?;
+    let audio = program.audio.as_ref().map(|(audio, _)| audio);
+    let codes = [Some(&program.cpu), audio].into_iter().flatten();
+    for code in codes {
+      code
+        .validate()
+        .map_err(|e| format!("invalid precompiled program: {e}"))?;
+    }
+    Ok(program)
   }
 }

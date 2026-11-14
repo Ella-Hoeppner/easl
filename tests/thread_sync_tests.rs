@@ -506,8 +506,8 @@ impl IOManager for ThreadSyncIO {
       }) => {
         self.trace.push(format!("start-audio: {entry_name}"));
         self.audio_shared_names = program
-          .code
-          .shared_vars
+          .code()
+          .shared_vars()
           .iter()
           .map(|info| info.name.clone())
           .collect();

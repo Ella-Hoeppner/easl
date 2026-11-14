@@ -35,7 +35,7 @@ fn run_vm_test(name: &str) {
       let return_position =
         bytecode_program.get_function_return_position(function_index);
       let result =
-        f32::from_bits(bytecode_program.stack[return_position as usize]);
+        f32::from_bits(bytecode_program.stack()[return_position as usize]);
 
       assert!(
         (result - expected).abs() <= 0.0001,
@@ -133,7 +133,7 @@ fn for_loop_repeated_execute() {
     bytecode_program.prepare_to_run_function(function_index);
     bytecode_program.execute();
     let result =
-      f32::from_bits(bytecode_program.stack[return_position as usize]);
+      f32::from_bits(bytecode_program.stack()[return_position as usize]);
     assert!(
       (result - 15.).abs() <= 0.0001,
       "run {run}: expected 15, got {result}"
@@ -164,8 +164,8 @@ fn immutable_ref_elements_emit_no_stores() {
     common::assert_valid_wgsl(&program);
     let (compiled, _) = program.compile_to_bytecode_program_cpu();
     compiled
-      .code
-      .function_instructions
+      .code()
+      .function_instructions()
       .iter()
       .filter(|instruction| {
         matches!(
@@ -240,7 +240,7 @@ fn ref_args_reserve_no_copies() {
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
     common::assert_valid_wgsl(&program);
-    program.compile_to_bytecode_program_cpu().0.stack.len()
+    program.compile_to_bytecode_program_cpu().0.stack().len()
   }
   let per_call = (stack_size(8) - stack_size(4)) / 4;
   assert!(per_call < 16, "each call adds {per_call} stack slots");
@@ -266,9 +266,9 @@ fn concat_allocates_exactly() {
     let f = function_names.iter().position(|n| &**n == name).unwrap();
     bytecode_program.prepare_to_run_function(f);
     bytecode_program.execute();
-    let id = bytecode_program.stack
+    let id = bytecode_program.stack()
       [bytecode_program.get_function_return_position(f) as usize];
-    let cell = bytecode_program.heap[heap_index(id).unwrap()]
+    let cell = bytecode_program.heap()[heap_index(id).unwrap()]
       .as_ref()
       .unwrap();
     let (length, capacity) = match &cell.memory {
@@ -300,11 +300,11 @@ fn let_element_binding_releases_shares() {
   bytecode_program.prepare_to_run_function(f);
   bytecode_program.execute();
   assert_eq!(
-    bytecode_program.stack
+    bytecode_program.stack()
       [bytecode_program.get_function_return_position(f) as usize],
     1000
   );
-  let live_cells = bytecode_program.heap.iter().flatten().count();
+  let live_cells = bytecode_program.heap().iter().flatten().count();
   assert!(
     live_cells < 20,
     "{live_cells} live heap cells after 1000 calls"

@@ -48,11 +48,11 @@ impl AudioEngine {
       Code::from_bytes(program).map_err(|e| JsError::new(&e))?,
     );
     let table =
-      Arc::new(ThreadSharedTable::new(program.code.shared_vars.len()));
+      Arc::new(ThreadSharedTable::new(program.code().shared_vars().len()));
     table.join(participant::AUDIO);
     for (index, buffer) in atomic_indices.into_iter().zip(atomic_buffers) {
       let index = index as usize;
-      let words = program.code.shared_vars[index].layout.words() as usize;
+      let words = program.code().shared_vars()[index].layout.words() as usize;
       table.slots[index]
         .atomic_words(words, || SharedArrayWords::over(buffer).into_words());
     }

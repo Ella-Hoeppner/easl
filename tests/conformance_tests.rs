@@ -321,7 +321,7 @@ fn run_vm_backend(
       let return_position =
         bytecode_program.get_function_return_position(function_index);
       let result =
-        f32::from_bits(bytecode_program.stack[return_position as usize]);
+        f32::from_bits(bytecode_program.stack()[return_position as usize]);
       Ok(result as f64)
     }
     Ok(Ok((doc, Err(errors)))) => {

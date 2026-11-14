@@ -306,18 +306,18 @@ Tests run on 2MB stacks and debug builds reserve stack for every match arm at on
 A register-style bytecode interpreter; the **default runtime for `@cpu` code** and the audio-thread runtime. The tree-walker remains a supported reference implementation (`CpuRuntime::TreeWalking`).
 
 ### Layout
-- `bytecode.rs`: `BytecodeProgram { code, stack: Vec<u32>, call_stack, dyn_memory, heap, shared_* }`. Instructions are `{ op, arg_positions: [u16; 3], return_position }` with **absolute** stack positions. One dispatch loop; heavy `unsafe` indexing — correctness relies on the compiler emitting in-bounds positions
+- `bytecode.rs`: `BytecodeProgram { code, stack: Vec<u32>, call_stack, dyn_memory, heap, shared_* }`. Instructions are `{ op, arg_positions: [u16; 3], return_position }` with **absolute** stack positions. One dispatch loop; heavy `unsafe` indexing, sound for any `Code` (see "Memory safety" below)
 - `compile.rs`: `BytecodeCompilationState` and its `emit_*` helpers, `compile_builtin`, `TypedExp::compile_to_bytecode`. Functions are compiled callees-first; each gets a fixed disjoint stack region (bump allocation, no reuse yet)
 
 ### Running a function
 ```rust
 let (mut program, names) = validated_program.compile_to_bytecode_program();
 let f = names.iter().position(|n| &**n == "f").unwrap();
-// args go at program.code.functions[f].first_arg_position (after the return slot);
-// Function::arg_words says how many words a function takes
+// args go at program.code().functions()[f].first_arg_position (after the return
+// slot), written through program.stack_mut()
 program.prepare_to_run_function(f);
 program.execute();
-let result = f32::from_bits(program.stack[program.get_function_return_position(f) as usize]);
+let result = f32::from_bits(program.stack()[program.get_function_return_position(f) as usize]);
 ```
 
 ### Invariants
@@ -327,6 +327,7 @@ let result = f32::from_bits(program.stack[program.get_function_return_position(f
 - **Every function's return slot is reserved separately from args and temps**: heap-id slots release on overwrite, so a scalar written over one would be misread as a heap id. Args start at `first_arg_position`
 - **The initializer function** (`Code::init_function_index`; its name is generated, so it never shares a user's) runs the top-level initializers once: in `from_code` for audio programs, and through the host in `VmCpuRuntime::new`
 - **Global slot locations are public** (`Code::globals`, `get_global_slot`, `write_global`) — embedders stream values in between runs
+- **Memory safety**: running any `Code`, however it was made, can't touch memory outside the VM's. The unchecked accesses rely on three things. (1) `Code::validate`, run by every `BytecodeProgram` constructor (`without_initializing`) and by `Code::from_bytes`/`PrecompiledProgram::from_bytes` (which return its error): every function's instruction range is among the instructions (so instruction fetch, jumps included, stays in range), every `InvokeFunction` names an existing function, and every instruction's `max_touched_index` is below `MAX_STACK_SLOTS` (2^16). (2) The stack is sized from those `max_touched_index`es, so each must cover every slot its op reads or writes (multi-slot ops: `Move`, packing, the array ops' copies), computed in `u64` so operands can't wrap it. A new op touching more than its operands' first slots needs its own arm there. (3) Ops reaching slots through a runtime value (`ArrayLookup`/`ArrayStore`) check them against the stack themselves (`element_slots`; compiled code checks the index against the array first, with `CheckIndex`); heap, dynamic-memory, shared-variable, and host accesses use checked indexing. `Code`'s and `BytecodeProgram`'s fields are crate-private (read through accessors; `stack_mut` is a slice, so the stack's length can't change), so code can't be altered after it's checked. Pinned by `ops_stay_within_their_slots` (runs every op on a stack sized exactly to its bound; debug builds abort on an out-of-bounds unchecked access) and `validation_rejects_code_reaching_outside_memory`
 - **Only touched globals get slots**: a user-declared var that no compiled (reachable) function names — nor the initializer of a var that has slots — and that isn't shared or `@external` gets no VM slots (e.g. a large buffer only shaders use); a GPU binding of one gets a host binding with `HostBindingStorage::Dynamic`. Compiler-generated vars always get slots: the runtime writes window-info, MIDI, audio-info, and capture vars into them. Slot sizes are checked (`vm_stack_size` errors past 65535 words rather than truncating), and running out names the global or function (pinned by `gpu_only_global_no_vm_slots`)
 - Matrices are flat `cols*rows` scalars
 - Audio/CPU filtering mirrors emission: skip entries not for the target and functions with CPU-exclusive effects/types, window queries, or `Print` (except audio-allowed heap ops). Effects are transitive and callees come first, so skips never dangle
