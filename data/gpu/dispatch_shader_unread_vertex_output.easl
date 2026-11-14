@@ -1,3 +1,5 @@
+; The vertex shader outputs a location (`x`) the fragment shader doesn't
+; read, which is fine: it goes unused.
 (struct VertexOutput
   @{builtin position} vertex-pos: vec4f
   @{location 0} x: f32)

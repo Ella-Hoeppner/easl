@@ -1519,19 +1519,6 @@ impl Type {
       | Type::Skolem(_, _) => true,
     }
   }
-  pub fn gather_location_annotations(
-    &self,
-    annotations: &mut HashMap<usize, Type>,
-  ) {
-    let Type::Struct(s) = self else {
-      return;
-    };
-    for f in s.fields.iter() {
-      if let Some((location, _)) = f.attributes.location() {
-        annotations.insert(location, f.field_type.unwrap_known());
-      }
-    }
-  }
   pub fn tag(&self) -> &str {
     match self {
       Type::Unit => "Unit",

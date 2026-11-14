@@ -320,6 +320,19 @@ impl Interpolation {
   pub fn is_flat(&self) -> bool {
     self.kind == Flat
   }
+  /// How a value of `value_type` passed between stages is interpolated:
+  /// as `written`, or by default `perspective-center`, except integers,
+  /// which are always flat.
+  pub fn between_stages(written: Option<&Self>, value_type: &Type) -> Self {
+    match written {
+      Some(written) => *written,
+      None if value_type.is_integer_scalar_or_vector() => Self::FLAT,
+      None => Self {
+        kind: Perspective,
+        sampling: Center,
+      },
+    }
+  }
   /// The setting as written in easl: `kind-sampling`.
   pub fn describe(&self) -> String {
     format!("{}-{}", self.kind.name(), self.sampling.name())

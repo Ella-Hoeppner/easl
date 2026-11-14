@@ -182,6 +182,7 @@ screen_test!(screen_indexed_draw);
 screen_test!(screen_gpu_written_vertex_data);
 screen_test!(screen_obj_mesh);
 screen_test!(screen_read_then_write_draws);
+screen_test!(screen_unread_vertex_outputs);
 
 macro_rules! buffer_test {
   ($name:ident) => {

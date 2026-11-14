@@ -2015,48 +2015,6 @@ impl Program {
                         break 'breakable;
                       };
                       frag_implementation.write().unwrap().dispatched = true;
-                      let mut output_locations: HashMap<usize, Type> =
-                        HashMap::new();
-                      vertex_fn
-                        .return_type
-                        .unwrap_known()
-                        .gather_location_annotations(&mut output_locations);
-                      let mut input_locations: HashMap<usize, Type> =
-                        HashMap::new();
-                      for ((arg, _), annotation) in fragment_fn.args.iter().zip(
-                        frag_implementation
-                          .read()
-                          .unwrap()
-                          .arg_annotations
-                          .iter(),
-                      ) {
-                        let arg_type = arg.var_type.unwrap_known();
-                        if let Some((location, _)) =
-                          annotation.attributes.location()
-                        {
-                          input_locations.insert(location, arg_type);
-                        } else {
-                          arg_type
-                            .gather_location_annotations(&mut input_locations);
-                        }
-                      }
-                      if input_locations.len() != output_locations.len()
-                        || input_locations.iter().any(|(location, in_ty)| {
-                          if let Some(out_ty) = output_locations.get(location) {
-                            !in_ty.compatible(out_ty)
-                          } else {
-                            true
-                          }
-                        })
-                      {
-                        errors.log(CompileError::new(
-                          IncompatibleRenderEntryPoints(
-                            abstract_vertex_fn.read().unwrap().name.to_string(),
-                            abstract_fragment_fn.name.to_string(),
-                          ),
-                          exp.source_trace.clone(),
-                        ));
-                      }
                       let abstract_vertex_fn =
                         abstract_vertex_fn.read().unwrap();
                       if let FunctionImplementationKind::Composite(
@@ -8169,6 +8127,11 @@ impl Program {
       self.offset_fragment_positions();
     }
     self.validate_entry_points(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    // Needs the locations `validate_entry_points` infers.
+    self.validate_render_interfaces(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

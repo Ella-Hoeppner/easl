@@ -13,6 +13,7 @@ use crate::{
 
 use super::{
   annotation::Annotation,
+  render_interfaces::RenderInterfaceMismatch,
   types::{TypeConstraintDescription, TypeDescription, TypeStateDescription},
 };
 
@@ -746,8 +747,8 @@ pub enum CompileErrorKind {
   WrongEntryPointTypeForStartAudio(String),
   #[error("Function `{0}` is not a valid shader entry point")]
   InvalidShaderEntry(String),
-  #[error("Vertex function `{0}` and Fragment function {1} are incompatible")]
-  IncompatibleRenderEntryPoints(String, String),
+  #[error("This draw's vertex and fragment shaders don't match: {0}")]
+  IncompatibleRenderEntryPoints(RenderInterfaceMismatch),
   #[error(
     "Can't create a binding to a non-constructible type (contains an atomic or unsized array)"
   )]
@@ -1123,6 +1124,10 @@ impl PartialEq for CompileErrorKind {
       (
         Self::WorkgroupUniformLoadOfNonWorkgroupVar(l0),
         Self::WorkgroupUniformLoadOfNonWorkgroupVar(r0),
+      ) => l0 == r0,
+      (
+        Self::IncompatibleRenderEntryPoints(l0),
+        Self::IncompatibleRenderEntryPoints(r0),
       ) => l0 == r0,
       _ => core::mem::discriminant(self) == core::mem::discriminant(other),
     }

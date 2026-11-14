@@ -4,6 +4,7 @@ use easl::compiler::core::{
 use easl::compiler::entry::InputOrOutput;
 use easl::compiler::error::CompileErrorKind;
 use easl::compiler::program::{CompilerTarget, ValidationOptions};
+use easl::compiler::render_interfaces::RenderInterfaceMismatch;
 use easl::compiler::types::{
   TypeConstraintDescription, TypeDescription, TypeStateDescription,
 };
@@ -351,8 +352,35 @@ error_test!(
 error_test!(
   render_located_varyings_mismatch_failure,
   CompileErrorKind::IncompatibleRenderEntryPoints(
-    "vert".to_string(),
-    "frag".to_string()
+    RenderInterfaceMismatch::Types {
+      location: 0,
+      output: TypeDescription::Struct("vec3f".into()),
+      input: TypeDescription::Struct("vec2f".into()),
+    }
+  )
+);
+error_test!(
+  render_inferred_varyings_mismatch_failure,
+  CompileErrorKind::IncompatibleRenderEntryPoints(
+    RenderInterfaceMismatch::NotOutput {
+      location: 0,
+      name: Some("start".into()),
+      input: TypeDescription::Struct("vec2f".into()),
+    }
+  ),
+  CompileErrorKind::IncompatibleRenderEntryPoints(
+    RenderInterfaceMismatch::NotOutput {
+      location: 1,
+      name: Some("end".into()),
+      input: TypeDescription::Struct("vec2f".into()),
+    }
+  ),
+  CompileErrorKind::IncompatibleRenderEntryPoints(
+    RenderInterfaceMismatch::Interpolations {
+      location: 0,
+      output: "flat-first".into(),
+      input: "perspective-center".into(),
+    }
   )
 );
 error_test!(
@@ -1187,19 +1215,16 @@ error_test!(
   )
 );
 
-error_test!(
-  dispatch_shader_compiled_away_failure_too_many_outputs,
-  CompileErrorKind::IncompatibleRenderEntryPoints(
-    "my-vertex".into(),
-    "my-fragment".into(),
-  )
-);
+success_test!(dispatch_shader_unread_vertex_output);
 
 error_test!(
   dispatch_shader_compiled_away_failure_too_many_inputs,
   CompileErrorKind::IncompatibleRenderEntryPoints(
-    "my-vertex".into(),
-    "my-fragment".into(),
+    RenderInterfaceMismatch::NotOutput {
+      location: 0,
+      name: Some("x".into()),
+      input: TypeDescription::F32,
+    }
   )
 );
 

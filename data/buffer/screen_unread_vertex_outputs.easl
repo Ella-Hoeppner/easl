@@ -1,0 +1,40 @@
+; A vertex shader's outputs the fragment shader doesn't read go unused:
+; frame 0's fragment shader takes only the position, and frame 1's takes no
+; inputs at all (like one swapped in for debugging).
+(struct Varyings
+  @{builtin position} pos: vec4f
+  color: vec3f
+  shade: f32)
+
+(struct PositionOnly
+  @{builtin position} pos: vec4f)
+
+@vertex
+(defn triangle [@{builtin vertex-index} i: u32]: Varyings
+  (Varyings (match i
+              0u (vec4f -1. -1. 0. 1.)
+              1u (vec4f 3. -1. 0. 1.)
+              _ (vec4f -1. 3. 0. 1.))
+            (vec3f 1. 0. 0.)
+            0.5))
+
+@fragment
+(defn position-only [in: PositionOnly]: vec4f
+  (vec4f 0. 0. 1. 1.))
+
+@fragment
+(defn no-inputs []: vec4f
+  (vec4f 0. 1. 0. 1.))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        0u (dispatch-render-shaders triangle position-only 3u)
+        1u (dispatch-render-shaders triangle no-inputs 3u)
+        _ (close-window))
+      (= frame (+ frame 1u)))))

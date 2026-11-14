@@ -1,0 +1,36 @@
+; Draws whose vertex outputs and fragment inputs differ only once
+; unwritten locations are inferred, so only the inferred locations show
+; it. The first passes a bare position to a fragment shader reading two
+; inferred locations (the GPU rejects that pipeline); the second's location
+; 0 is flat in the vertex shader's output but perspective in the fragment
+; shader's input.
+(struct Out
+  start: vec2f
+  end: vec2f
+  @{builtin position} pos: vec4f)
+
+(struct FlatOut
+  @{builtin position} pos: vec4f
+  @{interpolate flat} value: f32)
+
+(struct SmoothIn
+  @{builtin position} pos: vec4f
+  value: f32)
+
+@vertex
+(defn flat-vert []: FlatOut
+  (FlatOut (vec4f 0. 0. 0. 1.) 1.))
+
+@fragment
+(defn smooth-frag [in: SmoothIn]: @{location 0} vec4f
+  (vec4f in.value))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (dispatch-render-shaders (fn [] (vec4f 0. 0. 0. 1.))
+                               (fn [in: Out] (vec4f in.start in.end))
+                               3)
+      (dispatch-render-shaders flat-vert smooth-frag 3)
+      (close-window))))

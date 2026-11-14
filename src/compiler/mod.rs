@@ -15,6 +15,7 @@ pub mod info;
 pub mod macros;
 pub mod modules;
 pub mod program;
+pub mod render_interfaces;
 pub mod serialized_type;
 pub mod storage_views;
 pub mod structs;
