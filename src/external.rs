@@ -245,6 +245,16 @@ impl ExternalVars {
   /// replica engines (e.g. a custom audio voice driving
   /// `BytecodeProgram::adopt_shared`/`publish_shared` directly) can wire
   /// them to this table; most embedders never need it.
+  /// Each `@external` var's name (as the read and write methods take it)
+  /// and declared type.
+  pub fn external_vars(&self) -> impl Iterator<Item = (&str, &Type)> {
+    self
+      .vars
+      .iter()
+      .filter(|var| var.audience & participant::EXTERNAL != 0)
+      .map(|var| (&*var.name, &var.ty))
+  }
+
   pub fn table(&self) -> Arc<ThreadSharedTable> {
     self.table.clone()
   }

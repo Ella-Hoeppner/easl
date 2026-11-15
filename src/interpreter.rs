@@ -60,11 +60,7 @@ use crate::vm::bytecode::{
   string_to_words, unpack_2x16_float, words_to_string,
 };
 use crate::vm::compile::{involves_heap_values, vm_stack_size};
-#[cfg(feature = "window")]
-use crate::window::ScreenTarget;
 
-// Public for easl's own integration tests, not a stable API.
-#[doc(hidden)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum Primitive {
   F32(f32),
@@ -444,8 +440,6 @@ impl Function {
   }
 }
 
-// Public for easl's own integration tests, not a stable API.
-#[doc(hidden)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
   Unit,
@@ -5660,9 +5654,7 @@ impl IOManager for CaptureIO {
     if let Some(size) = self.screen_size
       && let Some(gpu) = self.inner.get_gpu()
     {
-      let mut gpu = gpu.write().unwrap();
-      gpu.screen_target = ScreenTarget::Texture;
-      gpu.window_size = size;
+      gpu.write().unwrap().render_screen_to_texture(size);
     }
   }
 
@@ -7218,8 +7210,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 }
 
-// Public for easl's own integration tests, not a stable API.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub enum EvalException {
   Error(EvalError),

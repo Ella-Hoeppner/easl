@@ -2115,10 +2115,18 @@ impl GpuCore {
     }
   }
 
+  /// Draws screen-targeted work into a texture of `size` pixels instead of
+  /// a window, for a host that shows (or tests) the screen itself: it reads
+  /// each frame back with `read_screen`.
+  pub fn render_screen_to_texture(&mut self, size: (u32, u32)) {
+    self.screen_target = ScreenTarget::Texture;
+    self.window_size = size;
+  }
+
   /// Reads the screen texture back as its sRGB-encoded RGBA8 bytes (what
   /// a display shows), returning `(width, height, pixels)`
   /// (`ScreenTarget::Texture` without a surface only).
-  pub(crate) fn read_screen(&self) -> Option<(u32, u32, Vec<u8>)> {
+  pub fn read_screen(&self) -> Option<(u32, u32, Vec<u8>)> {
     let texture = self.screen_texture.as_ref()?;
     (texture.format() == Self::HEADLESS_SCREEN_FORMAT)
       .then(|| self.read_texture_rgba8(texture))

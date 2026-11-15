@@ -584,8 +584,6 @@ pub struct VmAudioDriver {
   stop_taken: bool,
 }
 
-// Public for easl's own integration tests, not a stable API.
-#[doc(hidden)]
 /// An audio program as compiled, before any of it ran, to start over once
 /// its audio code has stopped with a runtime error: a later `start-audio`
 /// gives the program a fresh run (its state initialized again, adopting the
