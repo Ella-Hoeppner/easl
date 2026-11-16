@@ -347,7 +347,9 @@ pub enum CompileErrorKind {
   DiscardOutsideFragment,
   #[error("function `{0}` can only occur in @fragment functions")]
   FragmentExclusiveFunctionOutsideFragment(String),
-  #[error("function `{0}` can only occur in @fragment functions")]
+  #[error(
+    "`{0}` can only be used in CPU code, but this call can run in a shader"
+  )]
   CPUExclusiveFunctionInGPUEntryPoint(String),
   /// `key-down?`/`key-just-down?` reached GPU code with a non-literal key
   /// argument. GPU key queries compile into one implicit binding per
