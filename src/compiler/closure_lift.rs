@@ -720,6 +720,7 @@ impl Program {
         source_trace: source_trace.clone(),
         external: false,
         directly_user_written: false,
+        declared_binding: false,
       };
       match &split {
         Some(split) => {

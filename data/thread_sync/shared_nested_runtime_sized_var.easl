@@ -1,0 +1,21 @@
+; A plain `var` whose type no shader can hold (an array of structs holding
+; arrays), shared between the main thread, which adds a layer each frame,
+; and the audio thread, which sums each layer's first sample. No shader
+; touches it, so it's no GPU binding and needs no `@local`.
+(struct Layer
+  data: [f32]
+  active: u32)
+
+(var layers: [Layer])
+
+@cpu
+(defn main []
+  (start-audio (fn []
+                 (let [@var sum 0.]
+                   (for [i (length layers)]
+                     (+= sum ((.data (layers i)) 0u)))
+                   sum)))
+  (spawn-window
+    (fn []
+      (= layers
+         (push layers (Layer (into-dynamic-array [0.5 0.25]) 1u))))))

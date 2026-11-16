@@ -1,0 +1,13 @@
+main-publish: layers
+start-audio: inner_fn
+spawn-window
+frame 0
+main-publish: layers
+audio-batch 0 x1
+audio-adopt: layers
+samples: 0.5
+frame 1
+main-publish: layers
+audio-batch 1 x1
+audio-adopt: layers
+samples: 1

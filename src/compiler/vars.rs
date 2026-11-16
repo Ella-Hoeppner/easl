@@ -183,6 +183,12 @@ pub struct TopLevelVar {
   /// `Option<MidiNote>`, which is only monomorphized when the enum is
   /// actually constructed/matched).
   pub directly_user_written: bool,
+  /// Whether its declaration wrote an address space or binding numbers
+  /// (`@[storage-read 0 0]`, `@uniform`): a binding declared for hosts,
+  /// whose type must be one a GPU binding can hold whether or not a shader
+  /// here uses it. An unannotated `var` is only a binding when a shader uses
+  /// it.
+  pub(crate) declared_binding: bool,
 }
 
 impl TopLevelVar {
@@ -224,6 +230,7 @@ impl TopLevelVar {
                 Err(e) => errors.log(e),
                 Ok(t) => {
                   let mut external = false;
+                  let mut declared_binding = false;
                   let (group_and_binding, address_space) =
                     if let Some(annotation) = &annotation {
                       match annotation.validate_as_top_level_var_data() {
@@ -233,6 +240,8 @@ impl TopLevelVar {
                         }
                         Ok((group_and_binding, address_space, is_external)) => {
                           external = is_external;
+                          declared_binding = address_space.is_some()
+                            || group_and_binding.is_some();
                           // With an explicit address space, the numbers may
                           // be elided (`@[uniform]`): the compiler assigns
                           // free ones at the end of validation.
@@ -371,6 +380,7 @@ impl TopLevelVar {
                     source_trace: parens_source_trace.clone(),
                     external,
                     directly_user_written: true,
+                    declared_binding,
                     kind: TopLevelVariableKind::Var {
                       address_space,
                       group_and_binding,
@@ -414,6 +424,7 @@ impl TopLevelVar {
                         source_trace: parens_source_trace.clone(),
                         external: false,
                         directly_user_written: true,
+                        declared_binding: false,
                         kind: if var_kind_name == "override" {
                           TopLevelVariableKind::Override
                         } else {

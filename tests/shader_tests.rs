@@ -711,6 +711,11 @@ error_test!(
   CompileErrorKind::RuntimeSizedFieldInBinding
 );
 error_test!(
+  declared_nested_binding_failure,
+  CompileErrorKind::NestedRuntimeSizedArrayBinding
+);
+success_test!(cpu_only_nested_runtime_sized_var);
+error_test!(
   default_var_initializer_failure,
   CompileErrorKind::DisallowedInitializationValue(
     VariableAddressSpace::StorageReadWrite

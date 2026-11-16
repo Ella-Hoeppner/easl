@@ -803,6 +803,10 @@ macro_rules! thread_sync_test {
 
 thread_sync_test!(audio_nested_wavetable_bank, [Frame, AudioBatch(2)]);
 thread_sync_test!(
+  shared_nested_runtime_sized_var,
+  [Frame, AudioBatch(1), Frame, AudioBatch(1)]
+);
+thread_sync_test!(
   audio_nested_closure_dyn_capture,
   [Frame, AudioBatch(4), Frame, AudioBatch(4)]
 );

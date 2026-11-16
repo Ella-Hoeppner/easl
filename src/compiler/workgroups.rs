@@ -302,6 +302,7 @@ impl Program {
       source_trace: SourceTrace::empty(),
       external: false,
       directly_user_written: false,
+      declared_binding: false,
     });
     for f in implementations {
       let mut f = f.write().unwrap();

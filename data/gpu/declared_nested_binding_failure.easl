@@ -1,0 +1,13 @@
+; A var whose declaration makes it a binding (an address space or binding
+; numbers) must have a type a GPU binding can hold, even when no shader here
+; uses it: a host may bind it.
+(struct Layer
+  data: [f32]
+  active: u32)
+
+@storage-write
+(var layers: [Layer])
+
+@cpu
+(defn main []
+  (print (length layers)))

@@ -2999,6 +2999,7 @@ impl Program {
             source_trace: exp.source_trace.clone(),
             external: false,
             directly_user_written: false,
+            declared_binding: false,
           });
         }
         exp.kind = ExpKind::Name(var_name.into());
@@ -3034,6 +3035,7 @@ impl Program {
             source_trace: exp.source_trace.clone(),
             external: false,
             directly_user_written: false,
+            declared_binding: false,
           });
         }
         // The call becomes an ordinary array lookup on the global —
@@ -3365,6 +3367,7 @@ impl Program {
                 source_trace: exp.source_trace.clone(),
                 external: false,
                 directly_user_written: false,
+                declared_binding: false,
               });
               binding_name
             })
@@ -3815,6 +3818,7 @@ impl Program {
         source_trace: SourceTrace::empty(),
         external: false,
         directly_user_written: false,
+        declared_binding: false,
       })
     }
   }
@@ -3957,6 +3961,7 @@ impl Program {
         source_trace: SourceTrace::empty(),
         external: false,
         directly_user_written: false,
+        declared_binding: false,
       });
     }
   }
@@ -6838,44 +6843,13 @@ impl Program {
   /// not use struct/enum *values* containing them (storage-bound globals
   /// are exempt — WGSL itself permits a trailing runtime-sized member in
   /// a storage struct, which is what dispatched-closure scope bindings
-  /// rely on). Nested runtime-sized arrays can never be GPU buffer
-  /// bindings at all.
+  /// rely on). Which runtime-sized types a binding itself may have is
+  /// `validate_gpu_used_binding_types`'s concern.
   pub(crate) fn validate_gpu_runtime_sized_use(
     &mut self,
     errors: &mut ErrorLog,
   ) {
     use crate::compiler::expression::ExpKind;
-    // A binding may involve a runtime-sized array only by *being* one:
-    // nested runtime-sized arrays have no flat host-shareable layout, and
-    // runtime-sized struct/enum fields are banned outright (stricter than
-    // WGSL, which permits one trailing runtime-sized member — binding the
-    // array separately expresses the same thing, and the blanket rule
-    // lets WGSL emission drop every runtime-sized-field struct
-    // declaration, like the scope structs of dispatched closures with
-    // runtime-sized captures).
-    for v in self.top_level_vars.iter() {
-      if let TopLevelVariableKind::Var {
-        group_and_binding: Some(_),
-        ..
-      } = v.kind
-      {
-        if let Type::Array(Some(ConcreteArraySize::Unsized), inner) =
-          &v.var_type
-        {
-          if inner.kind.unwrap_known().involves_runtime_sized_array() {
-            errors.log(CompileError {
-              kind: NestedRuntimeSizedArrayBinding,
-              source_trace: v.source_trace.clone(),
-            });
-          }
-        } else if v.var_type.involves_runtime_sized_array() {
-          errors.log(CompileError {
-            kind: RuntimeSizedFieldInBinding,
-            source_trace: v.source_trace.clone(),
-          });
-        }
-      }
-    }
     // reachability from GPU entry roots, callees-first through composite
     // calls (the graph is a DAG — no recursion)
     let mut visited: HashSet<Arc<str>> = HashSet::new();
@@ -8994,6 +8968,38 @@ impl Program {
   pub(crate) fn validate_gpu_used_binding_types(&self, errors: &mut ErrorLog) {
     let gpu_used = self.gpu_used_globals();
     for v in self.top_level_vars.iter() {
+      // A binding may involve a runtime-sized array only by *being* one:
+      // nested runtime-sized arrays have no flat host-shareable layout, and
+      // runtime-sized struct/enum fields are banned outright (stricter than
+      // WGSL, which permits one trailing runtime-sized member — binding the
+      // array separately expresses the same thing, and the blanket rule
+      // lets WGSL emission drop every runtime-sized-field struct
+      // declaration, like the scope structs of dispatched closures with
+      // runtime-sized captures). A var is a binding when a shader uses it
+      // or its declaration says so; any other is shared by the CPU and
+      // audio threads only, whatever its type.
+      if let TopLevelVariableKind::Var {
+        group_and_binding: Some(_),
+        ..
+      } = v.kind
+        && (gpu_used.contains(&v.name) || v.declared_binding)
+      {
+        if let Type::Array(Some(ConcreteArraySize::Unsized), inner) =
+          &v.var_type
+        {
+          if inner.kind.unwrap_known().involves_runtime_sized_array() {
+            errors.log(CompileError {
+              kind: NestedRuntimeSizedArrayBinding,
+              source_trace: v.source_trace.clone(),
+            });
+          }
+        } else if v.var_type.involves_runtime_sized_array() {
+          errors.log(CompileError {
+            kind: RuntimeSizedFieldInBinding,
+            source_trace: v.source_trace.clone(),
+          });
+        }
+      }
       if let TopLevelVariableKind::Var {
         address_space:
           VariableAddressSpace::Uniform

@@ -1,0 +1,22 @@
+; A plain `var` whose type no GPU binding can hold (an array of structs
+; holding arrays), used only by CPU code: it's no binding, so it compiles, and
+; the WGSL leaves it out. The `@storage-write` var beside it is declared as a
+; binding, so the shader may use it.
+(struct Layer
+  data: [f32]
+  active: u32)
+
+(var layers: [Layer])
+
+@storage-write
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= (out 0u) 1.))
+
+@cpu
+(defn main []
+  (= layers (push layers (Layer (into-dynamic-array [0.5]) 1u)))
+  (print (length layers)))
