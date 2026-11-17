@@ -184,6 +184,20 @@ pub enum Op {
   DynLoad,
   /// args: [memory, index_slot, src_slot]; return_position holds the stride
   DynStore,
+  /// Moves element `index` of a dynamic region out into the dest, leaving
+  /// an empty element (a null cell, or zeroed words) in its place, so the
+  /// dest holds the element's only share and mutating it copies nothing.
+  /// For elements involving heap values in a mutable place whose root
+  /// nothing reads until `DynPut` puts it back (see `take_elements` in
+  /// vm/compile.rs). args: [memory, index_slot, stride] → return_position:
+  /// dest. A stride of 0 means the element is a heap value (a cell); the
+  /// dest is then its heap id.
+  DynTake,
+  /// Moves the dest of a `DynTake` back into its element, leaving the
+  /// source slots zeroed (they no longer own anything). args: [memory,
+  /// index_slot, src_slot]; return_position holds the stride (0 for a heap
+  /// value).
+  DynPut,
   /// `(= arr (zeroed-array n))`: args [memory, len_slot, _]. Keeps the
   /// region in the lazily-zeroed state — no allocation until an element is
   /// written, and GPU uploads of the zeroed state stay `BufferUpload::Clear`
@@ -220,6 +234,13 @@ pub enum Op {
   HeapLoad,
   /// args: [id_slot, index_slot, src_slot]; return_position = stride
   HeapStore,
+  /// `DynTake` for an element of a heap cell (made unique first, which only
+  /// copies its element words or child shares when it's shared). args:
+  /// [id_slot, index_slot, stride] → return_position: dest.
+  HeapTake,
+  /// `DynPut` for an element of a heap cell. args: [id_slot, index_slot,
+  /// src_slot]; return_position holds the stride.
+  HeapPut,
   /// `(into-dynamic-array fixed)` as a value: args [src_slot, count,
   /// stride] → dest id slot
   HeapFromSlots,
@@ -620,6 +641,10 @@ impl Instruction {
         // src spans stride (held in return_position) slots
         (a2 + r.saturating_sub(1)).max(a1)
       }
+      Op::DynTake => (r + a2.max(1) - 1).max(a1),
+      Op::DynPut => (a2 + r.max(1) - 1).max(a1),
+      Op::HeapTake => (r + a2.max(1) - 1).max(a0).max(a1),
+      Op::HeapPut => (a2 + r.max(1) - 1).max(a0).max(a1),
       Op::DynResize => a1,
       Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
       Op::LoopedAudioTime => a0.max(r),
@@ -814,6 +839,51 @@ impl DynMemory {
       DynMemory::Words(words) => (words.len() / stride.max(1)) as u32,
       DynMemory::Cells(cells) => cells.len() as u32,
     }
+  }
+  /// Moves heap-value element `index` out, leaving a null cell (an empty
+  /// array) in its place.
+  pub(crate) fn take_cell(&mut self, index: usize) -> Option<Arc<HeapCell>> {
+    match self {
+      DynMemory::Cells(cells) => cells[index].take(),
+      DynMemory::Zeroed { .. } => None,
+      DynMemory::Words(_) => panic!("take_cell on flat dynamic memory"),
+    }
+  }
+  /// Puts a heap-value element taken by `take_cell` back.
+  pub(crate) fn put_cell(&mut self, index: usize, cell: Option<Arc<HeapCell>>) {
+    if let DynMemory::Zeroed { elements } = self {
+      if cell.is_none() {
+        return;
+      }
+      *self = DynMemory::Cells(vec![None; *elements as usize]);
+    }
+    let DynMemory::Cells(cells) = self else {
+      panic!("put_cell on flat dynamic memory")
+    };
+    cells[index] = cell;
+  }
+  /// Moves flat element `index` (`stride` words, which may embed heap ids
+  /// they own) into `dest`, zeroing it here.
+  pub(crate) fn take_words(
+    &mut self,
+    index: usize,
+    stride: usize,
+    dest: &mut [u32],
+  ) {
+    match self {
+      DynMemory::Words(words) => {
+        let element = &mut words[index * stride..(index + 1) * stride];
+        dest.copy_from_slice(element);
+        element.fill(0);
+      }
+      DynMemory::Zeroed { .. } => dest.fill(0),
+      DynMemory::Cells(_) => panic!("take_words on cell dynamic memory"),
+    }
+  }
+  /// Puts a flat element taken by `take_words` back.
+  pub(crate) fn put_words(&mut self, index: usize, stride: usize, src: &[u32]) {
+    self.words_mut(stride)[index * stride..(index + 1) * stride]
+      .copy_from_slice(src);
   }
   /// The flat words, materializing the lazily-zeroed state first. Only
   /// meaningful for flat-element storage.
@@ -1649,6 +1719,19 @@ pub fn heap_index(id: u32) -> Option<usize> {
 /// Frees the cell owned by heap id `old_id`, if any — drop-on-overwrite
 /// for a heap-id destination that's about to be rewritten. Used by the
 /// dispatch loop's `release_cell!` and by host ops that write heap ids.
+/// Takes the cell heap id `id` refers to out of the heap, freeing the id,
+/// for an op moving the cell into a container.
+pub(crate) fn take_heap_id(
+  heap: &mut [Option<Arc<HeapCell>>],
+  heap_free: &mut Vec<u32>,
+  id: u32,
+) -> Option<Arc<HeapCell>> {
+  let i = heap_index(id)?;
+  let cell = heap[i].take();
+  heap_free.push(i as u32);
+  cell
+}
+
 pub(crate) fn release_heap_id(
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
@@ -2674,6 +2757,48 @@ impl BytecodeProgram {
               .copy_from_slice(&stack[src..src + stride]);
           }
         }
+        Op::DynTake => {
+          let [memory, index_slot, stride] = instruction.arg_positions;
+          let index = stack[index_slot as usize] as usize;
+          let region = &mut dyn_memory[memory as usize];
+          let elements = region.len_elements(stride as usize) as usize;
+          if index >= elements {
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
+          }
+          let dest = instruction.return_position as usize;
+          if stride == 0 {
+            let child = region.take_cell(index);
+            release_cell!(instruction.return_position);
+            stack[dest] = child.map_or(0, |cell| alloc_cell!(cell));
+          } else {
+            let stride = stride as usize;
+            region.take_words(index, stride, &mut stack[dest..dest + stride]);
+          }
+        }
+        Op::DynPut => {
+          let [memory, index_slot, src_slot] = instruction.arg_positions;
+          let stride = instruction.return_position as usize;
+          let index = stack[index_slot as usize] as usize;
+          let region = &mut dyn_memory[memory as usize];
+          let elements = region.len_elements(stride) as usize;
+          if index >= elements {
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
+          }
+          let src = src_slot as usize;
+          if stride == 0 {
+            region.put_cell(index, take_heap_id(heap, heap_free, stack[src]));
+            stack[src] = 0;
+          } else {
+            region.put_words(index, stride, &stack[src..src + stride]);
+            stack[src..src + stride].fill(0);
+          }
+        }
         Op::DynResize => {
           let [memory, len_slot, _] = instruction.arg_positions;
           dyn_memory[memory as usize] = DynMemory::Zeroed {
@@ -2815,6 +2940,82 @@ impl BytecodeProgram {
           });
           release_cell!(instruction.return_position);
           stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapTake => {
+          let [id_slot, index_slot, stride] = instruction.arg_positions;
+          let index = stack[index_slot as usize] as usize;
+          let Some(i) = heap_index(stack[id_slot as usize]) else {
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: 0,
+            });
+          };
+          // Shared cells are made unique first: element words embedding
+          // heap ids by the compiler (`emit_ensure_unique_cell`), which
+          // re-owns them; children of a cell container by `make_mut`,
+          // whose clone takes a share of each.
+          let container = Arc::make_mut(
+            heap[i].as_mut().expect("heap id referencing a freed cell"),
+          );
+          let elements =
+            container.memory.len_elements(stride as usize) as usize;
+          if index >= elements {
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
+          }
+          let dest = instruction.return_position as usize;
+          if stride == 0 {
+            let child = container.memory.take_cell(index);
+            release_cell!(instruction.return_position);
+            stack[dest] = child.map_or(0, |cell| alloc_cell!(cell));
+          } else {
+            let stride = stride as usize;
+            container.memory.take_words(
+              index,
+              stride,
+              &mut stack[dest..dest + stride],
+            );
+          }
+        }
+        Op::HeapPut => {
+          let [id_slot, index_slot, src_slot] = instruction.arg_positions;
+          let stride = instruction.return_position as usize;
+          let index = stack[index_slot as usize] as usize;
+          let src = src_slot as usize;
+          let child =
+            (stride == 0).then(|| take_heap_id(heap, heap_free, stack[src]));
+          let Some(i) = heap_index(stack[id_slot as usize]) else {
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: 0,
+            });
+          };
+          let container = Arc::make_mut(
+            heap[i].as_mut().expect("heap id referencing a freed cell"),
+          );
+          let elements = container.memory.len_elements(stride) as usize;
+          if index >= elements {
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
+          }
+          match child {
+            Some(child) => {
+              container.memory.put_cell(index, child);
+              stack[src] = 0;
+            }
+            None => {
+              container.memory.put_words(
+                index,
+                stride,
+                &stack[src..src + stride],
+              );
+              stack[src..src + stride].fill(0);
+            }
+          }
         }
         Op::HeapFromSlots => {
           let [src_slot, count, stride] = instruction.arg_positions;

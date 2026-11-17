@@ -1,0 +1,43 @@
+; Stores into elements of nested runtime-sized arrays, which the VM makes
+; in place by moving the element out of its container and back (no copy
+; unless something else shares it). Each shape it covers, and the ones it
+; falls back from, must keep value semantics.
+(struct Layer
+  data: [f32]
+  active: u32)
+
+(var samples: [[f32]])
+
+(var layers: [Layer])
+
+(var deep: [[[u32]]])
+
+@cpu
+(defn main []
+  (= samples ~[(zeroed-array 4u) (zeroed-array 4u)])
+  (= layers ~[(Layer (zeroed-array 3u) 1u)])
+  (= deep ~[~[(zeroed-array 2u)]])
+  ; a copy taken first keeps its contents
+  (let [before (samples 0u)]
+    (= ((samples 0u) 1u) 0.5)
+    (+= ((samples 0u) 1u) 0.25)
+    (print before)
+    (print (samples 0u)))
+  ; a struct field inside a global array, and three levels deep
+  (= ((.data (layers 0u)) 2u) 1.5)
+  (+= (((deep 0u) 0u) 1u) 7u)
+  (print (.data (layers 0u)))
+  (print ((deep 0u) 0u))
+  ; the right-hand side and an index reading the root: no take
+  (= ((samples 1u) 0u) ((samples 0u) 1u))
+  (= ((samples (- (length samples) 1u)) 3u) 2.)
+  (print (samples 1u))
+  ; an owned local
+  (let [@var local: [[f32]] ~[(zeroed-array 2u)]]
+    (for [i 3u]
+      (+= ((local 0u) 0u) 1.))
+    (print local))
+  ; reads that only look through an element leave it unshared
+  (for [i 4u]
+    (= ((samples 0u) i) (f32 (length (samples 0u)))))
+  (print (samples 0u)))

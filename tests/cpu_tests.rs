@@ -180,6 +180,7 @@ cpu_test!(enum_equality);
 cpu_test!(enum_string_payload);
 cpu_test!(def_forward_reference);
 cpu_test!(def_array_size_arithmetic);
+cpu_test!(nested_store_in_place);
 cpu_test!(pure_initializers);
 cpu_test!(internal_name_collisions);
 cpu_test!(string_escapes);

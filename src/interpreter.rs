@@ -7299,7 +7299,13 @@ fn eval_assignment_op<IO: IOManager>(
     Swizzle(Vec<SwizzleField>),
   }
   let mut accesses: Vec<AccessKind> = vec![];
+  // Each access's result type: the element type an index access reaches,
+  // for expanding a lazily-zeroed array it passes through.
+  let mut access_types: Vec<Type> = vec![];
   let accessed_name = loop {
+    if !matches!(accessed_expression.kind, ExpKind::Name(_)) {
+      access_types.push(accessed_expression.data.unwrap_known());
+    }
     match accessed_expression.kind {
       ExpKind::Name(name) => break name,
       ExpKind::Application(exp, mut index) => {
@@ -7370,6 +7376,49 @@ fn eval_assignment_op<IO: IOManager>(
         .0,
       |_| Value::Array(vec![zero_val; length]),
     );
+  }
+  // A lazily-zeroed array further along the path is expanded the same
+  // way, one at a time (its zero element needs `env` unborrowed).
+  while let Some((level, length)) = {
+    let mut value =
+      &env.bindings.get(&*accessed_name).unwrap().last().unwrap().0;
+    let mut zeroed = None;
+    for (level, access) in accesses.iter().rev().enumerate() {
+      let next = match (access, value) {
+        (_, Value::ZeroedArray { length }) => {
+          zeroed = Some((level, *length));
+          break;
+        }
+        (AccessKind::Index(i), Value::Array(a)) => {
+          usize::try_from(*i).ok().and_then(|i| a.get(i))
+        }
+        (AccessKind::Field(name), Value::Struct(s)) => s.get(&**name),
+        _ => None,
+      };
+      let Some(next) = next else { break };
+      value = next;
+    }
+    zeroed
+  } {
+    let element_type = access_types[access_types.len() - 1 - level].clone();
+    let zero = Value::zeroed(element_type, env)?;
+    let mut value = &mut env
+      .bindings
+      .get_mut(&*accessed_name)
+      .unwrap()
+      .last_mut()
+      .unwrap()
+      .0;
+    for access in accesses.iter().rev().take(level) {
+      value = match (access, value) {
+        (AccessKind::Index(i), Value::Array(a)) => &mut a[*i as usize],
+        (AccessKind::Field(name), Value::Struct(s)) => {
+          s.get_mut(&**name).unwrap()
+        }
+        _ => unreachable!("the path was walked above"),
+      };
+    }
+    *value = Value::Array(vec![zero; length]);
   }
   let mut accessed_value = &mut env
     .bindings

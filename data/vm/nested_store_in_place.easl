@@ -1,0 +1,17 @@
+; Stores into the elements of a nested runtime-sized array, interleaved
+; with reads, all in place: `nested_store_in_place` checks each inner array
+; stays the same allocation however often `record` runs.
+(var samples: [[f32]])
+
+(defn setup []: f32
+  (= samples ~[(zeroed-array 1000u) (zeroed-array 1000u)])
+  0.)
+
+(defn record []: f32
+  (let [@var sum 0.]
+    (for [i (length samples)]
+      (for [j (length (samples i))]
+        (= ((samples i) j) 0.25)
+        (+= ((samples i) j) 0.25)
+        (+= sum ((samples i) j))))
+    sum))

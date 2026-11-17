@@ -281,6 +281,52 @@ fn concat_allocates_exactly() {
   }
 }
 
+/// Storing into an element of a nested runtime-sized array copies nothing
+/// (the element is moved out of its container and back), and neither do the
+/// reads between stores: after stores and reads over every element, each
+/// inner array's only holder is its container, which is what lets the next
+/// store write in place (a second holder makes it copy the whole array).
+#[test]
+fn nested_store_in_place() {
+  use easl::vm::bytecode::DynMemory;
+  use std::sync::Arc;
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(Path::new(
+    "./data/vm/nested_store_in_place.easl",
+  )) else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let (mut bytecode_program, function_names) =
+    program.compile_to_bytecode_program();
+  let mut run = |name: &str| {
+    let f = function_names.iter().position(|n| &**n == name).unwrap();
+    bytecode_program.prepare_to_run_function(f);
+    bytecode_program.execute();
+    let result = f32::from_bits(
+      bytecode_program.stack()
+        [bytecode_program.get_function_return_position(f) as usize],
+    );
+    let (region, _) =
+      bytecode_program.get_dyn_memory_region("samples").unwrap();
+    let DynMemory::Cells(cells) =
+      &bytecode_program.dyn_memory()[region as usize]
+    else {
+      panic!("samples isn't stored as cells")
+    };
+    let holders: Vec<usize> = cells
+      .iter()
+      .map(|cell| Arc::strong_count(cell.as_ref().unwrap()))
+      .collect();
+    (result, holders)
+  };
+  run("setup");
+  for _ in 0..3 {
+    assert_eq!(run("record"), (1000., vec![1, 1]));
+  }
+}
+
 /// A `let` binding of an array element owns shares of the element's heap
 /// ids, and releases them the next time it runs: running it many times
 /// leaves a bounded number of live heap cells.

@@ -3,6 +3,7 @@
 //! meet through `Code` / `BytecodeProgram`.
 
 use std::collections::{HashMap, HashSet};
+use std::mem;
 use std::ops::Range;
 use std::slice;
 use std::sync::{Arc, RwLock};
@@ -11,8 +12,9 @@ use fsexp::document::DocumentPosition;
 
 use crate::parse::EaslMultiDocument;
 
-use crate::compiler::builtins::short_circuit_deciding_value;
+use crate::compiler::builtins::{ASSIGNMENT_OPS, short_circuit_deciding_value};
 use crate::compiler::closure_lift::{LiftedCapture, LiftedCaptures};
+use crate::compiler::effects::Effect;
 use crate::compiler::enums::Enum;
 use crate::compiler::expression::{Accessor, ExpKind, Number, TypedExp};
 use crate::compiler::functions::{
@@ -295,6 +297,13 @@ pub(crate) struct BytecodeCompilationState {
   /// Callee effects for the whole compilation, which only reads function
   /// bodies (so no memoized entry can go stale).
   pub(crate) effects_memo: EffectsMemo,
+  /// Set while compiling an assignment's target when
+  /// `TypedExp::takes_target_elements` allows it: the element lookups
+  /// along the target move elements holding heap values out of their
+  /// containers (`Op::DynTake`/`HeapTake`) instead of sharing them, so
+  /// storing into them copies nothing, and their write-backs move them back
+  /// (`Op::DynPut`/`HeapPut`).
+  pub(crate) take_elements: bool,
   /// `Code::source_positions` and `Code::instruction_sources` so far, and
   /// each position's index.
   source_positions: Vec<DocumentPosition>,
@@ -342,6 +351,7 @@ impl BytecodeCompilationState {
       lifted_audio_captures: HashMap::new(),
       lifted_gpu_captures: HashMap::new(),
       effects_memo: EffectsMemo::default(),
+      take_elements: false,
       source_positions: vec![],
       source_position_indices: HashMap::new(),
       instruction_sources: vec![],
@@ -907,6 +917,15 @@ impl BytecodeCompilationState {
   /// that compiles an lvalue in ref position must have pushed a frame —
   /// the enclosing Application arm, or the special-cased `=` arms for
   /// nested element stores.
+  /// Runs `compile` with `take_elements` off, for the code inside an
+  /// assignment's target that isn't the target's own place: its index
+  /// expressions.
+  fn without_taking<T>(&mut self, compile: impl FnOnce(&mut Self) -> T) -> T {
+    let take = mem::replace(&mut self.take_elements, false);
+    let result = compile(self);
+    self.take_elements = take;
+    result
+  }
   fn flush_pending_write_backs(&mut self) {
     let pending_write_backs =
       self.array_mut_ref_store_instructions.pop().unwrap();
@@ -4085,6 +4104,65 @@ impl TypedExp {
   }
   /// `=` into an element of a runtime-sized array or into a whole
   /// dynamic-memory (global) array.
+  /// Whether compiling this in value position leaves a fresh temp holding a
+  /// heap id with its own share of a cell: an element of a runtime-sized
+  /// array that's itself a heap value (`DynLoad`/`HeapLoad` mint one). A
+  /// consumer that only reads through the id releases it right after, so
+  /// the share doesn't last until the site next runs, which would make the
+  /// next write to that element copy it.
+  fn mints_element_share(&self) -> bool {
+    matches!(&self.kind, ExpKind::Access(Accessor::ArrayIndex(_), container)
+    if container.data.with_known(|t| {
+      matches!(t, Type::Array(Some(ConcreteArraySize::Unsized), _))
+    }))
+      && self.data.with_known(is_heap_value_type)
+  }
+  /// Whether an assignment to this target, with the assignment's `others`
+  /// arguments, may take the target's elements out of their containers
+  /// while it runs (see `BytecodeCompilationState::take_elements`). A taken
+  /// element leaves an empty one in its place until it's put back, so
+  /// nothing evaluated meanwhile may reach the target's root: the target is
+  /// a name with only field accesses and indexing on it, the name is a
+  /// global or an owned local (a reference parameter could alias a global a
+  /// callee reads), and neither the target's index expressions nor `others`
+  /// read or write it.
+  fn takes_target_elements(
+    &self,
+    others: &[TypedExp],
+    state: &mut BytecodeCompilationState,
+  ) -> bool {
+    let mut indices = vec![];
+    let mut place = self;
+    let root = loop {
+      match &place.kind {
+        ExpKind::Access(Accessor::ArrayIndex(index), inner) => {
+          indices.push(&**index);
+          place = inner;
+        }
+        ExpKind::Access(Accessor::Field(_), inner) => place = inner,
+        ExpKind::Name(name) => break name.clone(),
+        _ => return false,
+      }
+    };
+    if !(place.data.is_globally_bound
+      || place.data.ownership == Ownership::Owned)
+    {
+      return false;
+    }
+    indices.into_iter().chain(others).all(|exp| {
+      !exp
+        .effects_with(&mut state.effects_memo)
+        .0
+        .iter()
+        .any(|effect| match effect {
+          Effect::ReadsVar(name)
+          | Effect::ReadsArrayLength(name)
+          | Effect::ModifiesLocalVar(name)
+          | Effect::ModifiesGlobalVar(name) => *name == root,
+          _ => false,
+        })
+    })
+  }
   fn try_compile_dyn_array_store(
     args: &[TypedExp],
     state: &mut BytecodeCompilationState,
@@ -4137,9 +4215,11 @@ impl TypedExp {
       // to the parent container — value position would mutate a
       // discarded clone and silently drop the store.
       state.array_mut_ref_store_instructions.push(vec![]);
+      state.take_elements = args[0].takes_target_elements(&args[1..], state);
       let heap_id_slot = inner
         .compile_to_bytecode(CompilePosition::MutRef, state)
         .unwrap();
+      state.take_elements = false;
       let index_slot = index_exp.compile_index_to_bytecode(state);
       let src_slot = args[1]
         .compile_to_bytecode(CompilePosition::Value, state)
@@ -4238,6 +4318,13 @@ impl TypedExp {
             arg_positions: [heap_id_slot, 0, 0],
             return_position: dest,
           });
+          if args[0].mints_element_share() {
+            state.push_instruction(Instruction {
+              op: Op::HeapRelease,
+              arg_positions: [0, 0, 0],
+              return_position: heap_id_slot,
+            });
+          }
           Some(Some(dest))
         } else {
           panic!("array-length of unsupported array kind in VM runtime")
@@ -5185,10 +5272,15 @@ impl TypedExp {
         };
         let abstract_f = f.abstract_ancestor.unwrap();
         let abstract_f = abstract_f.read().unwrap();
+        // An assignment's target may take its elements (see
+        // `take_elements`).
+        let takes_target = ASSIGNMENT_OPS.contains(&*f_name)
+          && args[0].takes_target_elements(&args[1..], state);
         let arg_bindings: Vec<RefArgBinding> = args
           .iter()
           .zip(abstract_f.arg_types.iter())
-          .map(|(arg, (_, ownership))| {
+          .enumerate()
+          .map(|(i, (arg, (_, ownership)))| {
             // A runtime-sized region-backed value passed by reference
             // binds to its region directly — compiling it as a value
             // would deep-copy the whole array at every call (and writes
@@ -5207,14 +5299,15 @@ impl TypedExp {
             {
               RefArgBinding::DynRegion { region, stride }
             } else {
-              RefArgBinding::Slot(
-                arg
-                  .compile_to_bytecode(
-                    CompilePosition::from_ownership(*ownership),
-                    state,
-                  )
-                  .unwrap(),
-              )
+              state.take_elements = takes_target && i == 0;
+              let slot = arg
+                .compile_to_bytecode(
+                  CompilePosition::from_ownership(*ownership),
+                  state,
+                )
+                .unwrap();
+              state.take_elements = false;
+              RefArgBinding::Slot(slot)
             }
           })
           .collect();
@@ -6067,8 +6160,36 @@ impl TypedExp {
                 state.dynamic_array_memory.get(name).copied()
             {
               let dest = state.take_stack_slot(stride);
-              let index_slot = index_exp.compile_index_to_bytecode(state);
+              let index_slot = state.without_taking(|state| {
+                index_exp.compile_index_to_bytecode(state)
+              });
               state.emit_read_check(name);
+              let element_type = self.data.unwrap_known();
+              if position == CompilePosition::MutRef
+                && state.take_elements
+                && involves_heap_values(&element_type)
+              {
+                let take_stride = if is_heap_value_type(&element_type) {
+                  0
+                } else {
+                  stride
+                };
+                state.push_instruction(Instruction {
+                  op: Op::DynTake,
+                  arg_positions: [memory, index_slot, take_stride],
+                  return_position: dest,
+                });
+                state
+                  .array_mut_ref_store_instructions
+                  .last_mut()
+                  .unwrap()
+                  .push(PendingWriteBack::Raw(Instruction {
+                    op: Op::DynPut,
+                    arg_positions: [memory, index_slot, dest],
+                    return_position: take_stride,
+                  }));
+                return Some(dest);
+              }
               state.push_instruction(Instruction {
                 op: Op::DynLoad,
                 arg_positions: [memory, index_slot, stride],
@@ -6138,12 +6259,57 @@ impl TypedExp {
                 exp.compile_to_bytecode(position, state).unwrap();
               let stride = vm_stack_size(&self.data.unwrap_known());
               let dest = state.take_stack_slot(stride);
-              let index_slot = index_exp.compile_index_to_bytecode(state);
+              let index_slot = state.without_taking(|state| {
+                index_exp.compile_index_to_bytecode(state)
+              });
+              let element_type = self.data.unwrap_known();
+              if position == CompilePosition::MutRef
+                && state.take_elements
+                && involves_heap_values(&element_type)
+              {
+                let take_stride = if is_heap_value_type(&element_type) {
+                  0
+                } else {
+                  // `HeapTake` makes a shared container unique with
+                  // `make_mut`, which can't re-own ids embedded in its
+                  // element words: they're re-owned here first.
+                  let fixups =
+                    BytecodeCompilationState::embedding_element_fixups(
+                      &element_type,
+                    )
+                    .expect("an element involving heap values embeds them");
+                  state.emit_ensure_unique_cell(heap_id_slot, stride, &fixups);
+                  stride
+                };
+                state.push_instruction(Instruction {
+                  op: Op::HeapTake,
+                  arg_positions: [heap_id_slot, index_slot, take_stride],
+                  return_position: dest,
+                });
+                state
+                  .array_mut_ref_store_instructions
+                  .last_mut()
+                  .unwrap()
+                  .push(PendingWriteBack::Raw(Instruction {
+                    op: Op::HeapPut,
+                    arg_positions: [heap_id_slot, index_slot, dest],
+                    return_position: take_stride,
+                  }));
+                return Some(dest);
+              }
               state.push_instruction(Instruction {
                 op: Op::HeapLoad,
                 arg_positions: [heap_id_slot, index_slot, stride],
                 return_position: dest,
               });
+              if position == CompilePosition::Value && exp.mints_element_share()
+              {
+                state.push_instruction(Instruction {
+                  op: Op::HeapRelease,
+                  arg_positions: [0, 0, 0],
+                  return_position: heap_id_slot,
+                });
+              }
               if position != CompilePosition::Value {
                 let element_type = self.data.unwrap_known();
                 if let Some(fixups) =
@@ -6202,7 +6368,9 @@ impl TypedExp {
             let element_type = self.data.unwrap_known();
             let inner_data_size = vm_stack_size(&element_type);
             let result_position = state.take_stack_slot(inner_data_size);
-            let index_pos = index_exp.compile_index_to_bytecode(state);
+            let index_pos = state.without_taking(|state| {
+              index_exp.compile_index_to_bytecode(state)
+            });
             index_exp.emit_index_bounds_check(
               index_pos,
               fixed_index_length(&exp.data.unwrap_known()),
