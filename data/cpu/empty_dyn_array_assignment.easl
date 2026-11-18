@@ -1,0 +1,29 @@
+; Assigning an empty runtime-sized array literal (`~[]`) to a global or a
+; local, after statements that leave other values in the VM's stack:
+; a scalar store, a float, and an array of three. Each must read back empty.
+(var some-int: u32)
+
+(var some-float: f32)
+
+(var undo-ranges: [vec2u])
+
+(var samples: [f32])
+
+@cpu
+(defn main []
+  (= some-int 5u)
+  (= undo-ranges ~[])
+  (print (array-length undo-ranges))
+  (= some-float 6.2831853)
+  (= samples ~[])
+  (print (array-length samples))
+  (= undo-ranges (zeroed-array 3u))
+  (= undo-ranges ~[])
+  (print undo-ranges)
+  (= some-int 7u)
+  (= samples (into []))
+  (print samples)
+  (let [@var local: [u32] ~[1u 2u]]
+    (= some-int 9u)
+    (= local ~[])
+    (print local)))

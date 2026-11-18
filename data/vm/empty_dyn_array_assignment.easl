@@ -1,0 +1,16 @@
+; Assigning `~[]` to runtime-sized globals in audio-mode code, after
+; statements that leave other values in the stack (see the cpu test of the
+; same name): the lengths add up to 0, plus 1 from the last store.
+(var some-int: u32)
+
+(var undo-ranges: [vec2u])
+
+(var samples: [f32])
+
+(defn f []: f32
+  (= some-int 5u)
+  (= undo-ranges ~[])
+  (= samples ~[1. 2. 3.])
+  (= samples ~[])
+  (= undo-ranges ~[(vec2u 1u 2u)])
+  (+ (f32 (array-length samples)) (f32 (array-length undo-ranges))))

@@ -80,6 +80,7 @@ vm_test!(cos);
 vm_test!(plus);
 vm_test!(nested_plus);
 vm_test!(fn_call);
+vm_test!(empty_dyn_array_assignment);
 vm_test!(fn_call_with_arg);
 vm_test!(fn_call_with_two_args);
 vm_test!(let_binding);

@@ -5023,7 +5023,7 @@ impl TypedExp {
                   arg_positions: [memory, len_slot, 0],
                   return_position: 0,
                 });
-                return None;
+                return Some(None);
               }
               let source = &rhs_args[0];
               let Type::Array(Some(size), _) = source.data.unwrap_known()

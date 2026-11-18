@@ -2976,11 +2976,11 @@ impl Program {
       };
       if args.is_empty() {
         // `audio-time` and `audio-input` are `@local` (per-execution-
-        // context, driver-authoritative); the sample rate is a uniform
-        // binding, which shaders can read too; MIDI vars are storage-read bindings with
-        // elided numbers, so shader code can read them too — the
-        // main thread's per-frame refresh marks them CPU-written and
-        // the ordinary dirty-upload machinery ships them to the GPU
+        // context, driver-authoritative). The sample rate is a uniform
+        // and the MIDI vars storage-read bindings, with elided numbers,
+        // so shader code can read them too: main's writes (the rate once
+        // at the start, the MIDI vars every frame) mark them CPU-written,
+        // and the ordinary dirty-upload machinery ships them to the GPU
         // (they only become runtime bindings when a shader actually
         // touches them, like any GPU-space var).
         let (var_name, address_space, group_and_binding) = match &**applied_name
