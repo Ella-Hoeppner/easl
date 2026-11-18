@@ -1452,6 +1452,35 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       associative: true,
       ..Default::default()
     },
+    // Exclusive or: bool `!=`, which is what every backend computes (WGSL's
+    // `^` takes only integers).
+    AbstractFunctionSignature {
+      name: "xor".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::Bool).owned(),
+        AbstractType::Type(Type::Bool).owned(),
+      ],
+      return_type: AbstractType::Type(Type::Bool),
+      associative: true,
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "^".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::Bool).owned(),
+        AbstractType::Type(Type::Bool).owned(),
+      ],
+      return_type: AbstractType::Type(Type::Bool),
+      associative: true,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+          "xor",
+        ),
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
   ]
 }
 
@@ -4685,6 +4714,7 @@ pub(crate) fn rename_builtin_fn(name: &str) -> Option<String> {
     "not" => Some("!"),
     "and" => Some("&&"),
     "or" => Some("||"),
+    "xor" => Some("!="),
     "array-length" => Some("arrayLength"),
     "texture-sample" => Some("textureSample"),
     "texture-dimensions" => Some("textureDimensions"),

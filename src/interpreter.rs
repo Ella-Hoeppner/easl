@@ -1024,7 +1024,7 @@ fn apply_builtin_fn<IO: IOManager>(
         |prims| Primitive::Bool(prims[0] == prims[1]),
       ))
     }
-    "!=" => {
+    "!=" | "xor" => {
       if let (Value::String(a), Value::String(b)) = (&args[0].0, &args[1].0) {
         return Ok(Value::Prim(Primitive::Bool(a != b)));
       }

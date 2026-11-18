@@ -1,0 +1,38 @@
+; `xor` and `^` on bools (`^` on integers stays bitwise): every pair of
+; inputs, two and three arguments, computed on the CPU and in a shader.
+(var gpu: [12: u32])
+
+(defn bit [b: bool]: u32
+  (if b 1u 0u))
+
+(defn table [a: bool b: bool c: bool]: u32
+  (+ (bit (xor a b))
+     (* 2u (bit (^ a b)))
+     (* 4u (bit (xor a b c)))
+     (* 8u (bit (^ a b c)))))
+
+@compute
+@{workgroup-size 8}
+(defn run [@{builtin global-invocation-id} id: vec3u]
+  (= (gpu id.x)
+     (table (!= (& id.x 1u) 0u)
+            (!= (& id.x 2u) 0u)
+            (!= (& id.x 4u) 0u)))
+  (when (== id.x 0u)
+    (= (gpu 8u) (^ 12u 10u))))
+
+@cpu
+(defn main []
+  (let [@var cpu [0u 0u 0u 0u 0u 0u 0u 0u 0u]]
+    (for [i 8u]
+      (= (cpu i)
+         (table (!= (& i 1u) 0u)
+                (!= (& i 2u) 0u)
+                (!= (& i 4u) 0u))))
+    (= (cpu 8u) (^ 12u 10u))
+    (print cpu))
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader run (vec3u 1u))
+      (print gpu)
+      (close-window))))

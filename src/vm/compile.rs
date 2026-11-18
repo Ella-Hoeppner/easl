@@ -2241,6 +2241,11 @@ impl BytecodeCompilationState {
 
       // --- Boolean ---
       "!" | "not" => Some(self.emit_unary(Op::LogicalNot, arg_positions[0])),
+      "xor" => Some(self.emit_binary(
+        Op::IsNotEqualBool,
+        arg_positions[0],
+        arg_positions[1],
+      )),
 
       // --- Bitwise ---
       "&" | "|" | "^" | "<<" | ">>" => {
