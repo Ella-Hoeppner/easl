@@ -1,0 +1,22 @@
+; `(sample-rate)` in shaders reads the same rate as the CPU (44100 under
+; the test IO manager): a compute shader, and a helper both run.
+(var out: [2: f32])
+
+(defn seconds [samples: f32]: f32
+  (/ samples (sample-rate)))
+
+@compute
+@{workgroup-size 1}
+(defn run []
+  (= (out 0u) (sample-rate))
+  (= (out 1u) (seconds 22050.)))
+
+@cpu
+(defn main []
+  (print (sample-rate))
+  (print (seconds 22050.))
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader run (vec3u 1u))
+      (print out)
+      (close-window))))

@@ -60,7 +60,10 @@ use crate::{
     },
     util::{compile_word, is_valid_name, is_valid_qualified_name},
     vars::TopLevelVariableKind,
-    wgsl::{FRAGMENT_POSITION_OFFSET_VAR, MIDI_VARS, is_easl_reserved_word},
+    wgsl::{
+      FRAGMENT_POSITION_OFFSET_VAR, MIDI_VARS, SAMPLE_RATE_VAR,
+      is_easl_reserved_word,
+    },
     workgroups::WORKGROUP_SIZE_VAR,
   },
   parse::{EaslSyntax, EaslTree},
@@ -2940,7 +2943,7 @@ impl Program {
     }
   }
   /// Rewrites every audio-info and MIDI-info call into a read of a
-  /// fixed-name implicit `@local` var, created on first use:
+  /// fixed-name implicit var, created on first use:
   /// `sample-rate`/`audio-time`/`midi-aftertouch`/`midi-pitch-bend`
   /// become bare reads of f32 vars, `midi-cc` an array lookup into a
   /// `[128: f32]` var, and `down-midi-notes` a bare read of the
@@ -2954,9 +2957,11 @@ impl Program {
   /// calls themselves. The names are deliberately fixed rather than
   /// gensym'd: the C audio wrapper is generated against a *separate*
   /// compilation of the same source, and gensym numbering isn't stable
-  /// across compilations. `@local` keeps the vars out of the
+  /// across compilations. `@local` keeps the audio-only vars out of the
   /// thread-sharing system for free (per-execution-context, driver- or
-  /// nobody-authoritative).
+  /// nobody-authoritative); the vars shaders can read too (the sample
+  /// rate, a uniform, and the MIDI tables, storage-read bindings) are
+  /// excluded from it by name, each thread writing its own copy.
   pub(crate) fn extract_audio_info(&mut self) {
     use crate::compiler::expression::ExpKind;
     let mut new_vars: Vec<TopLevelVar> = vec![];
@@ -2970,8 +2975,9 @@ impl Program {
         return Ok(true);
       };
       if args.is_empty() {
-        // Audio-info vars are `@local` (per-execution-context, driver-
-        // authoritative); MIDI vars are storage-read bindings with
+        // `audio-time` and `audio-input` are `@local` (per-execution-
+        // context, driver-authoritative); the sample rate is a uniform
+        // binding, which shaders can read too; MIDI vars are storage-read bindings with
         // elided numbers, so shader code can read them too — the
         // main thread's per-frame refresh marks them CPU-written and
         // the ordinary dirty-upload machinery ships them to the GPU
@@ -2979,9 +2985,11 @@ impl Program {
         // touches them, like any GPU-space var).
         let (var_name, address_space, group_and_binding) = match &**applied_name
         {
-          "sample-rate" => {
-            ("easl_sample_rate", VariableAddressSpace::Local, None)
-          }
+          "sample-rate" => (
+            SAMPLE_RATE_VAR,
+            VariableAddressSpace::Uniform,
+            Some(BindingSpec::Elided),
+          ),
           "audio-time" => {
             ("easl_audio_time", VariableAddressSpace::Local, None)
           }
@@ -9221,7 +9229,7 @@ impl Program {
         // reads via the upload machinery) but excluded here like
         // `@local` vars; the names are compiler-reserved, so user vars
         // can never collide with this exclusion.
-        if MIDI_VARS.contains(&&**name) {
+        if MIDI_VARS.contains(&&**name) || &**name == SAMPLE_RATE_VAR {
           return None;
         }
         let audience = if main_globals.contains(name) {

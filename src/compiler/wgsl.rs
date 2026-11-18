@@ -392,6 +392,12 @@ pub(crate) const WGSL_PREDECLARED_NAMES: &[&'static str] = &[
 /// `Program::offset_fragment_positions`).
 pub const FRAGMENT_POSITION_OFFSET_VAR: &str = "easl_fragment_position_offset";
 
+/// The implicit uniform `(sample-rate)` reads (see
+/// `Program::extract_audio_info`). Each thread writes its own copy: main
+/// from `IOManager::sample_rate` (shaders read main's), the audio driver
+/// the stream's rate.
+pub(crate) const SAMPLE_RATE_VAR: &str = "easl_sample_rate";
+
 /// The implicit vars the MIDI builtins read (see `Program::extract_audio_info`),
 /// which every thread refreshes for itself.
 pub(crate) const MIDI_VARS: &[&'static str] = &[
@@ -411,7 +417,7 @@ pub(crate) const MIDI_VARS: &[&'static str] = &[
 /// bindings, the C audio wrapper's references).
 const EASL_RESERVED_WORDS: &[&'static str] = &[
   "easl_audio_time",
-  "easl_sample_rate",
+  SAMPLE_RATE_VAR,
   "easl_audio_input",
   "easl_fragment_position_offset",
   "easl_workgroup_size",

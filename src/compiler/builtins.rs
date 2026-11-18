@@ -3154,9 +3154,9 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
     // them through entry arguments. `validate_audio_info_usage` rejects
     // calls reachable from non-audio entry points, then
     // `extract_audio_info` rewrites every call into a read of a
-    // fixed-name implicit `@local` var (`easl_audio_time` /
-    // `easl_sample_rate`) that the audio driver writes directly — so no
-    // backend ever sees these calls, and no effect machinery is needed.
+    // fixed-name implicit var (`easl_audio_time` / `easl_sample_rate`)
+    // that the audio driver writes directly — so no backend ever sees
+    // these calls, and no effect machinery is needed.
     // Workgroup synchronization, compute-only (`validate_context_
     // exclusivity`): WGSL's `workgroupBarrier` and `storageBarrier`, and
     // `workgroupUniformLoad`, whose argument must be a `@workgroup` var

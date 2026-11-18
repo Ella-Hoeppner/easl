@@ -6231,8 +6231,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
 
   /// Binds a top-level variable to its starting value.
   fn bind_top_level_var(&mut self, name: Arc<str>, value: Value, ty: Type) {
-    // Main's copy of the implicit `easl_sample_rate` local (see
-    // `Program::extract_audio_info`): the stream rate is fixed and
+    // Main's copy of the implicit `easl_sample_rate` var (see
+    // `Program::extract_audio_info`), which shaders read too: the stream
+    // rate is fixed and
     // knowable before any stream exists, so main-thread `(sample-rate)`
     // calls, including in the initializers after this one and closure
     // constructors sizing delay buffers during `start-audio` argument
@@ -10868,7 +10869,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       external_vars,
     );
     vm_program.attach_shared_atomics(&env.shared_table);
-    // Main's copy of the implicit `easl_sample_rate` local (see
+    // Main's copy of the implicit `easl_sample_rate` var (see
     // `Program::extract_audio_info`) — the tree-walker env's copy is
     // seeded at env construction, but the VM reads its own slots.
     let main_sample_rate = env.io.sample_rate();
