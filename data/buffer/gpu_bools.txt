@@ -1,0 +1,12 @@
+false
+(vec2b false true)
+[(Layer true true (Flags true 1u) (vec3b true true false)) (Layer true true (Flags true 1u) (vec3b true true false))]
+[true true false true]
+[(Gain (Gain 0.5 false)) (Gain (Gain 1. true))]
+3u
+1u
+3u
+2u
+3u
+7u
+4u

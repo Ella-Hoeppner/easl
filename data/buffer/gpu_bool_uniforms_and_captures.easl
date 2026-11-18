@@ -1,0 +1,63 @@
+; Bools in a uniform (whose layout rules are stricter than storage's: a
+; vec3b after a bool, an array of bool vectors with a 16-byte stride) and in
+; a dispatched closure's captures: a runtime-sized array of bools (split
+; into a binding of its own), a struct, a nested fixed array, and a captured
+; closure that captures a struct holding bools.
+(struct Style
+  outline: bool
+  tint: vec3b
+  scale: f32
+  corners: [2: vec4b]
+  last: bool)
+
+(struct Cell
+  alive: bool
+  age: u32)
+
+@uniform
+(var style: Style)
+
+(var out: [12: u32])
+
+(defn bit [b: bool]: u32
+  (if b 1u 0u))
+
+(defn bits [v: vec4b]: u32
+  (+ (bit v.x) (* 2u (bit v.y)) (* 4u (bit v.z)) (* 8u (bit v.w))))
+
+@compute
+@{workgroup-size 1}
+(defn read-style []
+  (= (out 0u) (bit (.outline style)))
+  (= (out 1u) (bits (vec4b (.tint style) (.last style))))
+  (= (out 2u) (u32 (.scale style)))
+  (= (out 3u) (bits ((.corners style) 0u)))
+  (= (out 4u) (bits ((.corners style) 1u))))
+
+@cpu
+(defn main []
+  (= style
+     (Style true
+            (vec3b false true false)
+            3.
+            [(vec4b true false false true) (vec4b false true true true)]
+            true))
+  (let [fs: [bool] ~[true false true false]
+        cell (Cell true 9u)
+        grid [[true false] [false true]]
+        check (fn [] (.alive cell))]
+    (spawn-window
+      (fn []
+        (dispatch-compute-shader read-style (vec3u 1u))
+        (dispatch-compute-shader
+          (fn []
+            (= (out 5u) (+ (bit (fs 0u)) (* 2u (bit (fs 1u)))
+                           (* 4u (bit (fs 2u)))))
+            (= (out 6u) (array-length fs))
+            (let [c cell]
+              (= (out 7u) (+ (bit (.alive c)) (* 2u (.age c)))))
+            (= (out 8u) (+ (bit ((grid 0u) 1u)) (* 2u (bit ((grid 1u) 1u)))))
+            (= (out 9u) (bit (check))))
+          (vec3u 1u))
+        (print out)
+        (close-window)))))

@@ -176,6 +176,7 @@ screen_test!(screen_fragment_captured_closures);
 screen_test!(screen_vertex_reads_storage_write);
 screen_test!(screen_instanced_draw);
 screen_test!(screen_vertex_data);
+screen_test!(screen_bool_vertex_data);
 screen_test!(screen_located_vertex_data);
 screen_test!(screen_instance_data);
 screen_test!(screen_indexed_draw);
@@ -194,6 +195,10 @@ macro_rules! buffer_test {
 }
 
 buffer_test!(dispatch_capture_array_length);
+buffer_test!(gpu_bools);
+buffer_test!(gpu_bool_corners);
+buffer_test!(gpu_bool_uniforms_and_captures);
+buffer_test!(gpu_bool_stored_closure);
 buffer_test!(def_function_initializer);
 buffer_test!(cpu_write_in_callee_keeps_gpu_writes);
 buffer_test!(ref_element_arg_reads_gpu_writes);

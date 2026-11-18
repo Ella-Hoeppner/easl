@@ -1,0 +1,175 @@
+; Corner cases of bools in GPU bindings (see `gpu_bools` for the basics).
+; Each binding is written on the CPU, transformed on the GPU, and printed,
+; so a CPU/GPU layout disagreement or a missed conversion shows up as a
+; wrong value.
+
+; Padding all around: bools between a vec2f, a vec3b (16-byte aligned), and
+; a vec3f, and a trailing bool.
+(struct Padded
+  a: bool
+  v: vec2f
+  b: bool
+  m: vec3b
+  c: bool
+  w: vec3f
+  d: bool)
+
+; A user struct whose name the generated host struct for `Cell` would take.
+(struct Cell_host
+  x: u32)
+
+(struct Cell
+  alive: bool
+  age: u32)
+
+(struct (Pair T)
+  first: T
+  second: T)
+
+(enum Shape
+  Dot
+  (Ring f32))
+
+; An enum field beside bools, and a fixed array of structs holding bools.
+(struct Board
+  shape: Shape
+  cells: [3: Cell]
+  open: bool)
+
+; Atomics beside a bool: atomic ops reach the field through a reference.
+(struct Tally
+  hits: (Atomic u32)
+  enabled: bool)
+
+(var padded: [2: Padded])
+
+(var grid: [2: [3: bool]])
+
+(var masks: [3: vec3b])
+
+(var pairs: [(Pair bool)])
+
+(var plain-pairs: [(Pair u32)])
+
+(var board: Board)
+
+(var tally: Tally)
+
+(var flags: [bool])
+
+(var collision: Cell_host)
+
+@storage
+(var settings: (Pair bool))
+
+(var out: [8: u32])
+
+(defn bit [b: bool]: u32
+  (if b 1u 0u))
+
+; Reached through a reference parameter bound to a static field path.
+(defn flip-cells [@var @ref b: Board]
+  (for [i 3u]
+    (= (.alive ((.cells b) i)) (not (.alive ((.cells b) i))))))
+
+; A `let` of an element read through a reference parameter.
+(defn first-cell [@ref b: Board]: Cell
+  (let [c ((.cells b) 0u)]
+    c))
+
+; A place returned directly.
+(defn grid-at [i: u32 j: u32]: bool
+  ((grid i) j))
+
+; Two shaders, each within WebGPU's 10 storage buffers per stage.
+@compute
+@{workgroup-size 1}
+(defn layouts []
+  ; padded structs: each bool negated, the vectors moved
+  (for [i 2u]
+    (let [p (padded i)]
+      (= (padded i)
+         (Padded (not (.d p))
+                 (* (.v p) 2.)
+                 (not (.c p))
+                 (.zyx (.m p))
+                 (not (.b p))
+                 (+ (.w p) 1.)
+                 (not (.a p))))))
+  ; a nested fixed array, transposed whole through a local copy
+  (let [g grid]
+    (= grid
+       [[(grid-at 1u 2u) (grid-at 1u 1u) (grid-at 1u 0u)]
+        [((g 0u) 2u) ((g 0u) 1u) ((g 0u) 0u)]]))
+  ; bool vectors indexed at runtime and by swizzle
+  (for [i 3u]
+    (= ((masks i) i) true)
+    (= (.x (masks i)) (not ((masks i) i))))
+  ; a generic struct of bools beside one of u32s
+  (for [i (array-length pairs)]
+    (= (pairs i)
+       (Pair (.second (pairs i)) (.first (pairs i))))
+    (+= (.second (plain-pairs i)) (bit (.first (pairs i)))))
+  ; comparing two encoded bools
+  (= (out 3u) (bit (== (.first (pairs 0u)) (.second (pairs 1u))))))
+
+@compute
+@{workgroup-size 4}
+(defn references [@{builtin global-invocation-id} id: vec3u]
+  (when (.enabled tally)
+    (atomic-add (.hits tally) 1u))
+  (when (== id.x 0u)
+    ; an enum next to bools, a field path through a reference, and a let
+    ; through one
+    (flip-cells board)
+    (= (.open board) (== (.shape board) Shape/Dot))
+    (= (out 0u) (+ (bit (.alive (first-cell board)))
+                   (* 2u (.age (first-cell board)))))
+    ; a runtime-sized array of bools
+    (for [i (array-length flags)]
+      (= (flags i) (== (% i 2u) 0u)))
+    (= (out 1u) (array-length flags))
+    ; the colliding struct is untouched by the encoding
+    (+= (.x collision) 1u)
+    ; a read-only binding of bools, matched on
+    (= (out 2u)
+       (match (.first settings)
+         true (+ 10u (bit (.second settings)))
+         false 20u))))
+
+@cpu
+(defn main []
+  (= padded
+     [(Padded true (vec2f 1. 2.) false (vec3b true false false)
+              true (vec3f 3. 4. 5.) false)
+      (Padded false (vec2f 6. 7.) true (vec3b false true true)
+              false (vec3f 8. 9. 10.) true)])
+  (= grid [[true false false] [false true true]])
+  (= masks [(vec3b false false false)
+            (vec3b true false false)
+            (vec3b true true false)])
+  (= pairs ~[(Pair true false) (Pair false true)])
+  (= plain-pairs ~[(Pair 5u 6u) (Pair 7u 8u)])
+  (= board
+     (Board (Shape/Ring 2.)
+            [(Cell true 1u) (Cell false 2u) (Cell true 3u)]
+            true))
+  (= (.enabled tally) true)
+  (= flags (zeroed-array 5u))
+  (= settings (Pair true false))
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader layouts (vec3u 1u))
+      (dispatch-compute-shader references (vec3u 2u 1u 1u))
+      (print padded)
+      (print grid)
+      (print masks)
+      (print pairs)
+      (print plain-pairs)
+      (print (.cells board))
+      (print (.open board))
+      (print (atomic-load (.hits tally)))
+      (print flags)
+      (print collision)
+      (print out)
+      (close-window))))

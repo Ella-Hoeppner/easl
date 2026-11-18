@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use std::hash::Hash;
+use std::mem;
 use std::sync::{Arc, RwLock};
 
 use fsexp::{document::Document, syntax::EncloserOrOperator};
@@ -11,6 +12,7 @@ use crate::compiler::builtins::{
   EmulatedFunctionRecord, EmulatedFunctionSignature,
   built_in_structs_for_target,
 };
+use crate::compiler::host_encoding::HostEncoding;
 use crate::compiler::types::{ExpTypeInfo, PRIMITIVE_TYPE_NAMES};
 use crate::compiler::vars::{
   BindingSpec, GroupAndBinding, VariableAddressSpace,
@@ -228,6 +230,9 @@ pub struct NameContext {
   /// For each base name `gensym` has suffixed, the suffix to try next: names
   /// are only ever added, so every lower suffix is still taken.
   next_gensym_suffixes: HashMap<Arc<str>, usize>,
+  /// The bindings the current WGSL emission declares with host types, and
+  /// their conversions (see `host_encoding`).
+  pub(crate) host_encoding: HostEncoding,
 }
 
 impl NameContext {
@@ -237,6 +242,7 @@ impl NameContext {
       generated_names: HashSet::new(),
       monomorphized_names: HashMap::new(),
       next_gensym_suffixes: HashMap::new(),
+      host_encoding: HostEncoding::default(),
     }
   }
   fn track_all_ast_names(&mut self, ast: &EaslTree) {
@@ -378,7 +384,11 @@ impl TypeDefs {
         .fields
         .iter()
         .filter_map(|f| {
-          if f.field_type.unwrap_known().is_attributable() {
+          if f
+            .field_type
+            .unwrap_known()
+            .is_attributable_with(&f.attributes)
+          {
             Some((
               s.abstract_ancestor.clone(),
               f.name.clone(),
@@ -3284,12 +3294,6 @@ impl Program {
     let mut binding_names: HashMap<WindowInfoBindingSource, Arc<str>> =
       HashMap::new();
     let mut new_vars: Vec<TopLevelVar> = vec![];
-    let not_equal_ancestor = self
-      .abstract_functions
-      .get("!=")
-      .and_then(|signatures| signatures.first())
-      .expect("builtin != missing from registry")
-      .clone();
     let functions: Vec<Arc<RwLock<AbstractFunctionSignature>>> =
       self.abstract_functions_iter().cloned().collect();
     for f in functions {
@@ -3348,12 +3352,9 @@ impl Program {
               };
               let binding_name: Arc<str> =
                 self.names.write().unwrap().gensym(&base_name);
-              let var_type = if kind.is_boolean() {
-                Type::U32
-              } else {
-                // The binding's type is the builtin's own return type.
-                exp.data.unwrap_known()
-              };
+              // The binding's type is the builtin's own return type (a
+              // bool one is host-encoded like any other: `host_encoding`).
+              let var_type = exp.data.unwrap_known();
               new_vars.push(TopLevelVar {
                 name: binding_name.clone(),
                 kind: TopLevelVariableKind::Var {
@@ -3372,24 +3373,8 @@ impl Program {
               binding_name
             })
             .clone();
-          if kind.is_boolean() {
-            // Bools aren't host-shareable in WGSL uniforms: the binding is
-            // a u32 and the query becomes `(!= binding 0u)`.
-            let b = ExpBuilder::at(&exp.source_trace);
-            let mut binding_read = b.name(&binding_name, &Type::U32);
-            binding_read.data.is_globally_bound = true;
-            exp.kind = ExpKind::Application(
-              Box::new(b.callee(
-                &not_equal_ancestor,
-                &[Type::U32, Type::U32],
-                &Type::Bool,
-              )),
-              vec![binding_read, b.u32(0)],
-            );
-          } else {
-            exp.kind = ExpKind::Name(binding_name);
-            exp.data.is_globally_bound = true;
-          }
+          exp.kind = ExpKind::Name(binding_name);
+          exp.data.is_globally_bound = true;
           Ok(true)
         })
         .unwrap();
@@ -5398,6 +5383,11 @@ impl Program {
     } else {
       HashSet::new()
     };
+    names.begin_host_encoding(if target == CompilerTarget::WGSL {
+      self.host_encoded_globals()
+    } else {
+      HashMap::new()
+    });
     for v in self.top_level_vars.iter() {
       if target == CompilerTarget::WGSL
         && !v.directly_user_written
@@ -5704,7 +5694,34 @@ impl Program {
       )?;
       compiled_string += "\n\n";
     }
+    for definition in mem::take(&mut names.host_encoding.definitions) {
+      compiled_string += &definition;
+      compiled_string += "\n\n";
+    }
     Ok(compiled_string)
+  }
+  /// The globals WGSL declares with host types (see `host_encoding`): the
+  /// uniform and storage vars holding bools, and their read views.
+  fn host_encoded_globals(&self) -> HashMap<Arc<str>, Type> {
+    let mut globals = HashMap::new();
+    for v in self.top_level_vars.iter() {
+      if matches!(
+        v.kind,
+        TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Uniform
+            | VariableAddressSpace::StorageRead
+            | VariableAddressSpace::StorageReadWrite,
+          ..
+        }
+      ) && v.var_type.needs_host_encoding()
+      {
+        globals.insert(v.name.clone(), v.var_type.clone());
+        if let Some(view) = self.storage_read_views.view_of(&v.name) {
+          globals.insert(view.view.clone(), v.var_type.clone());
+        }
+      }
+    }
+    globals
   }
   /// Expands n-ary applications of associative functions into nested
   /// binary ones, `(+ a b c)` into `(+ (+ a b) c)`, in every function body
@@ -7303,7 +7320,7 @@ impl Program {
             .flat_map(|(i, annotation)| {
               let arg = &signature.args[i];
               let arg_type = arg.0.var_type.unwrap_known();
-              if arg_type.is_attributable() {
+              if arg_type.is_attributable_with(&annotation.attributes) {
                 vec![(arg_type, Ok(&mut annotation.attributes))]
               } else {
                 if let Some(source) =
@@ -7343,7 +7360,7 @@ impl Program {
               &mut IOAttributes,
               (Arc<AbstractStruct>, Arc<str>, IOAttributes),
             >,
-          )> = if return_type.is_attributable() {
+          )> = if return_type.is_attributable_with(&f.return_attributes) {
             vec![(return_type, Ok(&mut f.return_attributes))]
           } else {
             if let Some(source) =
@@ -8838,10 +8855,6 @@ impl Program {
   ///   arrays embedded in a struct or enum, closures that can't be
   ///   emitted); a runtime-sized array itself has a form as a storage
   ///   binding;
-  /// - in WGSL, a GPU-space var involving a bool, which isn't
-  ///   host-shareable and is guaranteed GPU-unused by
-  ///   `validate_gpu_used_binding_types` (`var<private> b: bool` is valid
-  ///   WGSL, so `@local` bools stay);
   /// - in WGSL, a var whose initializer isn't a constant expression
   ///   (`non_constant_initializers`), which WGSL can't declare; context
   ///   exclusivity rejects shaders reading one.
@@ -8854,15 +8867,6 @@ impl Program {
     let is_runtime_sized_array = matches!(
       &v.var_type,
       Type::Array(Some(ConcreteArraySize::Unsized), _)
-    );
-    let gpu_space = matches!(
-      v.kind,
-      TopLevelVariableKind::Var {
-        address_space: VariableAddressSpace::Uniform
-          | VariableAddressSpace::StorageRead
-          | VariableAddressSpace::StorageReadWrite,
-        ..
-      }
     );
     let has_binding = matches!(
       v.kind,
@@ -8880,9 +8884,6 @@ impl Program {
     };
     (target == CompilerTarget::WGSL && is_runtime_sized_array && !has_binding)
       || cpu_only
-      || (target == CompilerTarget::WGSL
-        && gpu_space
-        && v.var_type.involves_bool())
       || (target == CompilerTarget::WGSL
         && non_constant_initializers.contains(&v.name))
   }
@@ -8958,11 +8959,12 @@ impl Program {
     }
     referenced
   }
-  /// Rejects GPU-space vars whose types can't be host-shared (bool- or
-  /// String-containing) — but only when GPU code actually touches them. A
-  /// storage-write bool var no shader references is an ordinary CPU value
+  /// Rejects GPU-space vars whose types can't be host-shared (String-
+  /// containing) — but only when GPU code actually touches them. A
+  /// storage-write String var no shader references is an ordinary CPU value
   /// (usable, e.g., as main↔audio shared state); it's simply skipped from
-  /// WGSL emission. Must run after every pass that rewrites GPU entry
+  /// WGSL emission. (Bools are shared through host encoding:
+  /// `host_encoding`.) Must run after every pass that rewrites GPU entry
   /// bodies (window-info extraction, dispatched-closure lifts), since
   /// GPU usage is derived from entry-point effects.
   pub(crate) fn validate_gpu_used_binding_types(&self, errors: &mut ErrorLog) {
@@ -9009,12 +9011,7 @@ impl Program {
       } = v.kind
         && gpu_used.contains(&v.name)
       {
-        if v.var_type.involves_bool() {
-          errors.log(CompileError::new(
-            UnshareableBindingType("bool".to_string()),
-            v.source_trace.clone(),
-          ));
-        } else if v.var_type.involves_string() {
+        if v.var_type.involves_string() {
           errors.log(CompileError::new(
             UnshareableBindingType("String".to_string()),
             v.source_trace.clone(),

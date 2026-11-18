@@ -1,0 +1,115 @@
+; Bools cross the CPU-GPU boundary in every position a binding can hold
+; one: a scalar, a bool vector, struct fields (nested too), fixed and
+; runtime-sized arrays, a uniform, an enum payload, a reference parameter
+; bound to a binding, and a dispatched closure's captures (a captured
+; closure's too). WGSL can't share a bool, so the GPU stores each as a
+; `u32` and converts on every read and write.
+(struct Flags
+  on: bool
+  count: u32)
+
+(struct Layer
+  active: bool
+  recording: bool
+  flags: Flags
+  mask: vec3b)
+
+(struct Gain
+  amount: f32
+  on: bool)
+
+(enum Mode
+  Off
+  (Gain Gain))
+
+(var flag: bool)
+
+(var mask: vec2b)
+
+(var layers: [Layer])
+
+(var toggles: [4: bool])
+
+@uniform
+(var enabled: bool)
+
+(var modes: [2: Mode])
+
+(var out: [8: u32])
+
+(defn bit [b: bool]: u32
+  (if b 1u 0u))
+
+(defn count-active [@ref ls: [Layer]]: u32
+  (let [@var n 0u]
+    (for [i (array-length ls)]
+      (when (.active (ls i))
+        (+= n 1u)))
+    n))
+
+@compute
+@{workgroup-size 1}
+(defn flip []
+  ; scalars, a vector, and a uniform, read and written
+  (= (out 0u) (+ (bit flag) (* 2u (bit enabled))))
+  (= flag (not flag))
+  (= mask (vec2b (.y mask) (.x mask)))
+  ; fields of runtime-sized array elements, whole elements, and nested
+  ; structs
+  (for [i (array-length layers)]
+    (= (.recording (layers i)) (.active (layers i)))
+    (+= (.count (.flags (layers i))) 1u)
+    (when (.on (.flags (layers i)))
+      (= (.mask (layers i)) (.zxy (.mask (layers i))))))
+  (let [first (layers 0u)]
+    (= (layers 1u) first)
+    (= (out 1u) (bit (.recording first))))
+  ; a fixed array, whole and by element
+  (let [copy toggles]
+    (= (out 2u) (+ (bit (copy 0u)) (* 2u (bit (copy 3u)))))
+    (= toggles [(copy 3u) (copy 2u) (copy 1u) (copy 0u)]))
+  (= (toggles 1u) true)
+  ; an enum payload holding a bool
+  (match (modes 0u)
+    (Mode/Gain g) (= (modes 1u)
+                     (Mode/Gain (Gain (* (.amount g) 2.) (not (.on g)))))
+    Mode/Off (= (modes 1u) Mode/Off))
+  (= (out 5u) (count-active layers)))
+
+@cpu
+(defn main []
+  (= flag true)
+  (= mask (vec2b true false))
+  (= layers
+     ~[(Layer true false (Flags true 0u) (vec3b true false true))
+       (Layer false true (Flags false 5u) (vec3b false false false))])
+  (= toggles [true false false true])
+  (= enabled true)
+  (= modes [(Mode/Gain (Gain 0.5 false)) Mode/Off])
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader flip (vec3u 1u))
+      (print flag)
+      (print mask)
+      (print layers)
+      (print toggles)
+      (print modes)
+      (print (out 0u))
+      (print (out 1u))
+      (print (out 2u))
+      (print (out 5u))
+      ; a dispatched closure's captured bools
+      (let [inverted (not flag)
+            pair (Flags inverted 7u)
+            off (not inverted)
+            check (fn [] off)]
+        (dispatch-compute-shader
+          (fn []
+            (= (out 3u) (+ (bit inverted) (* 2u (bit (.on pair)))))
+            (= (out 4u) (.count pair))
+            (= (out 6u) (+ (bit (check)) 4u)))
+          (vec3u 1u)))
+      (print (out 3u))
+      (print (out 4u))
+      (print (out 6u))
+      (close-window))))

@@ -1,6 +1,6 @@
-; A bool-typed storage-write var is legal when no GPU entry point touches
-; it: it's an ordinary CPU value, omitted from the emitted WGSL (WGSL has
-; no host-shareable bool), so the shader output still validates.
+; A bool-typed storage-write var no GPU entry point touches is declared
+; with its host type, a `u32`, like one a shader uses (WGSL has no
+; host-shareable bool), so the shader output still validates.
 (var muted: bool)
 
 (var out: f32)

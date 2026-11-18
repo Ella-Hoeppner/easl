@@ -1,0 +1,11 @@
+[(Padded true (vec2f 2. 4.) false (vec3b false false true) true (vec3f 4. 5. 6.) false) (Padded false (vec2f 12. 14.) true (vec3b true true false) false (vec3f 9. 10. 11.) true)]
+[[true true false] [false false true]]
+[(vec3b false false false) (vec3b false true false) (vec3b false true true)]
+[(Pair false true) (Pair true false)]
+[(Pair 5u 6u) (Pair 7u 9u)]
+[(Cell false 1u) (Cell true 2u) (Cell false 3u)]
+false
+8u
+[true false true false true]
+(Cell_host 1u)
+[2u 5u 10u 1u 0u 0u 0u 0u]

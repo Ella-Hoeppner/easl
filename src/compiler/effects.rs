@@ -118,22 +118,6 @@ impl WindowInfoKind {
       WindowInfoKind::KeyJustDown => "key_just_down_info",
     }
   }
-  /// Whether the easl-level query returns a bool. Bools aren't
-  /// host-shareable in WGSL uniforms, so these bindings are stored as `u32`
-  /// and GPU-side uses are rewritten to `(!= binding 0u)`.
-  pub(crate) fn is_boolean(&self) -> bool {
-    matches!(
-      self,
-      WindowInfoKind::MousePresent
-        | WindowInfoKind::MouseDown
-        | WindowInfoKind::MouseJustDown
-        | WindowInfoKind::MouseRightDown
-        | WindowInfoKind::MouseRightJustDown
-        | WindowInfoKind::MouseCaptured
-        | WindowInfoKind::KeyDown
-        | WindowInfoKind::KeyJustDown
-    )
-  }
 }
 
 /// A call that WGSL requires to be in uniform control flow: every invocation

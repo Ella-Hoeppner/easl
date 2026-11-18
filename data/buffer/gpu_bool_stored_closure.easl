@@ -1,0 +1,29 @@
+; A closure stored in a GPU var, its scope holding a bool (the var's type is
+; a function type, laid out as its scope: a struct with a `u32`), called by
+; a shader. Storing a closure that captured `true`, then one that captured
+; `false`, must change what the shader sees.
+(var pick: (Fn [] u32))
+
+(var out: [2: u32])
+
+(defn make-pick [on: bool]: (Fn [] u32)
+  (fn [] (if on 7u 3u)))
+
+@compute
+@{workgroup-size 1}
+(defn run [@{builtin global-invocation-id} id: vec3u]
+  (= (out 0u) (+ (out 0u) (pick))))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (= pick (make-pick (== frame 0u)))
+      (dispatch-compute-shader run (vec3u 1u))
+      (when (== frame 1u)
+        (print out)
+        (close-window))
+      (= frame (+ frame 1u)))))

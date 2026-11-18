@@ -136,6 +136,29 @@ macro_rules! error_test {
 
 // --- Success tests ---
 
+/// A host fills bool bindings as `u32`s, so their declarations are part of
+/// the interface: every uniform and storage binding holding a bool (read
+/// views too) is declared with `u32`s in its bools' place, and nothing else
+/// changes type.
+#[test]
+fn bool_binding_declarations() {
+  let wgsl = compile_shader("bool_bindings").unwrap();
+  for expected in [
+    "var<storage, read_write> points: array<Point_host>;",
+    "var<storage> points_read_view: array<Point_host>;",
+    "var<uniform> style: Style_host;",
+    "var<workgroup> any_hidden: bool;",
+    "var<private> verbose: bool = false;",
+    "struct Point_host {\n  pos: vec2f,\n  visible: u32\n}",
+    "struct Style_host {\n  outline: u32,\n  corners: vec4u\n}",
+    "struct Point {\n  pos: vec2f,\n  visible: bool\n}",
+    "@builtin(front_facing) facing: bool",
+    "@location(1) easl_vertex_input_1: u32",
+  ] {
+    assert!(wgsl.contains(expected), "missing `{expected}` in:\n{wgsl}");
+  }
+}
+
 /// Hosts draw vertex inputs with their own vertex buffers, so everything
 /// WGSL can take as an entry input stays as written, and flattening honors
 /// written locations.
@@ -217,6 +240,8 @@ success_test!(associative);
 success_test!(assignment);
 success_test!(simple_shader);
 success_test!(storage_read_views);
+success_test!(bool_bindings);
+success_test!(shader_only_bool_uniform);
 success_test!(vertex_data);
 success_test!(variadic_vec);
 success_test!(let_binding);
@@ -768,12 +793,13 @@ error_test!(
   CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
 );
 error_test!(
-  escaping_closure_captures_ref_two_level_failure,
-  CompileErrorKind::EscapingClosureCapturesRefArg("wavetable".to_string())
+  bool_varying_failure,
+  CompileErrorKind::CantAssignAttributesToFieldOfType("lit".into()),
+  CompileErrorKind::CantAssignAttributesToType
 );
 error_test!(
-  unshareable_bool_var_failure,
-  CompileErrorKind::UnshareableBindingType("bool".to_string())
+  escaping_closure_captures_ref_two_level_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("wavetable".to_string())
 );
 success_test!(unused_bool_var);
 error_test!(
@@ -1407,10 +1433,7 @@ error_test!(
   copied_stateful_closure_audio_entry_failure,
   CompileErrorKind::CopiedStatefulClosure("osc".into())
 );
-error_test!(
-  dispatched_captured_closure_bool_failure,
-  CompileErrorKind::UnshareableBindingType("bool".into())
-);
+success_test!(dispatched_captured_closure_bool);
 error_test!(
   audio_handoff_then_main_use_failure,
   CompileErrorKind::CopiedStatefulClosure("osc".into())

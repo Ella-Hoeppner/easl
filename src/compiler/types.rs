@@ -14,6 +14,7 @@ use take_mut::take;
 use crate::{
   compiler::{
     builtins::{get_builtin_struct, scalar_bitcast},
+    entry::IOAttributes,
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     exp_builder::{
@@ -1638,25 +1639,6 @@ impl Type {
       _ => false,
     }
   }
-  /// Whether this type contains a `bool` anywhere in its structure
-  /// (directly, as an element/field, or inside an enum variant). Bools
-  /// aren't host-shareable in WGSL, so bool-containing types can't be
-  /// GPU bindings.
-  pub(crate) fn involves_bool(&self) -> bool {
-    match self {
-      Type::Bool => true,
-      Type::Array(_, inner) => inner.kind.unwrap_known().involves_bool(),
-      Type::Struct(s) => s
-        .fields
-        .iter()
-        .any(|f| f.field_type.unwrap_known().involves_bool()),
-      Type::Enum(e) => e
-        .variants
-        .iter()
-        .any(|v| v.inner_type.unwrap_known().involves_bool()),
-      _ => false,
-    }
-  }
   /// Whether this type is, or contains anywhere in its structure, a
   /// `String`. Inspects nested types in place: every expression's effects
   /// ask this.
@@ -1700,14 +1682,15 @@ impl Type {
   }
 
   /// Whether this type can be the element/whole type of a WGSL
-  /// storage/uniform binding: no `bool` or `String` (not host-shareable,
-  /// matching `validate_gpu_used_binding_types`), and no runtime-sized
+  /// storage/uniform binding: no `String` (not host-shareable, matching
+  /// `validate_gpu_used_binding_types`; bools are host-encoded), and no
+  /// runtime-sized
   /// array except as the outermost `array<sized>` — a struct/enum/fixed
   /// array *embedding* one, or a nested `[[T]]`, has no binding layout
   /// (WGSL allows a runtime-sized array only as a whole binding of `array<
   /// fixed>`). A function reading such a global is CPU-only.
   pub(crate) fn is_valid_wgsl_binding_layout(&self) -> bool {
-    if self.involves_bool() || self.involves_string() {
+    if self.involves_string() {
       return false;
     }
     match self {
@@ -2951,6 +2934,13 @@ impl Type {
   }
   pub(crate) fn is_location_attributable(&self) -> bool {
     *self != Type::Bool && self.is_attributable()
+  }
+  /// Whether an entry input or output of this type, with `attributes`, has
+  /// a WGSL form: a bool only as a builtin (`front-facing`), since WGSL
+  /// can't pass one between stages or to or from a buffer.
+  pub(crate) fn is_attributable_with(&self, attributes: &IOAttributes) -> bool {
+    self.is_location_attributable()
+      || (self.is_attributable() && attributes.builtin().is_some())
   }
   pub(crate) fn is_vector(&self) -> bool {
     if let Type::Struct(s) = self

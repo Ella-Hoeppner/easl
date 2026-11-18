@@ -11,6 +11,7 @@ pub(crate) mod expression;
 pub(crate) mod function_values;
 pub mod functions;
 pub(crate) mod graph;
+pub(crate) mod host_encoding;
 pub mod info;
 pub(crate) mod macros;
 pub mod modules;

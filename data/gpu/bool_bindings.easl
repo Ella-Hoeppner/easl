@@ -1,0 +1,58 @@
+; Bindings holding bools (stored as `u32`s, see `host_encoding`) read by
+; render shaders: the vertex shader reads the storage-write `points` through
+; its read-only view, the fragment shader reads a uniform struct, and the
+; compute shader writes both kinds of field. `host-vert`, only compiled for
+; a host's pipelines, takes a `Point` as vertex input: its bool is a `u32`
+; attribute. The fragment shader's `front-facing` input is a bool builtin,
+; which needs no encoding.
+(struct Point
+  pos: vec2f
+  visible: bool)
+
+(struct Style
+  outline: bool
+  corners: vec4b)
+
+(var points: [Point])
+
+@uniform
+(var style: Style)
+
+; Workgroup and private bools stay bools: WGSL can hold them, and no host
+; reads them.
+@workgroup
+(var any-hidden: bool)
+
+@local
+(var verbose: bool false)
+
+@compute
+(defn hide-points [@{builtin global-invocation-id} id: vec3u]
+  (= (.visible (points id.x)) (not (.visible (points id.x))))
+  (when (and (not (.visible (points id.x))) (not verbose))
+    (= any-hidden true)))
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: vec4f
+  (let [p (points i)]
+    (if (.visible p)
+      (vec4f p.pos 0. 1.)
+      (vec4f 2. 2. 0. 1.))))
+
+@vertex
+(defn host-vert [p: Point]: vec4f
+  (vec4f p.pos 0. (if p.visible 1. 0.)))
+
+@fragment
+(defn frag [@{builtin front-facing} facing: bool]: vec4f
+  (if (and facing (.outline style) (any (.corners style)))
+    (vec4f 1.)
+    (vec4f 0.)))
+
+@cpu
+(defn main []
+  (= points ~[(Point (vec2f 0.) true)])
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader hide-points (vec3u 1u))
+      (dispatch-render-shaders vert frag 1u))))

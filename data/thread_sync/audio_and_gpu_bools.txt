@@ -1,0 +1,32 @@
+spawn-window
+frame 0
+main-publish: layers
+start-audio: f
+upload: layers
+dispatch-compute-shader toggle (1, 1, 1)
+readback: layers
+main-publish: layers
+audio-batch 0 x2
+audio-adopt: layers
+samples: 0.5 0.5
+audio-publish: layers
+frame 1
+main-adopt: layers
+upload: layers
+dispatch-compute-shader toggle (1, 1, 1)
+readback: layers
+main-publish: layers
+audio-batch 1 x2
+audio-adopt: layers
+samples: 0.25 0.25
+audio-publish: layers
+frame 2
+main-adopt: layers
+upload: layers
+dispatch-compute-shader toggle (1, 1, 1)
+readback: layers
+main-publish: layers
+audio-batch 2 x2
+audio-adopt: layers
+samples: 0.75 0.75
+audio-publish: layers

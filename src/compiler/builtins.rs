@@ -3272,10 +3272,8 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     // Look up a single note by MIDI note number (0-127): `(Some note)`
-    // when currently held, `None` otherwise. `MidiNote` can't carry a
-    // `down: bool` field (bool isn't host-shareable in WGSL storage, and
-    // the held-note list is GPU-readable), so held-ness rides on the
-    // `Option` instead. Rewritten in `extract_audio_info` to a lookup
+    // when currently held, `None` otherwise: held-ness rides on the
+    // `Option`. Rewritten in `extract_audio_info` to a lookup
     // into the implicit `easl_midi_notes: [128: (Option MidiNote)]`
     // table.
     AbstractFunctionSignature {

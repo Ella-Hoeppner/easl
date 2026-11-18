@@ -180,10 +180,20 @@ fn round_up(align: usize, size: usize) -> usize {
 fn vertex_scalar(t: &Type) -> Option<VertexScalar> {
   match t {
     Type::F32 => Some(VertexScalar::F32),
-    Type::U32 => Some(VertexScalar::U32),
+    // A bool is a `u32` attribute (0 or 1, its layout in a binding), which
+    // the entry compares with 0.
+    Type::U32 | Type::Bool => Some(VertexScalar::U32),
     Type::I32 => Some(VertexScalar::I32),
     _ => None,
   }
+}
+
+/// The `u32` vector type holding a bool vector's attribute.
+fn attribute_vector_type(bool_vector: &Type) -> String {
+  let Type::Struct(s) = bool_vector else {
+    unreachable!("a bool vector is a struct")
+  };
+  format!("vec{}u", extract_vec_size(&s.name).unwrap())
 }
 
 impl Type {
@@ -287,12 +297,12 @@ impl Type {
 
   /// Whether WGSL can take this type as an entry input as it is.
   fn is_wgsl_entry_input(&self) -> bool {
-    self.is_attributable()
+    self.is_location_attributable()
       || match self {
         Type::Struct(s) if !self.is_matrix() => s
           .fields
           .iter()
-          .all(|f| f.field_type.unwrap_known().is_attributable()),
+          .all(|f| f.field_type.unwrap_known().is_location_attributable()),
         _ => false,
       }
   }
@@ -320,6 +330,14 @@ impl Type {
         parts.join(", ")
       )
     };
+    if *self == Type::Bool {
+      let attribute = attributes.next().expect("a vertex attribute per leaf");
+      return format!("({attribute} != 0u)");
+    }
+    if self.vector_element_type() == Some(Type::Bool) {
+      let attribute = attributes.next().expect("a vertex attribute per leaf");
+      return format!("({attribute} != {}(0u))", attribute_vector_type(self));
+    }
     if vertex_scalar(self).is_some() || self.is_vector() {
       return attributes.next().expect("a vertex attribute per leaf");
     }

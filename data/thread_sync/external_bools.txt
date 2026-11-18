@@ -1,0 +1,20 @@
+external-write: muted = true
+main-adopt: muted
+spawn-window
+frame 0
+upload: muted
+upload: audible
+dispatch-compute-shader check (1, 1, 1)
+readback: audible
+print: false
+main-publish: audible
+external-read: audible = false
+external-write: muted = false
+frame 1
+main-adopt: muted
+upload: muted
+dispatch-compute-shader check (1, 1, 1)
+readback: audible
+print: true
+main-publish: audible
+external-read: audible = true

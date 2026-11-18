@@ -900,6 +900,28 @@ thread_sync_test!(
   [Frame, AudioBatch(2), Frame, AudioBatch(2), Frame]
 );
 thread_sync_test!(
+  external_bools,
+  [
+    ExternalWriteValue("muted", || Value::Prim(Primitive::Bool(true))),
+    Frame,
+    ExternalReadValue("audible"),
+    ExternalWriteValue("muted", || Value::Prim(Primitive::Bool(false))),
+    Frame,
+    ExternalReadValue("audible")
+  ]
+);
+thread_sync_test!(
+  audio_and_gpu_bools,
+  [
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2)
+  ]
+);
+thread_sync_test!(
   external_to_main_and_gpu,
   [
     ExternalWrite("sliders", &[0.25, 0., 0., 0.]),

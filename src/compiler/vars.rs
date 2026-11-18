@@ -494,8 +494,12 @@ impl TopLevelVar {
           TopLevelVariableKind::Const => "const",
         };
 
+        let var_type = if names.host_encoding.globals.contains_key(&self.name) {
+          names.host_type_name(&self.var_type)
+        } else {
+          self.var_type.monomorphized_name(names, target)
+        };
         let name = compile_word(self.name);
-        let var_type = self.var_type.monomorphized_name(names, target);
         let assignment = if let Some(value) = self.value {
           format!(
             " = {}",

@@ -1,0 +1,11 @@
+; A shader-only program (no CPU code) reading a bool uniform: WGSL declares
+; it as a `u32`, which a host fills with 0 or 1, and reads it with
+; `!= 0u`.
+@uniform
+(var my-var: bool)
+
+@fragment
+(defn frag []: vec4f
+  (if my-var
+    (vec4f 1. 1. 1. 1.)
+    (vec4f 0. 0. 0. 1.)))

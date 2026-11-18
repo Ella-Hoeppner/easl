@@ -1,0 +1,20 @@
+; An embedder writes an @external bool uniform before the program starts
+; and again mid-run (stored as a `u32` on the GPU), the compute shader
+; writes its negation into a bool the embedder reads back.
+@external
+@uniform
+(var muted: bool)
+
+@external
+(var audible: bool)
+
+@{workgroup-size 1}
+@compute
+(defn check []
+  (= audible (not muted)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (dispatch-compute-shader check (vec3u 1u))
+                  (print audible))))

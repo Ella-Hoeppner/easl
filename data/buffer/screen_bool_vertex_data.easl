@@ -1,0 +1,88 @@
+; Vertex data holding bools: each is a `u32` attribute (0 or 1) the vertex
+; entry compares with 0, a bool scalar and a bool vector, each flipped on
+; the CPU between frames. Frame 3's vertices hold a fixed array of bools and
+; a nested struct with a bool and a bool vector, after padding, each
+; attribute at its offset; any wrong one draws black.
+(struct Corner
+  position: vec2f
+  lit: bool
+  channels: vec3b)
+
+(var corners: [3: Corner])
+
+(struct Switches
+  on: bool
+  pair: vec2b)
+
+(struct Fancy
+  position: vec2f
+  gates: [2: bool]
+  scale: f32
+  switches: Switches)
+
+(var fancy: [3: Fancy])
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  color: vec4f)
+
+(defn level [on: bool]: f32
+  (if on 1. 0.))
+
+@vertex
+(defn vert [c: Corner]: Varyings
+  (Varyings
+    (vec4f c.position 0. 1.)
+    (if c.lit
+      (vec4f (level c.channels.x)
+             (level c.channels.y)
+             (level c.channels.z)
+             1.)
+      (vec4f 0. 0. 0. 1.))))
+
+@vertex
+(defn fancy-vert [f: Fancy]: Varyings
+  (Varyings
+    (vec4f f.position 0. 1.)
+    (if (&& ((.gates f) 0u)
+            (not ((.gates f) 1u))
+            (.on (.switches f))
+            (.y (.pair (.switches f)))
+            (not (.x (.pair (.switches f))))
+            (== (.scale f) 0.5))
+      (vec4f 1. 1. 0. 1.)
+      (vec4f 0. 0. 0. 1.))))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  in.color)
+
+(defn fill [lit: bool channels: vec3b]
+  (= corners
+     [(Corner (vec2f -1. -1.) lit channels)
+      (Corner (vec2f 3. -1.) lit channels)
+      (Corner (vec2f -1. 3.) lit channels)]))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        0u (do (fill true (vec3b true false false))
+               (dispatch-render-shaders vert frag corners))
+        1u (do (fill true (vec3b false true true))
+               (dispatch-render-shaders vert frag corners))
+        2u (do (fill false (vec3b true true true))
+               (dispatch-render-shaders vert frag corners))
+        3u (let [make (fn [at: vec2f]
+                        (Fancy at [true false] 0.5
+                               (Switches true (vec2b false true))))]
+             (= fancy [(make (vec2f -1. -1.))
+                       (make (vec2f 3. -1.))
+                       (make (vec2f -1. 3.))])
+             (dispatch-render-shaders fancy-vert frag fancy))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

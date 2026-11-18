@@ -2107,6 +2107,50 @@ impl TypedExp {
     }
     Ok(())
   }
+  /// Whether this is a place rooted at a global WGSL declares with its host
+  /// type (a name, with field accesses, swizzles, and indexing on it; see
+  /// `host_encoding`).
+  fn is_host_encoded_place(&self, names: &NameContext) -> bool {
+    let mut place = self;
+    loop {
+      match &place.kind {
+        ExpKind::Name(name) => {
+          return names.host_encoding.globals.contains_key(name);
+        }
+        ExpKind::Access(_, inner) => place = inner,
+        ExpKind::Application(f, _)
+          if f.data.with_known(|t| matches!(t, Type::Array(..))) =>
+        {
+          place = f
+        }
+        _ => return false,
+      }
+    }
+  }
+  /// A host-encoded place (`is_host_encoded_place`) as WGSL accesses it:
+  /// its host type, unconverted.
+  fn compile_host_place(
+    self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
+    match self.kind {
+      ExpKind::Name(name) => compile_word(name),
+      ExpKind::Access(accessor, inner) => {
+        let accessor = accessor.compile(&inner.data, names, target);
+        inner.compile_host_place(names, target) + &accessor
+      }
+      ExpKind::Application(f, mut args) => {
+        let index = args.remove(0).compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target,
+        );
+        format!("{}[{index}]", f.compile_host_place(names, target))
+      }
+      _ => unreachable!("a host-encoded place is a name and accessors on it"),
+    }
+  }
   /// Compiles this expression where its value is read. A name of a
   /// reference variable (a `@ref` parameter, or a closure's scope) is a
   /// pointer in the output, so it's dereferenced.
@@ -2166,6 +2210,11 @@ impl TypedExp {
         InnerExpression => s,
       }
     };
+    if self.is_host_encoded_place(names) {
+      let t = self.data.unwrap_known();
+      let raw = self.compile_host_place(names, target);
+      return wrap(names.host_unpack(&t, raw));
+    }
     match self.kind {
       Wildcard => panic!("compiling wildcard"),
       Unit => match position {
@@ -2234,7 +2283,12 @@ impl TypedExp {
             .iter()
             .map(|a| a.data.unwrap_known())
             .collect::<Vec<_>>();
-          let arg_strs: Vec<String> = args
+          // An assignment into a host-encoded place stores the value packed
+          // (only `=` can, the compound assignments being integer-only).
+          let packs_assigned_value = is_assignment_operator
+            && args[0].is_host_encoded_place(names)
+            && arg_types[0].needs_host_encoding();
+          let mut arg_strs: Vec<String> = args
             .into_iter()
             .zip(if let Some(ancestor) = &signature.abstract_ancestor {
               ancestor
@@ -2271,7 +2325,16 @@ impl TypedExp {
                 }
               }
 
-              if !needs_ref && !needs_deref {
+              if (needs_ref || i == 0 && is_assignment_operator)
+                && arg.is_host_encoded_place(names)
+              {
+                let place = arg.compile_host_place(names, target);
+                if needs_ref {
+                  format!("&{place}")
+                } else {
+                  place
+                }
+              } else if !needs_ref && !needs_deref {
                 arg.compile(InnerExpression, names, target)
               } else {
                 let mut arg_inner_value = arg;
@@ -2304,6 +2367,11 @@ impl TypedExp {
               }
             })
             .collect();
+          if packs_assigned_value {
+            assert_eq!(f_str, "=", "only `=` assigns bools");
+            let value = arg_strs.pop().unwrap();
+            arg_strs.push(names.host_pack(&arg_types[0], value));
+          }
           if let Some(abstract_ancestor) = &signature.abstract_ancestor {
             match abstract_ancestor.read().unwrap().implementation {
               FunctionImplementationKind::Builtin {

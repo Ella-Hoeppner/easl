@@ -1,0 +1,30 @@
+; Bools shared by the main thread, the GPU, and the audio thread (stored as
+; `u32`s on the GPU): the compute shader toggles layer 0's `recording` and
+; copies layer 1's `active`, which the audio thread sets, into its
+; `recording`; the audio output reads both `recording`s. Samples are 0.5
+; when layer 0 records and 0.25 more when layer 1 does: 0.5, then 0.25, then
+; 0.75.
+(struct Layer
+  active: bool
+  recording: bool
+  gain: f32)
+
+(var layers: [2: Layer])
+
+@audio
+(defn f []: f32
+  (= (.active (layers 1u)) true)
+  (+ (if (.recording (layers 0u)) 0.5 0.)
+     (if (.recording (layers 1u)) 0.25 0.)))
+
+@{workgroup-size 1}
+@compute
+(defn toggle []
+  (= (.recording (layers 0u)) (not (.recording (layers 0u))))
+  (= (.recording (layers 1u)) (.active (layers 1u))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (start-audio f)
+                  (dispatch-compute-shader toggle (vec3u 1u)))))
