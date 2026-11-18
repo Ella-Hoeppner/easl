@@ -1,0 +1,16 @@
+; A top-level value can't take a builtin function's name: it would hide the
+; function from the rest of the module. Functions can (they overload it).
+(def length: f32
+  0.5)
+
+(var sin: f32)
+
+(override step: f32
+  1.)
+
+(defn sign [b: bool]: f32
+  (if b 1. -1.))
+
+@fragment
+(defn f []: vec4f
+  (vec4f (sign true)))

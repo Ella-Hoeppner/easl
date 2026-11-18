@@ -794,6 +794,12 @@ error_test!(
   CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
 );
 error_test!(
+  builtin_function_value_failure,
+  CompileErrorKind::BuiltinFunctionRedefinition("length".into()),
+  CompileErrorKind::BuiltinFunctionRedefinition("sin".into()),
+  CompileErrorKind::BuiltinFunctionRedefinition("step".into())
+);
+error_test!(
   bool_entry_io_failure,
   CompileErrorKind::FragmentBoolOutput,
   CompileErrorKind::FragmentMustHaveLocation0Output,

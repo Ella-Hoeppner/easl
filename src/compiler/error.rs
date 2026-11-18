@@ -808,6 +808,10 @@ pub enum CompileErrorKind {
   IncomparableEnum(String, String, String),
   #[error("`{0}` is a builtin type and can't be redefined")]
   BuiltinTypeRedefinition(String),
+  #[error(
+    "`{0}` is a builtin function, so a top-level value can't take its name"
+  )]
+  BuiltinFunctionRedefinition(String),
   #[error("`{0}` has no member named `{1}`")]
   UnknownModuleMember(String, String),
   #[error("`{0}` is private to its module")]
@@ -916,6 +920,10 @@ impl PartialEq for CompileErrorKind {
       (
         Self::BuiltinTypeRedefinition(l0),
         Self::BuiltinTypeRedefinition(r0),
+      ) => l0 == r0,
+      (
+        Self::BuiltinFunctionRedefinition(l0),
+        Self::BuiltinFunctionRedefinition(r0),
       ) => l0 == r0,
       (
         Self::UnknownModuleMember(l0, l1),

@@ -245,6 +245,10 @@ import_error_test!(
   CompileErrorKind::BuiltinTypeRedefinition("MidiNote".into())
 );
 import_error_test!(
+  builtin_function_in_module,
+  CompileErrorKind::BuiltinFunctionRedefinition("min".into())
+);
+import_error_test!(
   missing_import,
   CompileErrorKind::ImportNotFound("nowhere.easl".into())
 );

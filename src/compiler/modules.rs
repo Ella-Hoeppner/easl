@@ -733,6 +733,16 @@ impl<'a> Resolver<'a> {
                 name_source.clone(),
               );
             }
+            // A value named like a builtin function would hide it from the
+            // module (a function shares the name: it overloads the builtin).
+            if matches!(keyword, "var" | "def" | "override")
+              && self.builtin_functions.contains(&name)
+            {
+              self.error(
+                CompileErrorKind::BuiltinFunctionRedefinition(name.to_string()),
+                name_source.clone(),
+              );
+            }
             let kind = match keyword {
               "defn" => DefinitionKind::Function,
               "struct" => DefinitionKind::Struct,
