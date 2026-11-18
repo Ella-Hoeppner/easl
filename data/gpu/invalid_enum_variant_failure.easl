@@ -1,0 +1,17 @@
+; A unit variant is a bare name and a data variant `(Name Type)`: a
+; parenthesized name alone, empty parentheses, or more than one payload type
+; is an error, not a crash.
+(enum Mode
+  (Off)
+  (Level f32))
+
+(enum Empty
+  On
+  ())
+
+(enum Pair
+  (Gain f32 bool))
+
+@fragment
+(defn f []: vec4f
+  (vec4f 1.))

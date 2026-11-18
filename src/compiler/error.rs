@@ -383,7 +383,10 @@ pub enum CompileErrorKind {
     booleans, enums, and vectors can be matched"
   )]
   CantMatchOnType(String),
-  #[error("Invalid enum variant")]
+  #[error(
+    "Invalid enum variant: a variant without data is a bare name (`Off`), \
+     and one with data is its name and one type (`(Gain f32)`)"
+  )]
   InvalidEnumVariant,
   #[error("Cannot calculate size of type")]
   CantCalculateSize,

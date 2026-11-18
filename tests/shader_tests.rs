@@ -800,6 +800,10 @@ error_test!(
   CompileErrorKind::BuiltinFunctionRedefinition("step".into())
 );
 error_test!(
+  invalid_enum_variant_failure,
+  CompileErrorKind::InvalidEnumVariant
+);
+error_test!(
   bool_entry_io_failure,
   CompileErrorKind::FragmentBoolOutput,
   CompileErrorKind::FragmentMustHaveLocation0Output,

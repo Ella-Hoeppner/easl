@@ -49,18 +49,17 @@ impl UntypedEnumVariant {
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         mut children,
       ) => {
-        if children.len() <= 2 {
+        // A data variant is its name and one payload type.
+        if let [Ast::Leaf(_, _), _] = &children[..] {
           let type_ast = children.pop();
-          let name = children.pop().unwrap();
-          if let Ast::Leaf(_, name) = name {
-            Ok(Self {
-              source: position.into(),
-              name: name.into(),
-              type_ast,
-            })
-          } else {
-            Err(CompileError::new(InvalidEnumVariant, position.into()))
-          }
+          let Some(Ast::Leaf(_, name)) = children.pop() else {
+            unreachable!("matched a name and a type")
+          };
+          Ok(Self {
+            source: position.into(),
+            name: name.into(),
+            type_ast,
+          })
         } else {
           Err(CompileError::new(InvalidEnumVariant, position.into()))
         }
