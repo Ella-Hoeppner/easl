@@ -1,0 +1,26 @@
+; Bools passed from vertex to fragment shaders: WGSL can't pass a bool
+; between stages, so a varyings struct with located bools has an IO copy
+; with a flat `u32` per bool (`host_encoding`), which the entries take and
+; return around their bodies. Covers a scalar and a bool vector varying
+; beside a builtin and a float, a varying with a written location, and a
+; located bool fragment parameter outside a struct.
+(struct Varyings
+  @{builtin position} position: vec4f
+  lit: bool
+  shade: f32
+  @{location 3} corners: vec2b)
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: Varyings
+  (Varyings (vec4f 0. 0. 0. 1.) (== i 0u) 0.5 (vec2b true (== i 1u))))
+
+@fragment
+(defn frag [in: Varyings
+            @{builtin front-facing} facing: bool]: vec4f
+  (if (and in.lit (any in.corners) facing)
+    (vec4f in.shade)
+    (vec4f 0.)))
+
+@fragment
+(defn located-frag [@{location 1} lit: bool]: vec4f
+  (if lit (vec4f 1.) (vec4f 0.)))

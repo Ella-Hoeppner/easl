@@ -7,6 +7,7 @@ use take_mut::take;
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::expression::compile_typed_name;
+use crate::compiler::host_encoding::IoStruct;
 use crate::compiler::types::{
   AbstractArraySize, ArraySizeConstants, ConcreteArraySize,
 };
@@ -46,6 +47,15 @@ use super::{
   types::{AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState},
   util::indent,
 };
+
+/// How an entry input crosses the stage boundary when it holds a located
+/// bool (see `host_encoding`).
+enum EncodedEntryInput {
+  /// A struct, passed as its IO copy.
+  Struct(IoStruct),
+  /// A located bool or bool vector, passed as `u32`s.
+  Located,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionArgumentAnnotation {
@@ -1634,6 +1644,19 @@ impl TopLevelFunction {
   /// Emits this function, or an empty string when it isn't `valid` (its
   /// `is_valid_for_target`): skipped functions' bodies are never lowered at
   /// all.
+  /// This vertex entry's flattened inputs, by parameter: each arrives as
+  /// vertex attributes (`vertex_inputs`), rebuilt at the top of the body.
+  fn flattened_vertex_inputs(&self) -> HashMap<usize, VertexInputLayout> {
+    if self.entry_point != Some(EntryPoint::Vertex) {
+      return HashMap::new();
+    }
+    self
+      .vertex_data_params()
+      .into_iter()
+      .zip(self.vertex_inputs.iter().cloned())
+      .filter(|(param, _)| self.flattens_vertex_param(*param))
+      .collect()
+  }
   pub fn compile(
     self,
     name: &str,
@@ -1641,18 +1664,45 @@ impl TopLevelFunction {
     valid: bool,
     target: CompilerTarget,
   ) -> CompileResult<String> {
-    // A flattened vertex input arrives as vertex attributes
-    // (`vertex_inputs`), rebuilt at the top of the body.
-    let flattened_params: HashMap<usize, VertexInputLayout> = if target
-      == CompilerTarget::WGSL
-      && self.entry_point == Some(EntryPoint::Vertex)
-    {
-      self
-        .vertex_data_params()
-        .into_iter()
-        .zip(self.vertex_inputs.iter().cloned())
-        .filter(|(param, _)| self.flattens_vertex_param(*param))
-        .collect()
+    if target == CompilerTarget::WGSL && valid {
+      let encoded_inputs: Vec<Option<EncodedEntryInput>> =
+        if self.entry_point == Some(EntryPoint::Fragment) {
+          self
+            .param_types()
+            .iter()
+            .zip(self.arg_annotations.iter())
+            .map(|(t, annotation)| {
+              if let Some(io) = names.io_struct(t) {
+                Some(EncodedEntryInput::Struct(io))
+              } else if t.is_bool_scalar_or_vector()
+                && annotation.attributes.location().is_some()
+              {
+                Some(EncodedEntryInput::Located)
+              } else {
+                None
+              }
+            })
+            .collect()
+        } else {
+          vec![]
+        };
+      let encoded_output = if self.entry_point == Some(EntryPoint::Vertex) {
+        names.io_struct(&self.return_type())
+      } else {
+        None
+      };
+      if encoded_inputs.iter().any(Option::is_some) || encoded_output.is_some()
+      {
+        return self.compile_io_wrapper(
+          name,
+          encoded_inputs,
+          encoded_output,
+          names,
+        );
+      }
+    }
+    let flattened_params = if target == CompilerTarget::WGSL {
+      self.flattened_vertex_inputs()
     } else {
       HashMap::new()
     };
@@ -1680,33 +1730,10 @@ impl TopLevelFunction {
           CompilerTarget::WGSL
             if let Some(layout) = flattened_params.get(&i) =>
           {
-            let t = arg.var_type.unwrap_known();
-            let input_names: Vec<String> = layout
-              .attributes
-              .iter()
-              .map(|attribute| attribute.input_name(names))
-              .collect();
-            vertex_data_bindings += &format!(
-              "\nlet {} = {};",
-              compile_word(name),
-              t.vertex_input_expression(
-                &mut input_names.iter().cloned(),
-                names
-              )
-            );
-            layout
-              .attributes
-              .iter()
-              .zip(input_names)
-              .map(|(attribute, input_name)| {
-                format!(
-                  "@location({}) {input_name}: {}",
-                  attribute.location,
-                  attribute.wgsl_type()
-                )
-              })
-              .collect::<Vec<String>>()
-              .join(", ")
+            let (params, binding) =
+              layout.compile_input(name, &arg.var_type.unwrap_known(), names);
+            vertex_data_bindings += &binding;
+            params
           }
           CompilerTarget::WGSL => {
             format!(
@@ -1814,6 +1841,112 @@ impl TopLevelFunction {
       // functions as commented-out pseudocode in the final WGSL file
       // "// ".to_string() + &fn_string().replace("\n", "\n// ")
     })
+  }
+  /// This function's return type.
+  fn return_type(&self) -> Type {
+    let Type::Function(signature) = self.expression.data.unwrap_known() else {
+      panic!("a top-level function without a function type")
+    };
+    signature.return_type.unwrap_known()
+  }
+  /// An entry whose inputs or output hold located bools, as WGSL: its body
+  /// as a plain function, and the entry calling it, which takes and returns
+  /// the bools as `u32`s (`encoded_inputs`, by parameter, and
+  /// `encoded_output`; see `host_encoding`).
+  fn compile_io_wrapper(
+    self,
+    name: &str,
+    encoded_inputs: Vec<Option<EncodedEntryInput>>,
+    encoded_output: Option<IoStruct>,
+    names: &mut NameContext,
+  ) -> CompileResult<String> {
+    let entry = self
+      .entry_point
+      .clone()
+      .expect("only entries pass values between stages");
+    let flattened = self.flattened_vertex_inputs();
+    let param_types = self.param_types();
+    let return_type = self.return_type();
+    let mut params = vec![];
+    let mut args = vec![];
+    let mut bindings = String::new();
+    for (i, ((param, _), t)) in
+      self.arg_names.iter().zip(param_types.iter()).enumerate()
+    {
+      let attributes = &self.arg_annotations[i].attributes;
+      let param_name = compile_word(param.clone());
+      if let Some(layout) = flattened.get(&i) {
+        let (inputs, binding) = layout.compile_input(param.clone(), t, names);
+        params.push(inputs);
+        bindings += &binding;
+        args.push(param_name);
+        continue;
+      }
+      match encoded_inputs.get(i) {
+        Some(Some(EncodedEntryInput::Struct(io))) => {
+          params.push(format!("{param_name}: {}", io.name));
+          args.push(format!("{}({param_name})", io.unpack));
+        }
+        Some(Some(EncodedEntryInput::Located)) => {
+          params.push(format!(
+            "{}{param_name}: {}",
+            attributes.compile(t),
+            names.host_type_name(t)
+          ));
+          args.push(names.host_unpack(t, param_name));
+        }
+        _ => {
+          params.push(format!(
+            "{}{param_name}: {}",
+            attributes.compile(t),
+            t.monomorphized_name(names, CompilerTarget::WGSL)
+          ));
+          args.push(param_name);
+        }
+      }
+    }
+    let body_name = names.gensym(&format!("{name}_body"));
+    let call =
+      format!("{}({})", compile_word(body_name.clone()), args.join(", "));
+    let (output, result) = if return_type == Type::Unit {
+      (String::new(), format!("{call};"))
+    } else if let Some(io) = &encoded_output {
+      (
+        format!(" -> {}", io.name),
+        format!("return {}({call});", io.pack),
+      )
+    } else {
+      (
+        format!(
+          " -> {}{}",
+          self.return_attributes.compile(&return_type),
+          return_type.monomorphized_name(names, CompilerTarget::WGSL)
+        ),
+        format!("return {call};"),
+      )
+    };
+    let wrapper = format!(
+      "{}fn {}({}){output} {{{}\n}}",
+      entry.compile(),
+      compile_word(name.into()),
+      params.join(", "),
+      indent(bindings + "\n" + &result)
+    );
+    let body = TopLevelFunction {
+      entry_point: None,
+      arg_annotations: self
+        .arg_annotations
+        .into_iter()
+        .map(|annotation| FunctionArgumentAnnotation {
+          attributes: IOAttributes::empty(SourceTrace::empty()),
+          ..annotation
+        })
+        .collect(),
+      return_attributes: IOAttributes::empty(SourceTrace::empty()),
+      ..self
+    }
+    .compile(&body_name, names, true, CompilerTarget::WGSL)?;
+    Ok(format!("{body}\n\n{wrapper}"))
   }
   pub fn effects(&self) -> EffectType {
     self.effects_with(&mut EffectsMemo::default())

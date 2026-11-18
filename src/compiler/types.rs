@@ -2936,11 +2936,25 @@ impl Type {
     *self != Type::Bool && self.is_attributable()
   }
   /// Whether an entry input or output of this type, with `attributes`, has
-  /// a WGSL form: a bool only as a builtin (`front-facing`), since WGSL
-  /// can't pass one between stages or to or from a buffer.
-  pub(crate) fn is_attributable_with(&self, attributes: &IOAttributes) -> bool {
+  /// a WGSL form. A bool or bool vector with a location is passed as `u32`s
+  /// where both sides are easl's (`located_bools`: vertex outputs and
+  /// fragment inputs, see `host_encoding`; vertex inputs flatten), never as
+  /// a fragment output, whose render target holds no bools; a bool can
+  /// always be a builtin (`front-facing`).
+  pub(crate) fn is_attributable_with(
+    &self,
+    attributes: &IOAttributes,
+    located_bools: bool,
+  ) -> bool {
     self.is_location_attributable()
       || (self.is_attributable() && attributes.builtin().is_some())
+      || (located_bools
+        && self.is_bool_scalar_or_vector()
+        && attributes.builtin().is_none())
+  }
+  /// A `bool` or a bool vector.
+  pub(crate) fn is_bool_scalar_or_vector(&self) -> bool {
+    *self == Type::Bool || self.vector_element_type() == Some(Type::Bool)
   }
   pub(crate) fn is_vector(&self) -> bool {
     if let Type::Struct(s) = self

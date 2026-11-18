@@ -1,0 +1,57 @@
+; Bools passed from the vertex shader to the fragment shader (as flat
+; `u32`s): a bool and a bool vector computed from a uniform struct of bools
+; the CPU changes each frame, read by a fragment shader taking the varyings
+; struct (frames 0 and 1) and by one taking them as located bool parameters
+; (frames 2 and 3): cyan, magenta, black, magenta. A wrong value draws a
+; wrong color.
+(struct Varyings
+  @{builtin position} position: vec4f
+  @{location 0} lit: bool
+  @{location 1} channels: vec3b)
+
+(struct Switches
+  invert: bool
+  show: bool)
+
+@uniform
+(var switches: Switches)
+
+(defn level [on: bool]: f32
+  (if on 1. 0.))
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: Varyings
+  (Varyings
+    (vec4f ([(vec2f -1. -1.) (vec2f 3. -1.) (vec2f -1. 3.)] i) 0. 1.)
+    (.show switches)
+    (vec3b (.invert switches) (not (.invert switches)) true)))
+
+(defn color [lit: bool channels: vec3b]: vec4f
+  (if lit
+    (vec4f (level channels.x) (level channels.y) (level channels.z) 1.)
+    (vec4f 0. 0. 0. 1.)))
+
+@fragment
+(defn frag [in: Varyings]: vec4f
+  (color in.lit in.channels))
+
+@fragment
+(defn located-frag [@{location 0} lit: bool
+                    @{location 1} channels: vec3b]: vec4f
+  (color lit channels))
+
+@local
+(var frame: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (= switches (Switches (== (% frame 2u) 1u) (!= frame 2u)))
+      (match frame
+        0u (dispatch-render-shaders vert frag 3u)
+        1u (dispatch-render-shaders vert frag 3u)
+        2u (dispatch-render-shaders vert located-frag 3u)
+        3u (dispatch-render-shaders vert located-frag 3u)
+        _ (close-window))
+      (= frame (+ frame 1u)))))

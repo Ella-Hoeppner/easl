@@ -177,6 +177,7 @@ screen_test!(screen_vertex_reads_storage_write);
 screen_test!(screen_instanced_draw);
 screen_test!(screen_vertex_data);
 screen_test!(screen_bool_vertex_data);
+screen_test!(screen_bool_varyings);
 screen_test!(screen_located_vertex_data);
 screen_test!(screen_instance_data);
 screen_test!(screen_indexed_draw);

@@ -1,0 +1,23 @@
+; A fragment shader's outputs go to its render target, which holds no
+; bools: a located bool output is rejected, alone or in a struct. A bool
+; varying passes as a `u32`, so like an integer it can only be
+; interpolated `flat`.
+(struct Outputs
+  @{location 0} color: vec4f
+  @{location 1} lit: bool)
+
+@fragment
+(defn frag []: Outputs
+  (Outputs (vec4f 1.) true))
+
+@fragment
+(defn bool-frag []: bool
+  true)
+
+(struct Smooth
+  @{builtin position} position: vec4f
+  @{interpolate linear} lit: bool)
+
+@vertex
+(defn smooth-vert []: Smooth
+  (Smooth (vec4f 0. 0. 0. 1.) true))

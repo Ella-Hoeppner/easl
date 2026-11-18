@@ -506,8 +506,8 @@ pub enum CompileErrorKind {
   #[error("Sampling \"{1}\" is not allowed for interpolation \"{0}\"")]
   InvalidInterpolationSampling(String, String),
   #[error(
-    "Integer values passed between shader stages are always interpolated \
-    `flat`; `{0}` isn't allowed"
+    "Integer and bool values passed between shader stages are always \
+    interpolated `flat`; `{0}` isn't allowed"
   )]
   NonFlatIntegerInterpolation(String),
   #[error("Invalid annotation on return type, only \"location\" is allowed")]
@@ -574,6 +574,11 @@ pub enum CompileErrorKind {
     @{{location 0}}"
   )]
   FragmentMustHaveLocation0Output,
+  #[error(
+    "A fragment shader can't output a bool: its render target holds no \
+    bools"
+  )]
+  FragmentBoolOutput,
   #[error("Position output of vertex function must be a vec4f")]
   VertexPositionOutputInvalidType,
   #[error(

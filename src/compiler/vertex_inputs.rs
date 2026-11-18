@@ -506,6 +506,43 @@ impl TopLevelFunction {
   }
 }
 
+impl VertexInputLayout {
+  /// A flattened vertex input `name` of type `t` as WGSL: the entry
+  /// parameters its attributes arrive in, and the line rebuilding it at the
+  /// top of the body.
+  pub(crate) fn compile_input(
+    &self,
+    name: Arc<str>,
+    t: &Type,
+    names: &mut NameContext,
+  ) -> (String, String) {
+    let input_names: Vec<String> = self
+      .attributes
+      .iter()
+      .map(|attribute| attribute.input_name(names))
+      .collect();
+    let binding = format!(
+      "\nlet {} = {};",
+      compile_word(name),
+      t.vertex_input_expression(&mut input_names.iter().cloned(), names)
+    );
+    let params = self
+      .attributes
+      .iter()
+      .zip(input_names)
+      .map(|(attribute, input_name)| {
+        format!(
+          "@location({}) {input_name}: {}",
+          attribute.location,
+          attribute.wgsl_type()
+        )
+      })
+      .collect::<Vec<String>>()
+      .join(", ");
+    (params, binding)
+  }
+}
+
 impl VertexAttribute {
   /// The WGSL name of the vertex entry input this attribute is read into.
   pub(crate) fn input_name(&self, names: &mut NameContext) -> String {

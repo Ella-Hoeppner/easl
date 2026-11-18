@@ -324,15 +324,20 @@ impl Interpolation {
     self.kind == Flat
   }
   /// How a value of `value_type` passed between stages is interpolated:
-  /// as `written`, or by default `perspective-center`, except integers,
-  /// which are always flat.
+  /// as `written`, or by default `perspective-center`, except integers and
+  /// bools (passed as `u32`s), which are always flat.
   pub(crate) fn between_stages(
     written: Option<&Self>,
     value_type: &Type,
   ) -> Self {
     match written {
       Some(written) => *written,
-      None if value_type.is_integer_scalar_or_vector() => Self::FLAT,
+      None
+        if value_type.is_integer_scalar_or_vector()
+          || value_type.is_bool_scalar_or_vector() =>
+      {
+        Self::FLAT
+      }
       None => Self {
         kind: Perspective,
         sampling: Center,
@@ -490,13 +495,15 @@ impl IOAttributes {
       None
     }
   }
-  /// The WGSL attributes for a value of type `value_type`. An integer value
-  /// with a location and no interpolation gets `flat` (WGSL requires it for
-  /// integers passed between stages).
+  /// The WGSL attributes for a value of type `value_type`. An integer or
+  /// bool value with a location and no interpolation gets `flat` (WGSL
+  /// requires it for integers passed between stages, and a bool passes as a
+  /// `u32`).
   pub fn compile(&self, value_type: &Type) -> String {
     let implicit_interpolation = (self.location().is_some()
       && self.interpolation().is_none()
-      && value_type.is_integer_scalar_or_vector())
+      && (value_type.is_integer_scalar_or_vector()
+        || value_type.is_bool_scalar_or_vector()))
     .then(|| IOAttributeKind::Interpolate(Interpolation::FLAT));
     let mut s = String::new();
     for kind in self

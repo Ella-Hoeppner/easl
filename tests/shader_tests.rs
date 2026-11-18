@@ -242,6 +242,7 @@ success_test!(simple_shader);
 success_test!(storage_read_views);
 success_test!(bool_bindings);
 success_test!(shader_only_bool_uniform);
+success_test!(bool_varyings);
 success_test!(vertex_data);
 success_test!(variadic_vec);
 success_test!(let_binding);
@@ -793,9 +794,10 @@ error_test!(
   CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
 );
 error_test!(
-  bool_varying_failure,
-  CompileErrorKind::CantAssignAttributesToFieldOfType("lit".into()),
-  CompileErrorKind::CantAssignAttributesToType
+  bool_entry_io_failure,
+  CompileErrorKind::FragmentBoolOutput,
+  CompileErrorKind::FragmentMustHaveLocation0Output,
+  CompileErrorKind::NonFlatIntegerInterpolation("linear-center".into())
 );
 error_test!(
   escaping_closure_captures_ref_two_level_failure,

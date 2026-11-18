@@ -413,6 +413,55 @@ impl AbstractStruct {
       })
       .map_or(Ok(None), |v| v.map(Some))
   }
+  /// Defines this struct's IO copy, if a located field holds a bool (see
+  /// `host_encoding`), returning whether it did.
+  pub(crate) fn register_io_struct(
+    &self,
+    typedefs: &TypeDefs,
+    names: &mut NameContext,
+  ) -> bool {
+    if !self.generic_args.is_empty() {
+      return false;
+    }
+    let Ok(field_types) = self
+      .fields
+      .iter()
+      .map(|f| {
+        f.field_type
+          .concretize(&vec![], typedefs, self.source_trace.clone())
+      })
+      .collect::<CompileResult<Vec<Type>>>()
+    else {
+      return false;
+    };
+    let name = compile_word(self.monomorphized_name(
+      &field_types,
+      names,
+      CompilerTarget::WGSL,
+    ));
+    let fields = compile_field_names(self.fields.iter().map(|f| &f.name))
+      .into_iter()
+      .zip(self.fields.iter())
+      .zip(field_types)
+      .map(|((field_name, field), t)| (field_name, field.attributes.clone(), t))
+      .collect();
+    names.register_io_struct(name, fields)
+  }
+  /// This struct without its fields' entry attributes: what's declared for
+  /// a struct whose IO copy carries them (see `host_encoding`).
+  pub(crate) fn without_io_attributes(&self) -> Self {
+    Self {
+      fields: self
+        .fields
+        .iter()
+        .map(|field| AbstractStructField {
+          attributes: IOAttributes::empty(field.source_trace.clone()),
+          ..field.clone()
+        })
+        .collect(),
+      ..self.clone()
+    }
+  }
   pub(crate) fn monomorphized_name(
     &self,
     field_types: &Vec<Type>,

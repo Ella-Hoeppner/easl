@@ -376,6 +376,7 @@ impl TypeDefs {
     &self,
     t: Type,
     input_or_output: InputOrOutput,
+    located_bools: bool,
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
   ) -> Vec<(Arc<AbstractStruct>, Arc<str>, IOAttributes)> {
@@ -387,7 +388,7 @@ impl TypeDefs {
           if f
             .field_type
             .unwrap_known()
-            .is_attributable_with(&f.attributes)
+            .is_attributable_with(&f.attributes, located_bools)
           {
             Some((
               s.abstract_ancestor.clone(),
@@ -395,8 +396,13 @@ impl TypeDefs {
               f.attributes.clone(),
             ))
           } else {
+            let field_type = f.field_type.unwrap_known();
             errors.log(CompileError::new(
-              CantAssignAttributesToFieldOfType(f.name.to_string()),
+              if !located_bools && field_type.is_bool_scalar_or_vector() {
+                FragmentBoolOutput
+              } else {
+                CantAssignAttributesToFieldOfType(f.name.to_string())
+              },
               source_trace
                 .clone()
                 .insert_as_secondary(s.abstract_ancestor.source_trace.clone()),
@@ -406,6 +412,10 @@ impl TypeDefs {
         })
         .collect(),
       Type::Unit => vec![],
+      t if !located_bools && t.is_bool_scalar_or_vector() => {
+        errors.log(CompileError::new(FragmentBoolOutput, source_trace));
+        vec![]
+      }
       _ => {
         errors.log(CompileError::new(
           EntryInputOrOutputMustBeScalarOrStruct(input_or_output),
@@ -5450,6 +5460,17 @@ impl Program {
       if &*s.name.0 == "MidiNote" && !self.references_midi_note() {
         continue;
       }
+      // A struct with an IO copy is declared without the attributes the
+      // copy carries (a bool can't have a location).
+      let s = if target == CompilerTarget::WGSL
+        && !s.opaque
+        && !default_structs.contains(&s)
+        && s.register_io_struct(&self.typedefs, &mut names)
+      {
+        s.without_io_attributes()
+      } else {
+        s.clone()
+      };
       if !s.opaque
         && !default_structs.contains(&s)
         && let Some(compiled_struct) = s.clone().compile_if_non_generic(
@@ -7173,12 +7194,14 @@ impl Program {
                     .map(|(s, field_name, _)| (&**s, &**field_name)),
                 );
                 // WGSL requires integer values passed between stages to be
-                // `flat` (emission adds it when nothing is written).
+                // `flat` (emission adds it when nothing is written), and a
+                // bool passes as a `u32`.
                 if let Some((interpolation, source)) =
                   attributes.interpolation()
                   && !interpolation.is_flat()
                   && let Some(value_type) = &value_type
-                  && value_type.is_integer_scalar_or_vector()
+                  && (value_type.is_integer_scalar_or_vector()
+                    || value_type.is_bool_scalar_or_vector())
                 {
                   errors.log(CompileError::new(
                     NonFlatIntegerInterpolation(interpolation.describe()),
@@ -7320,7 +7343,7 @@ impl Program {
             .flat_map(|(i, annotation)| {
               let arg = &signature.args[i];
               let arg_type = arg.0.var_type.unwrap_known();
-              if arg_type.is_attributable_with(&annotation.attributes) {
+              if arg_type.is_attributable_with(&annotation.attributes, true) {
                 vec![(arg_type, Ok(&mut annotation.attributes))]
               } else {
                 if let Some(source) =
@@ -7335,6 +7358,7 @@ impl Program {
                     .get_attributable_components(
                       arg_type.clone(),
                       InputOrOutput::Input,
+                      true,
                       f_source.clone(),
                       errors,
                     )
@@ -7360,7 +7384,10 @@ impl Program {
               &mut IOAttributes,
               (Arc<AbstractStruct>, Arc<str>, IOAttributes),
             >,
-          )> = if return_type.is_attributable_with(&f.return_attributes) {
+          )> = if return_type.is_attributable_with(
+            &f.return_attributes,
+            entry == EntryPoint::Vertex,
+          ) {
             vec![(return_type, Ok(&mut f.return_attributes))]
           } else {
             if let Some(source) =
@@ -7374,6 +7401,7 @@ impl Program {
                 .get_attributable_components(
                   return_type.clone(),
                   InputOrOutput::Output,
+                  entry == EntryPoint::Vertex,
                   f_source.clone(),
                   errors,
                 )

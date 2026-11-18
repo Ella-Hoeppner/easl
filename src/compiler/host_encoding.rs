@@ -13,11 +13,20 @@
 //! and a value assigned to one is packed. Everything inside a place (field
 //! accesses, indexing, swizzles) reads the host type as it is, so `(.count
 //! (layers i))` costs nothing and `(.on (layers i))` one comparison.
+//!
+//! Values passed between a vertex and a fragment shader can't be bools
+//! either, so a struct whose located fields include one has an IO copy too
+//! (`IoStruct`: the same attributes, a flat `u32` per bool), which the
+//! entries pass in its place: an entry with such an input or output is
+//! emitted as a plain function holding its body and an entry wrapping it,
+//! which unpacks its inputs and packs its result
+//! (`TopLevelFunction::compile_io_wrapper`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::compiler::{
+  entry::IOAttributes,
   program::{CompilerTarget, NameContext},
   types::{ConcreteArraySize, Type},
   util::compile_word,
@@ -35,10 +44,22 @@ pub(crate) struct HostEncoding {
   /// Each struct's or fixed array's conversion functions (unpack, pack),
   /// by its WGSL name.
   conversions: HashMap<String, (String, String)>,
+  /// Each IO copy of a struct with located bools, by the struct's WGSL
+  /// name.
+  io_structs: HashMap<String, IoStruct>,
   /// The host structs and conversion functions used so far. WGSL resolves
   /// module-scope names in any order, so they're emitted after everything
   /// else.
   pub(crate) definitions: Vec<String>,
+}
+
+/// The IO copy of a struct whose located fields include a bool, and the
+/// functions converting the struct to and from it.
+#[derive(Debug, Clone)]
+pub(crate) struct IoStruct {
+  pub(crate) name: String,
+  pub(crate) unpack: String,
+  pub(crate) pack: String,
 }
 
 impl Type {
@@ -82,6 +103,63 @@ impl NameContext {
       globals,
       ..Default::default()
     };
+  }
+  /// Defines the IO copy of the struct `name` (with `fields`: each one's
+  /// compiled name, attributes, and type) if a located field holds a bool,
+  /// returning whether it did.
+  pub(crate) fn register_io_struct(
+    &mut self,
+    name: String,
+    fields: Vec<(String, IOAttributes, Type)>,
+  ) -> bool {
+    if !fields.iter().any(|(_, attributes, t)| {
+      attributes.location().is_some() && t.is_bool_scalar_or_vector()
+    }) {
+      return false;
+    }
+    let io = IoStruct {
+      name: self.gensym(&format!("{name}_io")).to_string(),
+      unpack: self.gensym(&format!("easl_unpack_{name}_io")).to_string(),
+      pack: self.gensym(&format!("easl_pack_{name}_io")).to_string(),
+    };
+    let mut definition = vec![];
+    let mut unpacked = vec![];
+    let mut packed = vec![];
+    for (field, attributes, t) in &fields {
+      definition.push(format!(
+        "  {}{field}: {}",
+        attributes.compile(t),
+        self.host_type_name(t)
+      ));
+      unpacked.push(self.host_unpack(t, format!("h.{field}")));
+      packed.push(self.host_pack(t, format!("v.{field}")));
+    }
+    let IoStruct {
+      name: io_name,
+      unpack,
+      pack,
+    } = &io;
+    self.host_encoding.definitions.extend([
+      format!("struct {io_name} {{\n{}\n}}", definition.join(",\n")),
+      format!(
+        "fn {unpack}(h: {io_name}) -> {name} {{\n  return {name}({});\n}}",
+        unpacked.join(", ")
+      ),
+      format!(
+        "fn {pack}(v: {name}) -> {io_name} {{\n  return {io_name}({});\n}}",
+        packed.join(", ")
+      ),
+    ]);
+    self.host_encoding.io_structs.insert(name, io);
+    true
+  }
+  /// The IO copy of the struct type `t`, if it has one.
+  pub(crate) fn io_struct(&mut self, t: &Type) -> Option<IoStruct> {
+    if !matches!(t, Type::Struct(_)) {
+      return None;
+    }
+    let name = t.monomorphized_name(self, CompilerTarget::WGSL);
+    self.host_encoding.io_structs.get(&name).cloned()
   }
   /// The WGSL host type standing for `t` in a binding.
   pub(crate) fn host_type_name(&mut self, t: &Type) -> String {
