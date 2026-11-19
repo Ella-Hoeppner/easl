@@ -2,6 +2,7 @@ mod common;
 
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
+use easl::vm::bytecode::Op;
 use std::fs;
 use std::path::Path;
 
@@ -326,6 +327,52 @@ fn nested_store_in_place() {
   for _ in 0..3 {
     assert_eq!(run("record"), (1000., vec![1, 1]));
   }
+}
+
+/// A variant holding several values costs nothing over a hand-written
+/// payload struct: constructing it applies its constructor directly (no call
+/// to the function of the variant's name), and the values a pattern names
+/// alias the payload. So the loop written with them compiles to no more VM
+/// code and no more calls than the same loop written with the struct, and
+/// computes the same.
+#[test]
+fn multi_value_variant_cost() {
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(Path::new(
+    "./data/vm/multi_value_variant_cost.easl",
+  )) else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let (mut bytecode_program, function_names) =
+    program.compile_to_bytecode_program();
+  let mut run = |name: &str| {
+    let f = function_names.iter().position(|n| &**n == name).unwrap();
+    let arg = bytecode_program.code().functions()[f].first_arg_position;
+    bytecode_program.stack_mut()[arg as usize] = 30;
+    bytecode_program.prepare_to_run_function(f);
+    bytecode_program.execute();
+    let result = f32::from_bits(
+      bytecode_program.stack()
+        [bytecode_program.get_function_return_position(f) as usize],
+    );
+    let instructions = bytecode_program.code().instructions_of(f);
+    let calls = instructions
+      .iter()
+      .filter(|instruction| instruction.op == Op::InvokeFunction)
+      .count();
+    (result, instructions.len(), calls)
+  };
+  let (sugared_result, sugared_size, sugared_calls) = run("sugared");
+  let (manual_result, manual_size, manual_calls) = run("manual");
+  assert_eq!(sugared_result, manual_result);
+  assert!(
+    sugared_size <= manual_size && sugared_calls <= manual_calls,
+    "the loop with the variant's values compiled to {sugared_size} \
+     instructions and {sugared_calls} calls, the hand-written one to \
+     {manual_size} and {manual_calls}"
+  );
 }
 
 /// A `let` binding of an array element owns shares of the element's heap

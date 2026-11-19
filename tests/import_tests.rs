@@ -110,6 +110,7 @@ macro_rules! import_test {
 }
 
 import_test!(simple);
+import_test!(multi_value_variant);
 import_test!(dot_slash);
 import_test!(redundant_import);
 import_test!(folder_import);

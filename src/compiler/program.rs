@@ -801,7 +801,12 @@ impl Program {
           if variant.inner_type != AbstractType::Type(Type::Unit) {
             self.add_abstract_function(Arc::new(RwLock::new(
               AbstractFunctionSignature {
-                name: variant.name.clone(),
+                // A variant holding several values is constructed through
+                // the function of its own name, which calls this one.
+                name: variant
+                  .packed_constructor
+                  .clone()
+                  .unwrap_or_else(|| variant.name.clone()),
                 generic_args: e.generic_args.clone(),
                 arg_types: vec![(variant.inner_type.clone(), Ownership::Owned)],
                 return_type: AbstractType::AbstractEnum(e.clone().into()),
@@ -1087,6 +1092,9 @@ impl Program {
 
     let mut non_typedef_trees = vec![];
     let mut untyped_types = vec![];
+    // The functions variants holding several values are called through
+    // (`UntypedEnum::pack_several_values`).
+    let mut variant_functions = vec![];
 
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
@@ -1138,7 +1146,14 @@ impl Program {
                   children_iter.cloned().collect(),
                   source_trace,
                 ) {
-                  Ok(e) => untyped_types.push(UntypedType::Enum(e)),
+                  Ok(mut e) => {
+                    let (payloads, functions) =
+                      e.pack_several_values(&[], &mut names);
+                    untyped_types
+                      .extend(payloads.into_iter().map(UntypedType::Struct));
+                    variant_functions.extend(functions);
+                    untyped_types.push(UntypedType::Enum(e))
+                  }
                   Err(e) => errors.log(e),
                 },
                 _ => unreachable!(),
@@ -1188,7 +1203,18 @@ impl Program {
                               children_iter.cloned().collect(),
                               source_trace,
                             ) {
-                              Ok(e) => untyped_types.push(UntypedType::Enum(e)),
+                              Ok(mut e) => {
+                                let (payloads, functions) = e
+                                  .pack_several_values(
+                                    &signature_children[1..],
+                                    &mut names,
+                                  );
+                                untyped_types.extend(
+                                  payloads.into_iter().map(UntypedType::Struct),
+                                );
+                                variant_functions.extend(functions);
+                                untyped_types.push(UntypedType::Enum(e))
+                              }
                               Err(e) => errors.log(e),
                             }
                           }
@@ -1335,6 +1361,31 @@ impl Program {
           UnrecognizedTopLevelForm(tree.clone()),
           tree.position().clone().into(),
         ));
+      }
+    }
+    // Parsed like any `defn`, but compiler-made: emitted only when called.
+    for tree in variant_functions {
+      let EaslTree::Inner((position, _), children) = tree else {
+        unreachable!("a variant's function is a `defn` form")
+      };
+      let mut children_iter = children.into_iter();
+      let Some(EaslTree::Leaf(defn_position, _)) = children_iter.next() else {
+        unreachable!("a variant's function is a `defn` form")
+      };
+      if let Some(f) = AbstractFunctionSignature::from_defn_ast(
+        children_iter,
+        defn_position.into(),
+        position.into(),
+        None,
+        &program,
+        &mut errors,
+      ) {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+        {
+          implementation.write().unwrap().directly_user_written = false;
+        }
+        program.add_abstract_function(Arc::new(RwLock::new(f)));
       }
     }
     (program, errors)

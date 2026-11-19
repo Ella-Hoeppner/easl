@@ -1,0 +1,67 @@
+; Enum variants holding several values: constructed with one argument per
+; value, matched with one name per value (or `_`), printed with their
+; values, compared with `==`, generic, passed as functions, and stored in
+; runtime-sized arrays.
+(struct Point
+  x: f32
+  y: f32)
+
+(enum Shape
+  Empty
+  (Circle Point f32)
+  (Rect Point Point)
+  (Tagged u32 bool vec2f))
+
+(enum Note
+  Rest
+  (Pitch u32 f32))
+
+(enum (Either T U)
+  (Left T)
+  (Both T U))
+
+(defn describe [s: Shape]: f32
+  (match s
+    Shape/Empty 0.
+    (Shape/Circle center radius) (+ center.x radius)
+    (Shape/Rect a b) (- b.x a.x)
+    (Shape/Tagged id on offset) (if on
+                                  (f32 id)
+                                  offset.y)))
+
+(defn tagged-offset [s: Shape]: f32
+  (match s
+    (Shape/Tagged _ _ offset) offset.x
+    _ -1.))
+
+(defn total [e: (Either u32 f32)]: f32
+  (match e
+    (Either/Left a) (f32 a)
+    (Either/Both a b) (+ (f32 a) b)))
+
+(defn make-with [f: (Fn [u32 f32] Note)
+                 pitch: u32]: Note
+  (f pitch 0.75))
+
+@cpu
+(defn main []
+  (let [shapes [Shape/Empty
+                (Shape/Circle (Point 1. 2.) 3.)
+                (Shape/Rect (Point 1. 1.) (Point 4. 5.))
+                (Shape/Tagged 7u true (vec2f 0. 9.))]]
+    (print shapes)
+    (for [i 4u]
+      (print (describe (shapes i))))
+    (print (tagged-offset (Shape/Tagged 1u false (vec2f 6. 0.)))))
+  (print (== (Note/Pitch 60u 0.5) (Note/Pitch 60u 0.5)))
+  (print (== (Note/Pitch 60u 0.5) (Note/Pitch 60u 0.25)))
+  (print (!= (Note/Pitch 60u 0.5) Note/Rest))
+  (let [both: (Either u32 f32) (Either/Both 3u 2.5)
+        left: (Either u32 f32) (Either/Left 4u)]
+    (print both)
+    (print (+ (total both) (total left))))
+  (print (make-with Note/Pitch 64u))
+  (let [@var notes: [Note] ~[Note/Rest]]
+    (= notes (push notes (Note/Pitch 67u 1.)))
+    (= (notes 0u) (Note/Pitch 60u 0.5))
+    (print notes)))

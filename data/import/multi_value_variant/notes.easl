@@ -1,0 +1,8 @@
+(enum Note
+  Rest
+  (Pitch u32 f32))
+
+(defn loudness [n: Note]: f32
+  (match n
+    Note/Rest 0.
+    (Note/Pitch _ velocity) velocity))

@@ -3114,16 +3114,31 @@ impl Value {
         format!("({name} {})", formatted_fields.join(" "))
       }
       (Value::Enum(variant, inner), Type::Enum(e)) => {
-        let variant_type = e
-          .variants
-          .iter()
-          .find(|v| &*v.name == &**variant)
+        let enum_variant = e.variants.iter().find(|v| &*v.name == &**variant);
+        let variant_type = enum_variant
           .map(|v| v.inner_type.kind.unwrap_known())
           .unwrap_or(Type::Unit);
+        let several_values = enum_variant.is_some_and(|v| v.several_values);
         let variant = display_name(variant);
-        match &variant_type {
-          Type::Unit => variant.to_string(),
-          t => format!(
+        match (&variant_type, &**inner) {
+          (Type::Unit, _) => variant.to_string(),
+          // A variant's several values print as themselves, not as the
+          // struct holding them.
+          (Type::Struct(s), Value::Struct(fields)) if several_values => {
+            let values = s
+              .fields
+              .iter()
+              .map(|field| {
+                fields[&field.name].format_for_print(
+                  &field.field_type.kind.unwrap_known(),
+                  env,
+                  quote_strings,
+                )
+              })
+              .collect::<Result<Vec<_>, _>>()?;
+            format!("({variant} {})", values.join(" "))
+          }
+          (t, _) => format!(
             "({} {})",
             variant,
             inner.format_for_print(t, env, quote_strings)?

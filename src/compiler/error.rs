@@ -385,9 +385,12 @@ pub enum CompileErrorKind {
   CantMatchOnType(String),
   #[error(
     "Invalid enum variant: a variant without data is a bare name (`Off`), \
-     and one with data is its name and one type (`(Gain f32)`)"
+     and one with data is its name and the types of its values \
+     (`(Gain f32 bool)`)"
   )]
   InvalidEnumVariant,
+  #[error("`{0}` holds {1} values, but this pattern names {2}")]
+  VariantPatternValueCount(String, usize, usize),
   #[error("Cannot calculate size of type")]
   CantCalculateSize,
   #[error("Invalid `match` pattern")]
@@ -866,6 +869,10 @@ impl PartialEq for CompileErrorKind {
       (Self::InvalidAnnotation(l0), Self::InvalidAnnotation(r0)) => l0 == r0,
       (Self::NoTypeNamed(l0), Self::NoTypeNamed(r0)) => l0 == r0,
       (Self::CantMatchOnType(l0), Self::CantMatchOnType(r0)) => l0 == r0,
+      (
+        Self::VariantPatternValueCount(l0, l1, l2),
+        Self::VariantPatternValueCount(r0, r1, r2),
+      ) => l0 == r0 && l1 == r1 && l2 == r2,
       (
         Self::ArrayLookupInvalidArity(l0),
         Self::ArrayLookupInvalidArity(r0),

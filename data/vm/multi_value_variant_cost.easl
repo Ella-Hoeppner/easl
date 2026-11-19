@@ -1,0 +1,37 @@
+; The same loop over a variant holding two values, written with them
+; (`sugared`) and with a hand-written payload struct (`manual`): constructed
+; and matched, they must compile to no more VM code (see
+; `multi_value_variant_cost`).
+(struct GainValues
+  amount: f32
+  on: bool)
+
+(enum Sugared
+  Off
+  (Gain f32 bool))
+
+(enum Manual
+  Off
+  (Gain GainValues))
+
+(defn sugared [n: u32]: f32
+  (let [@var sum 0.]
+    (for [i n]
+      (let [m (if (== (% i 3u) 0u)
+                Sugared/Off
+                (Sugared/Gain (f32 i) (== (% i 2u) 0u)))]
+        (match m
+          (Sugared/Gain amount on) (+= sum (if on amount 0.))
+          Sugared/Off (+= sum 1.))))
+    sum))
+
+(defn manual [n: u32]: f32
+  (let [@var sum 0.]
+    (for [i n]
+      (let [m (if (== (% i 3u) 0u)
+                Manual/Off
+                (Manual/Gain (GainValues (f32 i) (== (% i 2u) 0u))))]
+        (match m
+          (Manual/Gain g) (+= sum (if g.on g.amount 0.))
+          Manual/Off (+= sum 1.))))
+    sum))

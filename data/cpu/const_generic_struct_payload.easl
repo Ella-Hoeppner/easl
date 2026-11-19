@@ -1,0 +1,15 @@
+; A generic enum whose payload is a generic struct with a const generic:
+; the monomorphized enum's constructor takes the payload with every generic
+; filled, the array size included.
+(struct (Arr T N: u32)
+  items: [N: T]
+  count: u32)
+
+(enum (Buffer T N: u32)
+  Empty
+  (Filled (Arr T N)))
+
+@cpu
+(defn main []
+  (let [filled: (Buffer f32 3u) (Buffer/Filled (Arr [1. 2. 3.] 3u))]
+    (print filled)))

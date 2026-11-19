@@ -108,6 +108,12 @@ impl UntypedStructField {
   }
 }
 
+/// The name of the field of a variant's payload struct holding its `i`th
+/// value (see `UntypedStruct::of_values`).
+pub(crate) fn payload_field_name(i: usize) -> Arc<str> {
+  format!("v{i}").into()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UntypedStruct {
   pub name: (Arc<str>, SourceTrace),
@@ -117,6 +123,31 @@ pub(crate) struct UntypedStruct {
 }
 
 impl UntypedStruct {
+  /// The payload struct of an enum variant holding several values, of
+  /// `value_types` in order: fields `v0`, `v1`, … (see
+  /// `UntypedEnum::pack_several_values`).
+  pub(crate) fn of_values(
+    name: (Arc<str>, SourceTrace),
+    generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
+    value_types: Vec<EaslTree>,
+    source_trace: SourceTrace,
+  ) -> Self {
+    Self {
+      name,
+      generic_args,
+      fields: value_types
+        .into_iter()
+        .enumerate()
+        .map(|(i, type_ast)| UntypedStructField {
+          attributes: IOAttributes::empty(source_trace.clone()),
+          name: payload_field_name(i),
+          type_ast,
+          source_trace: source_trace.clone(),
+        })
+        .collect(),
+      source_trace,
+    }
+  }
   pub(crate) fn from_field_trees(
     name: (Arc<str>, SourceTrace),
     generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,

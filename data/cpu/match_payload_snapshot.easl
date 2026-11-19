@@ -1,0 +1,38 @@
+; A `match` arm's payload bindings hold the payload as it was when matched,
+; even when the arm then reassigns the matched variable: directly, for a
+; variant holding several values, and through a function the arm calls
+; that writes a global.
+(struct GainValues
+  amount: f32
+  on: bool)
+
+(enum Manual
+  Off
+  (Gain GainValues))
+
+(enum Note
+  Rest
+  (Pitch u32 f32))
+
+(var global-note: Note)
+
+(defn reset-global []
+  (= global-note Note/Rest))
+
+@cpu
+(defn main []
+  (let [@var m (Manual/Gain (GainValues 5. true))]
+    (print (match m
+             (Manual/Gain g) (do (= m (Manual/Gain (GainValues 9. true)))
+                                 g.amount)
+             Manual/Off 0.)))
+  (let [@var n (Note/Pitch 60u 0.5)]
+    (print (match n
+             (Note/Pitch pitch velocity) (do (= n Note/Rest)
+                                             (+ (f32 pitch) velocity))
+             Note/Rest 0.)))
+  (= global-note (Note/Pitch 64u 0.25))
+  (print (match global-note
+           (Note/Pitch pitch velocity) (do (reset-global)
+                                           (+ (f32 pitch) velocity))
+           Note/Rest 0.)))

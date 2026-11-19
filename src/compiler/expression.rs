@@ -959,6 +959,11 @@ impl TypedExp {
     ctx: SyntaxTreeContext,
     names: &mut NameContext,
   ) -> CompileResult<Self> {
+    let tree = if ctx == SyntaxTreeContext::MatchPattern {
+      tree
+    } else {
+      typedefs.expand_several_values_construction(tree)
+    };
     Ok(match tree {
       EaslTree::Leaf(position, leaf) => {
         let leaf: Arc<str> = leaf.into();
@@ -1331,6 +1336,12 @@ impl TypedExp {
                               MatchIncompleteArm,
                               source_trace.clone(),
                             ))?;
+                          let (pattern_subtree, value_subtree) = typedefs
+                            .expand_several_values_pattern(
+                              pattern_subtree,
+                              value_subtree,
+                              names,
+                            )?;
                           arms.push((
                             Self::try_from_easl_tree(
                               pattern_subtree,
@@ -3277,11 +3288,19 @@ impl TypedExp {
                                   false
                                 }
                               } else {
+                                // A packed variant's pattern calls its
+                                // packed constructor, so match on what the
+                                // callee constructs, not its name.
                                 if let ExpKind::Application(f, _) =
                                   pattern_value
-                                  && let ExpKind::Name(f_name) = &f.kind
+                                  && let TypeState::Known(Type::Function(f)) =
+                                    &f.data.kind
+                                  && let Some(ancestor) = &f.abstract_ancestor
+                                  && let FunctionImplementationKind::EnumConstructor(
+                                    constructed,
+                                  ) = &ancestor.read().unwrap().implementation
                                 {
-                                  *f_name == variant.name
+                                  *constructed == variant.name
                                 } else {
                                   false
                                 }
@@ -4485,7 +4504,10 @@ impl TypedExp {
                   };
                   if let Some(abstract_enum) =
                     base_program.typedefs.enums.iter().find(|e| {
-                      e.variants.iter().find(|v| v.name == *f_name).is_some()
+                      e.variants
+                        .iter()
+                        .find(|v| v.name == *variant_name)
+                        .is_some()
                     })
                   {
                     if abstract_enum.generic_args.is_empty() {
@@ -4528,15 +4550,20 @@ impl TypedExp {
                       exp.data.with_dereferenced_mut(|typestate| {
                         std::mem::swap(typestate, &mut new_typestate)
                       });
+                      // The payload as the monomorphized enum holds it, its
+                      // generics (const ones included) filled.
+                      let payload = monomorphized_enum
+                        .variants
+                        .iter()
+                        .find(|v| v.name == *variant_name)
+                        .expect("a constructed variant is in its enum")
+                        .inner_type
+                        .clone();
                       new_program.add_abstract_function(Arc::new(RwLock::new(
                         AbstractFunctionSignature {
                           name: f_name.clone(),
                           generic_args: vec![],
-                          arg_types: abstract_signature
-                            .read()
-                            .unwrap()
-                            .arg_types
-                            .clone(),
+                          arg_types: vec![(payload, Ownership::Owned)],
                           return_type: AbstractType::AbstractEnum(
                             monomorphized_enum.clone(),
                           ),

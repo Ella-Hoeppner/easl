@@ -1,0 +1,2 @@
+[0. 13.25 4.]
+[(Move (vec2f 1. 2.) 4.) (Hit 3u true (vec3f 0. 0. 0.25)) (Hit 9u false (vec3f 0. 0. 0.5))]

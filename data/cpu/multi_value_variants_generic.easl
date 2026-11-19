@@ -1,0 +1,44 @@
+; More variants holding several values: an `@unpack` enum, a generic enum
+; whose const generic only one value uses (the payload struct is generic in
+; just the parameters its values use), and a variant holding a function
+; value beside other values.
+@unpack
+(enum Step
+  Stop
+  (Walk f32 f32))
+
+(enum (Buffer T N: u32)
+  Empty
+  (Filled [N: T] u32)
+  (One T bool))
+
+(enum Op
+  (Apply (Fn [f32] f32) f32))
+
+(defn distance [s: Step]: f32
+  (match s
+    Stop 0.
+    (Walk dx dy) (+ dx dy)))
+
+(defn (sum T N: u32) [b: (Buffer T N)]: u32
+  (match b
+    Buffer/Empty 0u
+    (Buffer/Filled _ count) count
+    (Buffer/One _ on) (if on
+                        1u
+                        0u)))
+
+(defn run [op: Op]: f32
+  (match op
+    (Op/Apply f x) (f x)))
+
+@cpu
+(defn main []
+  (print (+ (distance (Walk 1. 2.)) (distance Stop)))
+  (print [(Walk 1. 2.) Stop])
+  (let [filled: (Buffer f32 3u) (Buffer/Filled [1. 2. 3.] 3u)
+        one: (Buffer u32 2u) (Buffer/One 5u true)]
+    (print filled)
+    (print (+ (sum filled) (sum one))))
+  (let [scale 2.]
+    (print (run (Op/Apply (fn [x: f32] (* x scale)) 4.)))))

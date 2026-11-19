@@ -804,6 +804,10 @@ error_test!(
   CompileErrorKind::InvalidEnumVariant
 );
 error_test!(
+  variant_pattern_arity_failure,
+  CompileErrorKind::VariantPatternValueCount("Pitch".into(), 2, 1)
+);
+error_test!(
   bool_entry_io_failure,
   CompileErrorKind::FragmentBoolOutput,
   CompileErrorKind::FragmentMustHaveLocation0Output,

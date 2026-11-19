@@ -1520,6 +1520,12 @@ impl Code {
   pub fn function_instructions(&self) -> &[Instruction] {
     &self.function_instructions
   }
+  /// The instructions the function at `index` compiled to.
+  #[doc(hidden)]
+  pub fn instructions_of(&self, index: usize) -> &[Instruction] {
+    let range = &self.functions[index].instructions;
+    &self.function_instructions[range.start as usize..range.end as usize]
+  }
   /// Each global's name and its slots: (name, first slot, slot count).
   pub fn globals(&self) -> &[(Arc<str>, u16, u16)] {
     &self.globals

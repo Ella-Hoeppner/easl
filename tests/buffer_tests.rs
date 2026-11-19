@@ -199,6 +199,7 @@ buffer_test!(dispatch_capture_array_length);
 buffer_test!(gpu_bools);
 buffer_test!(bool_xor);
 buffer_test!(gpu_sample_rate);
+buffer_test!(multi_value_variants_gpu);
 buffer_test!(gpu_bool_corners);
 buffer_test!(gpu_bool_uniforms_and_captures);
 buffer_test!(gpu_bool_stored_closure);

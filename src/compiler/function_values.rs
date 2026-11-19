@@ -3354,6 +3354,8 @@ impl<'p> Lowering<'p> {
           name: name.clone(),
           source: SourceTrace::empty(),
           inner_type: AbstractType::Type(payload.clone()),
+          packed_constructor: None,
+          several_values: false,
         })
         .collect(),
       abstract_ancestor: None,
@@ -3367,6 +3369,7 @@ impl<'p> Lowering<'p> {
         .map(|(_, name, payload, _)| EnumVariant {
           name: name.clone(),
           inner_type: TypeState::Known(payload.clone()).into(),
+          several_values: false,
         })
         .collect(),
       abstract_ancestor: definition_arc.clone(),
@@ -3547,10 +3550,13 @@ impl<'p> Lowering<'p> {
         variants: variant_names
           .iter()
           .zip(payload_reps.iter())
-          .map(|(n, p)| AbstractEnumVariant {
+          .zip(e.variants.iter())
+          .map(|((n, p), original)| AbstractEnumVariant {
             name: n.clone(),
             source: SourceTrace::empty(),
             inner_type: AbstractType::Type(p.clone()),
+            packed_constructor: None,
+            several_values: original.several_values,
           })
           .collect(),
         abstract_ancestor: None,
@@ -3562,9 +3568,11 @@ impl<'p> Lowering<'p> {
         variants: variant_names
           .iter()
           .zip(payload_reps.iter())
-          .map(|(n, p)| EnumVariant {
+          .zip(e.variants.iter())
+          .map(|((n, p), original)| EnumVariant {
             name: n.clone(),
             inner_type: TypeState::Known(p.clone()).into(),
+            several_values: original.several_values,
           })
           .collect(),
         abstract_ancestor: definition_arc.clone(),

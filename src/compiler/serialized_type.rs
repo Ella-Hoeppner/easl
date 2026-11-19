@@ -35,10 +35,19 @@ enum SerializedType {
   Enum {
     name: Arc<str>,
     original_name: Arc<str>,
-    variants: Vec<(Arc<str>, SerializedType)>,
+    variants: Vec<SerializedVariant>,
   },
   /// `None` for a runtime-sized array.
   Array(Option<u32>, Box<SerializedType>),
+}
+
+/// An enum variant: its name, its payload, and whether that's a struct of
+/// several values (`EnumVariant::several_values`, which printing reads).
+#[derive(Serialize, Deserialize)]
+struct SerializedVariant {
+  name: Arc<str>,
+  payload: SerializedType,
+  several_values: bool,
 }
 
 impl SerializedType {
@@ -67,7 +76,11 @@ impl SerializedType {
         variants: e
           .variants
           .iter()
-          .map(|variant| (variant.name.clone(), known(&variant.inner_type)))
+          .map(|variant| SerializedVariant {
+            name: variant.name.clone(),
+            payload: known(&variant.inner_type),
+            several_values: variant.several_values,
+          })
           .collect(),
       },
       Type::Array(size, element) => Self::Array(
@@ -151,9 +164,15 @@ impl SerializedType {
         original_name,
         variants,
       } => {
-        let variants: Vec<(Arc<str>, Type)> = variants
+        let variants: Vec<(Arc<str>, Type, bool)> = variants
           .into_iter()
-          .map(|(name, t)| (name, t.into_type()))
+          .map(|variant| {
+            (
+              variant.name,
+              variant.payload.into_type(),
+              variant.several_values,
+            )
+          })
           .collect();
         let definition =
           |name: Arc<str>, ancestor: Option<Arc<AbstractEnum>>| {
@@ -163,10 +182,12 @@ impl SerializedType {
               generic_args: vec![],
               variants: variants
                 .iter()
-                .map(|(name, t)| AbstractEnumVariant {
+                .map(|(name, t, several_values)| AbstractEnumVariant {
                   name: name.clone(),
                   source: SourceTrace::empty(),
                   inner_type: AbstractType::Type(t.clone()),
+                  packed_constructor: None,
+                  several_values: *several_values,
                 })
                 .collect(),
               abstract_ancestor: ancestor,
@@ -183,9 +204,10 @@ impl SerializedType {
           name,
           variants: variants
             .into_iter()
-            .map(|(name, t)| EnumVariant {
+            .map(|(name, t, several_values)| EnumVariant {
               name,
               inner_type: TypeState::Known(t).into(),
+              several_values,
             })
             .collect(),
           abstract_ancestor,

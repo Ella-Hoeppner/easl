@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::iter;
+use std::mem;
 
 use std::sync::{Arc, RwLock};
 
-use fsexp::{Ast, EncloserOrOperator};
+use fsexp::{Ast, EncloserOrOperator, document::DocumentPosition};
 
 use crate::{
   Never,
@@ -20,6 +22,7 @@ use crate::{
     },
     modules::display_name,
     program::{CompilerTarget, NameContext, Program, TypeDefs},
+    structs::{UntypedStruct, payload_field_name},
     types::{
       AbstractType, ConstGenericValue, ExpTypeInfo, GenericArgument,
       GenericArgumentValue, Type, TypeConstraint, TypeDescription, TypeState,
@@ -27,42 +30,60 @@ use crate::{
     },
     util::compile_word,
   },
-  parse::{EaslTree, Encloser},
+  parse::{EaslTree, Encloser, Operator},
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UntypedEnumVariant {
   name: Arc<str>,
+  position: DocumentPosition,
   source: SourceTrace,
   type_ast: Option<EaslTree>,
+  /// The types of the values a variant holding several values holds
+  /// (`(Gain f32 bool)`), until `UntypedEnum::pack_several_values` gives it
+  /// a payload struct of them.
+  value_types: Vec<EaslTree>,
+  /// For a variant holding several values, its constructor taking their
+  /// payload struct (see `UntypedEnum::pack_several_values`).
+  packed_constructor: Option<Arc<str>>,
 }
 
 impl UntypedEnumVariant {
   fn from_field_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
       Ast::Leaf(pos, name) => Ok(Self {
-        source: pos.into(),
+        source: pos.clone().into(),
+        position: pos,
         name: name.into(),
         type_ast: None,
+        value_types: vec![],
+        packed_constructor: None,
       }),
       Ast::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-        mut children,
+        children,
       ) => {
-        // A data variant is its name and one payload type.
-        if let [Ast::Leaf(_, _), _] = &children[..] {
-          let type_ast = children.pop();
-          let Some(Ast::Leaf(_, name)) = children.pop() else {
-            unreachable!("matched a name and a type")
-          };
-          Ok(Self {
-            source: position.into(),
-            name: name.into(),
-            type_ast,
-          })
+        // A data variant is its name and the types of the values it holds.
+        let mut children = children.into_iter();
+        let (Some(Ast::Leaf(_, name)), Some(first_type)) =
+          (children.next(), children.next())
+        else {
+          return Err(CompileError::new(InvalidEnumVariant, position.into()));
+        };
+        let more_types: Vec<EaslTree> = children.collect();
+        let (type_ast, value_types) = if more_types.is_empty() {
+          (Some(first_type), vec![])
         } else {
-          Err(CompileError::new(InvalidEnumVariant, position.into()))
-        }
+          (None, iter::once(first_type).chain(more_types).collect())
+        };
+        Ok(Self {
+          source: position.clone().into(),
+          position,
+          name: name.into(),
+          type_ast,
+          value_types,
+          packed_constructor: None,
+        })
       }
       Ast::Inner((position, _), _) => {
         Err(CompileError::new(InvalidEnumVariant, position.into()))
@@ -70,11 +91,11 @@ impl UntypedEnumVariant {
     }
   }
   pub(crate) fn references_type_name(&self, name: &Arc<str>) -> bool {
-    if let Some(type_ast) = &self.type_ast {
-      contains_name_leaf(&name, &type_ast)
-    } else {
-      false
-    }
+    self
+      .type_ast
+      .iter()
+      .chain(self.value_types.iter())
+      .any(|type_ast| contains_name_leaf(&name, &type_ast))
   }
   pub(crate) fn assign_type(
     self,
@@ -89,6 +110,8 @@ impl UntypedEnumVariant {
       } else {
         AbstractType::Type(Type::Unit)
       },
+      several_values: self.packed_constructor.is_some(),
+      packed_constructor: self.packed_constructor,
     })
   }
 }
@@ -123,6 +146,126 @@ impl UntypedEnum {
       source_trace,
     })
   }
+  /// Gives each variant holding several values a payload struct of them
+  /// (fields `v0`, `v1`, …, generic in the enum's generics they use), so
+  /// the rest of the compiler sees a variant with one payload: the struct's
+  /// leaves laid end to end, in every backend. Its constructor taking the
+  /// struct is renamed, and the variant's own name becomes a function
+  /// taking the values (`(Gain 0.5 true)`), returned as a `defn` for the
+  /// program to parse with the others; patterns naming the values are
+  /// expanded in `TypedExp::try_from_easl_tree`. `generic_trees` are the
+  /// enum's generic parameters as written.
+  pub(crate) fn pack_several_values(
+    &mut self,
+    generic_trees: &[EaslTree],
+    names: &mut NameContext,
+  ) -> (Vec<UntypedStruct>, Vec<EaslTree>) {
+    let mut structs = vec![];
+    let mut functions = vec![];
+    let enum_name = self.name.0.clone();
+    for variant in self.variants.iter_mut() {
+      if variant.value_types.is_empty() {
+        continue;
+      }
+      let position = variant.position.clone();
+      let leaf =
+        |name: &str| EaslTree::Leaf(position.clone(), name.to_string());
+      let parens = |children: Vec<EaslTree>| {
+        EaslTree::Inner(
+          (
+            position.clone(),
+            EncloserOrOperator::Encloser(Encloser::Parens),
+          ),
+          children,
+        )
+      };
+      let applied = |head: &str, generics: Vec<&Arc<str>>| {
+        if generics.is_empty() {
+          leaf(head)
+        } else {
+          parens(
+            iter::once(leaf(head))
+              .chain(generics.into_iter().map(|g| leaf(g)))
+              .collect(),
+          )
+        }
+      };
+      let value_types = mem::take(&mut variant.value_types);
+      let payload = names.gensym(&format!("{}-values", variant.name));
+      let constructor = names.gensym(&format!("{}-packed", variant.name));
+      let used_generics: Vec<_> = self
+        .generic_args
+        .iter()
+        .filter(|(generic, _, _)| {
+          value_types.iter().any(|t| contains_name_leaf(generic, t))
+        })
+        .cloned()
+        .collect();
+      structs.push(UntypedStruct::of_values(
+        (payload.clone(), variant.source.clone()),
+        used_generics.clone(),
+        value_types.clone(),
+        variant.source.clone(),
+      ));
+      variant.type_ast = Some(applied(
+        &payload,
+        used_generics.iter().map(|(g, _, _)| g).collect(),
+      ));
+      variant.packed_constructor = Some(constructor.clone());
+      let params: Vec<Arc<str>> =
+        value_types.iter().map(|_| names.gensym("value")).collect();
+      let name_tree = if generic_trees.is_empty() {
+        leaf(&variant.name)
+      } else {
+        parens(
+          iter::once(leaf(&variant.name))
+            .chain(generic_trees.iter().cloned())
+            .collect(),
+        )
+      };
+      let signature = EaslTree::Inner(
+        (
+          position.clone(),
+          EncloserOrOperator::Operator(Operator::TypeAscription),
+        ),
+        vec![
+          EaslTree::Inner(
+            (
+              position.clone(),
+              EncloserOrOperator::Encloser(Encloser::Square),
+            ),
+            params
+              .iter()
+              .zip(value_types)
+              .map(|(param, value_type)| {
+                EaslTree::Inner(
+                  (
+                    position.clone(),
+                    EncloserOrOperator::Operator(Operator::TypeAscription),
+                  ),
+                  vec![leaf(param), value_type],
+                )
+              })
+              .collect(),
+          ),
+          applied(
+            &enum_name,
+            self.generic_args.iter().map(|(g, _, _)| g).collect(),
+          ),
+        ],
+      );
+      let body = parens(vec![
+        leaf(&constructor),
+        parens(
+          iter::once(leaf(&payload))
+            .chain(params.iter().map(|param| leaf(param)))
+            .collect(),
+        ),
+      ]);
+      functions.push(parens(vec![leaf("defn"), name_tree, signature, body]));
+    }
+    (structs, functions)
+  }
   pub(crate) fn assign_types(
     self,
     typedefs: &TypeDefs,
@@ -156,6 +299,14 @@ pub struct AbstractEnumVariant {
   pub name: Arc<str>,
   pub source: SourceTrace,
   pub(crate) inner_type: AbstractType,
+  /// For a variant holding several values, its constructor taking their
+  /// payload struct (`inner_type`); the variant's own name is a function
+  /// taking the values (see `UntypedEnum::pack_several_values`). `None` for
+  /// the compiler's own enums, which register their constructors themselves.
+  pub(crate) packed_constructor: Option<Arc<str>>,
+  /// Whether the variant holds several values, `inner_type` being their
+  /// payload struct (see `EnumVariant::several_values`).
+  pub(crate) several_values: bool,
 }
 
 impl AbstractEnumVariant {
@@ -174,6 +325,7 @@ impl AbstractEnumVariant {
         typedefs,
         source_trace,
       )?,
+      several_values: self.several_values,
     })
   }
   pub(crate) fn concretize(
@@ -189,6 +341,7 @@ impl AbstractEnumVariant {
         .concretize(skolems, typedefs, source_trace)?
         .known()
         .into(),
+      several_values: self.several_values,
     })
   }
   fn fill_abstract_generics(
@@ -199,6 +352,8 @@ impl AbstractEnumVariant {
       name: self.name,
       source: self.source,
       inner_type: self.inner_type.fill_abstract_generics(generics),
+      packed_constructor: self.packed_constructor,
+      several_values: self.several_values,
     }
   }
 }
@@ -211,6 +366,169 @@ pub struct AbstractEnum {
   pub variants: Vec<AbstractEnumVariant>,
   pub(crate) abstract_ancestor: Option<Arc<Self>>,
   pub source_trace: SourceTrace,
+}
+
+/// A variant holding several values, as code naming it is expanded.
+struct PackedVariant {
+  /// Its constructor taking the payload struct.
+  constructor: Arc<str>,
+  /// The payload struct's name, its constructor.
+  payload: Arc<str>,
+  /// How many values it holds.
+  count: usize,
+}
+
+impl TypeDefs {
+  /// The variant named `name`, when it holds several values.
+  fn packed_variant(&self, name: &str) -> Option<PackedVariant> {
+    self.enums.iter().find_map(|e| {
+      let variant = e.variants.iter().find(|v| &*v.name == name)?;
+      let constructor = variant.packed_constructor.clone()?;
+      let (payload, count) = match &variant.inner_type {
+        AbstractType::AbstractStruct(payload) => {
+          (payload.name.0.clone(), payload.fields.len())
+        }
+        AbstractType::Type(Type::Struct(payload)) => {
+          (payload.name.clone(), payload.fields.len())
+        }
+        _ => unreachable!("a packed variant's payload is a struct"),
+      };
+      Some(PackedVariant {
+        constructor,
+        payload,
+        count,
+      })
+    })
+  }
+  /// A direct application of a variant holding several values to its
+  /// values, `(Gain 0.5 true)`, as what it constructs: the variant's packed
+  /// constructor applied to the payload struct of them. The function of the
+  /// variant's own name does the same, but a call costs the VM (which has no
+  /// inliner) a call; it's left for the variant's uses as a function value.
+  /// Any other tree is returned as it is.
+  pub(crate) fn expand_several_values_construction(
+    &self,
+    tree: EaslTree,
+  ) -> EaslTree {
+    let EaslTree::Inner(
+      (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+      children,
+    ) = &tree
+    else {
+      return tree;
+    };
+    let Some(EaslTree::Leaf(head_position, head)) = children.first() else {
+      return tree;
+    };
+    let Some(packed) = self.packed_variant(head) else {
+      return tree;
+    };
+    if children.len() - 1 != packed.count {
+      return tree;
+    }
+    let parens = |children: Vec<EaslTree>| {
+      EaslTree::Inner(
+        (
+          position.clone(),
+          EncloserOrOperator::Encloser(Encloser::Parens),
+        ),
+        children,
+      )
+    };
+    let leaf =
+      |name: &str| EaslTree::Leaf(head_position.clone(), name.to_string());
+    parens(vec![
+      leaf(&packed.constructor),
+      parens(
+        iter::once(leaf(&packed.payload))
+          .chain(children[1..].iter().cloned())
+          .collect(),
+      ),
+    ])
+  }
+  /// A `match` arm whose pattern names the values of a variant holding
+  /// several values, `(Gain amount on)`, as the arm the rest of the
+  /// compiler sees: the variant's packed constructor applied to a fresh name
+  /// for the payload struct, with the values bound around the arm's body
+  /// (`_` binds nothing). Any other arm is returned as it is.
+  pub(crate) fn expand_several_values_pattern(
+    &self,
+    pattern: EaslTree,
+    body: EaslTree,
+    names: &mut NameContext,
+  ) -> CompileResult<(EaslTree, EaslTree)> {
+    let EaslTree::Inner(
+      (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+      children,
+    ) = &pattern
+    else {
+      return Ok((pattern, body));
+    };
+    let Some(EaslTree::Leaf(_, head)) = children.first() else {
+      return Ok((pattern, body));
+    };
+    let Some(PackedVariant {
+      constructor, count, ..
+    }) = self.packed_variant(head)
+    else {
+      return Ok((pattern, body));
+    };
+    let values = &children[1..];
+    if values.len() != count {
+      return err(
+        VariantPatternValueCount(
+          display_name(head).to_string(),
+          count,
+          values.len(),
+        ),
+        position.clone().into(),
+      );
+    }
+    let payload = names.gensym("values");
+    let leaf = |name: &str| EaslTree::Leaf(position.clone(), name.to_string());
+    let parens = |children: Vec<EaslTree>| {
+      EaslTree::Inner(
+        (
+          position.clone(),
+          EncloserOrOperator::Encloser(Encloser::Parens),
+        ),
+        children,
+      )
+    };
+    let mut bindings = vec![];
+    for (i, value) in values.iter().enumerate() {
+      match value {
+        EaslTree::Leaf(_, name) if name == "_" => {}
+        EaslTree::Leaf(_, _) => {
+          bindings.push(value.clone());
+          bindings.push(parens(vec![
+            leaf(&format!(".{}", payload_field_name(i))),
+            leaf(&payload),
+          ]));
+        }
+        other => {
+          return err(InvalidMatchPattern, other.position().clone().into());
+        }
+      }
+    }
+    let pattern = parens(vec![leaf(&constructor), leaf(&payload)]);
+    let body = if bindings.is_empty() {
+      body
+    } else {
+      parens(vec![
+        leaf("let"),
+        EaslTree::Inner(
+          (
+            position.clone(),
+            EncloserOrOperator::Encloser(Encloser::Square),
+          ),
+          bindings,
+        ),
+        body,
+      ])
+    };
+    Ok((pattern, body))
+  }
 }
 
 impl AbstractEnum {
@@ -638,6 +956,10 @@ impl AbstractEnum {
 pub struct EnumVariant {
   pub name: Arc<str>,
   pub(crate) inner_type: ExpTypeInfo,
+  /// Whether the variant holds several values, `inner_type` being their
+  /// payload struct (see `UntypedEnum::pack_several_values`): printed and
+  /// compared as the values themselves.
+  pub(crate) several_values: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -843,14 +1165,52 @@ impl EnumComparisons {
           &payload,
           AbstractType::Type(enum_t.clone()),
         );
-        let Some(payloads_equal) = self.values_equal(
-          b.name(&x, &payload),
-          b.name(&y, &payload),
-          &payload,
-          program,
-          target,
-        ) else {
-          return Err((variant.name.clone(), payload));
+        let payloads_equal = if variant.several_values {
+          // Equal when every value is, by its own `==`.
+          let Type::Struct(values) = &payload else {
+            unreachable!("a variant's several values are a struct")
+          };
+          let mut all_equal = None;
+          for field in values.fields.iter() {
+            let t = field.field_type.unwrap_known();
+            let Some(equal) = self.values_equal(
+              b.field(b.name(&x, &payload), &field.name, t.clone()),
+              b.field(b.name(&y, &payload), &field.name, t.clone()),
+              &t,
+              program,
+              target,
+            ) else {
+              return Err((variant.name.clone(), t));
+            };
+            all_equal = Some(match all_equal {
+              None => equal,
+              Some(all) => b.call(
+                &builtin_signature(
+                  "&&",
+                  vec![
+                    (Type::Bool, Ownership::Owned),
+                    (Type::Bool, Ownership::Owned),
+                  ],
+                  Type::Bool,
+                  None,
+                ),
+                vec![all, equal],
+                &Type::Bool,
+              ),
+            });
+          }
+          all_equal.expect("a variant holding several values holds some")
+        } else {
+          let Some(equal) = self.values_equal(
+            b.name(&x, &payload),
+            b.name(&y, &payload),
+            &payload,
+            program,
+            target,
+          ) else {
+            return Err((variant.name.clone(), payload));
+          };
+          equal
         };
         (
           b.call(&constructor, vec![b.name(&x, &payload)], &enum_t),

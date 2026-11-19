@@ -1,0 +1,40 @@
+; Enum variants holding several values on the GPU: written on the CPU,
+; matched in a compute shader (a bool, a vector, and a scalar in one
+; payload), and constructed there for the CPU to read back.
+(enum Event
+  Idle
+  (Hit u32 bool vec3f)
+  (Move vec2f f32))
+
+(var events: [3: Event])
+
+(var out: [3: f32])
+
+(defn weight [e: Event]: f32
+  (match e
+    Event/Idle 0.
+    (Event/Hit id hard dir) (+ (f32 id)
+                               (if hard 10. 0.)
+                               dir.z)
+    (Event/Move by speed) (* (+ by.x by.y) speed)))
+
+@compute
+@{workgroup-size 1}
+(defn run []
+  (for [i 3u]
+    (= (out i) (weight (events i))))
+  (= (events 0u) (Event/Move (vec2f 1. 2.) 4.))
+  (= (events 2u) (Event/Hit 9u false (vec3f 0. 0. 0.5))))
+
+@cpu
+(defn main []
+  (= events
+     [Event/Idle
+      (Event/Hit 3u true (vec3f 0. 0. 0.25))
+      (Event/Move (vec2f 0.5 1.5) 2.)])
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader run (vec3u 1u))
+      (print out)
+      (print events)
+      (close-window))))

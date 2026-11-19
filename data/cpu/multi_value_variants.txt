@@ -1,0 +1,13 @@
+[Empty (Circle (Point 1. 2.) 3.) (Rect (Point 1. 1.) (Point 4. 5.)) (Tagged 7u true (vec2f 0. 9.))]
+0.
+4.
+3.
+7.
+6.
+true
+false
+true
+(Both 3u 2.5)
+9.5
+(Pitch 64u 0.75)
+[(Pitch 60u 0.5) (Pitch 67u 1.)]

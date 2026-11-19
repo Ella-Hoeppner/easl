@@ -1,0 +1,10 @@
+; A pattern names one value per value its variant holds.
+(enum Note
+  Rest
+  (Pitch u32 f32))
+
+@fragment
+(defn f []: vec4f
+  (match (Note/Pitch 60u 0.5)
+    (Note/Pitch pitch) (vec4f (f32 pitch))
+    _ (vec4f 0.)))

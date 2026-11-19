@@ -23,7 +23,7 @@ use crate::compiler::functions::{
 };
 use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
-  ConcreteArraySize, Type, TypeDescription, TypeState,
+  ConcreteArraySize, Type, TypeDescription, TypeState, VariableKind,
 };
 use crate::compiler::vertex_inputs::{DrawArgs, is_draw_array};
 use crate::midi_out::MidiOutKind;
@@ -267,6 +267,11 @@ pub(crate) struct BytecodeCompilationState {
   /// external integrations can locate globals in the running program.
   pub(crate) global_slots: Vec<(Arc<str>, u16, u16)>,
   pub locals: HashMap<Arc<str>, u16>,
+  /// Locals whose storage nothing changes while they're in scope: `match`
+  /// payload bindings, which alias the matched value (snapshotted first
+  /// when an arm could write it). An immutable `let` of a field of one
+  /// aliases it instead of copying (see the `Let` arm).
+  pub(crate) stable_locals: HashSet<Arc<str>>,
   /// Monomorphized name → base name, from the program's `NameContext`. Used
   /// to resolve monomorphized unit-variant constant names (e.g.
   /// `None_Option_f32`) back to the base variant names (`None`) that enum
@@ -336,6 +341,7 @@ impl BytecodeCompilationState {
       globals: HashMap::new(),
       global_slots: vec![],
       locals: HashMap::new(),
+      stable_locals: HashSet::new(),
       monomorphized_to_base_names: HashMap::new(),
       instructions: vec![],
       finished_functions: vec![],
@@ -917,6 +923,17 @@ impl BytecodeCompilationState {
   /// that compiles an lvalue in ref position must have pushed a frame —
   /// the enclosing Application arm, or the special-cased `=` arms for
   /// nested element stores.
+  /// Whether `value` is a stable local (`stable_locals`), or a field chain
+  /// into one.
+  fn reads_stable_local(&self, value: &TypedExp) -> bool {
+    match &value.kind {
+      ExpKind::Name(name) => self.stable_locals.contains(name),
+      ExpKind::Access(Accessor::Field(_), inner) => {
+        self.reads_stable_local(inner)
+      }
+      _ => false,
+    }
+  }
   /// Runs `compile` with `take_elements` off, for the code inside an
   /// assignment's target that isn't the target's own place: its index
   /// expressions.
@@ -5710,7 +5727,7 @@ impl TypedExp {
         None
       }
       Let(bindings, body) => {
-        for (name, _, _, value) in bindings.iter() {
+        for (name, _, kind, value) in bindings.iter() {
           // If the value is an Uninitialized placeholder (introduced by
           // deexpressionification when lifting match/if into statements), we
           // need to allocate a fresh slot of the binding's type so subsequent
@@ -5725,9 +5742,18 @@ impl TypedExp {
               .unwrap();
             let t = value.data.unwrap_known();
             let size = vm_stack_size(&t);
-            let borrows_heap_ids = reads_array_element(value)
-              && !matches!(HeapCopyPlan::for_type(&t), HeapCopyPlan::Flat);
-            if (aliases_variable_storage(value) || borrows_heap_ids) && size > 0
+            let flat = matches!(HeapCopyPlan::for_type(&t), HeapCopyPlan::Flat);
+            let borrows_heap_ids = reads_array_element(value) && !flat;
+            // An immutable binding of flat words in storage nothing changes
+            // while it's in scope (a field of a `match` payload binding,
+            // `stable_locals`) can't observe a change, so it aliases them:
+            // the values a pattern names cost nothing.
+            let reads_stable_storage = *kind == VariableKind::Let
+              && flat
+              && state.reads_stable_local(value);
+            if (aliases_variable_storage(value) || borrows_heap_ids)
+              && !reads_stable_storage
+              && size > 0
             {
               // An initializer that compiles to another variable's
               // storage (a bare Name, or a field chain rooted in one)
@@ -5756,6 +5782,33 @@ impl TypedExp {
           .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
         let scrutinee_type = scrutinee.data.unwrap_known();
+        // Payload bindings alias the matched value's payload (they're
+        // `stable_locals`). When an arm could write the variable it's read
+        // from, they read a snapshot instead, holding the payload as
+        // matched.
+        let scrutinee_pos = if matches!(scrutinee_type, Type::Enum(_))
+          && arms.iter().any(|(pattern, _)| {
+            matches!(pattern.kind, ExpKind::Application(..))
+          })
+          && let Some(root) = scrutinee.name_or_inner_accessed_name()
+          && arms.iter().any(|(_, body)| {
+            body
+              .effects_with(&mut state.effects_memo)
+              .0
+              .iter()
+              .any(|effect| match effect {
+                Effect::ModifiesLocalVar(name)
+                | Effect::ModifiesGlobalVar(name) => name == root,
+                _ => false,
+              })
+          }) {
+          let size = vm_stack_size(&scrutinee_type);
+          let snapshot = state.take_stack_slot(size);
+          state.emit_value_copy(scrutinee_pos, size, snapshot, &scrutinee_type);
+          snapshot
+        } else {
+          scrutinee_pos
+        };
         if scrutinee_type == Type::Bool
           && arms[0].0.kind == ExpKind::BooleanLiteral(true)
         {
@@ -5851,6 +5904,7 @@ impl TypedExp {
                     TypedExp::try_deconstruct_enum_pattern(f_box, pattern_args)
                   {
                     state.locals.insert(inner_name.clone(), scrutinee_pos + 1);
+                    state.stable_locals.insert(inner_name.clone());
                   }
                 }
               }
@@ -5908,6 +5962,7 @@ impl TypedExp {
                       state
                         .locals
                         .insert(inner_name.clone(), scrutinee_pos + 1);
+                      state.stable_locals.insert(inner_name.clone());
                     }
                   }
                 }

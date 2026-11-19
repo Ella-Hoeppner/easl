@@ -1,0 +1,14 @@
+; A variant holding several values, defined in an imported file and used
+; through a namespace: constructed, matched, and passed to the file's own
+; function.
+(import notes "notes.easl")
+
+@fragment
+(defn f []: vec4f
+  (let [n (notes/Note/Pitch 60u 0.5)]
+    (match n
+      (notes/Note/Pitch pitch velocity) (vec4f (f32 pitch)
+                                               velocity
+                                               (notes/loudness n)
+                                               1.)
+      notes/Note/Rest (vec4f 0.))))
