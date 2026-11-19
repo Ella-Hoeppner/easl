@@ -9,7 +9,7 @@ use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::expression::compile_typed_name;
 use crate::compiler::host_encoding::IoStruct;
 use crate::compiler::types::{
-  AbstractArraySize, ArraySizeConstants, ConcreteArraySize,
+  AbstractArraySize, ArraySizeConstants, BufferLayout, ConcreteArraySize,
 };
 use crate::compiler::vertex_inputs::VertexInputLayout;
 use crate::vm::compile::{
@@ -1891,9 +1891,9 @@ impl TopLevelFunction {
           params.push(format!(
             "{}{param_name}: {}",
             attributes.compile(t),
-            names.host_type_name(t)
+            names.host_type_name(t, BufferLayout::Storage)
           ));
-          args.push(names.host_unpack(t, param_name));
+          args.push(names.host_unpack(t, BufferLayout::Storage, param_name));
         }
         _ => {
           params.push(format!(

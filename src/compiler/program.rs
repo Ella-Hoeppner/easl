@@ -13,7 +13,7 @@ use crate::compiler::builtins::{
   built_in_structs_for_target,
 };
 use crate::compiler::host_encoding::HostEncoding;
-use crate::compiler::types::{ExpTypeInfo, PRIMITIVE_TYPE_NAMES};
+use crate::compiler::types::{BufferLayout, ExpTypeInfo, PRIMITIVE_TYPE_NAMES};
 use crate::compiler::vars::{
   BindingSpec, GroupAndBinding, VariableAddressSpace,
 };
@@ -5780,24 +5780,27 @@ impl Program {
     }
     Ok(compiled_string)
   }
-  /// The globals WGSL declares with host types (see `host_encoding`): the
-  /// uniform and storage vars holding bools, and their read views.
-  fn host_encoded_globals(&self) -> HashMap<Arc<str>, Type> {
+  /// The globals WGSL declares with host types (see `host_encoding`), with
+  /// their layouts: the uniform and storage vars holding bools (or, in a
+  /// uniform, enums), and their read views.
+  fn host_encoded_globals(&self) -> HashMap<Arc<str>, BufferLayout> {
     let mut globals = HashMap::new();
     for v in self.top_level_vars.iter() {
-      if matches!(
-        v.kind,
-        TopLevelVariableKind::Var {
-          address_space: VariableAddressSpace::Uniform
-            | VariableAddressSpace::StorageRead
-            | VariableAddressSpace::StorageReadWrite,
-          ..
-        }
-      ) && v.var_type.needs_host_encoding()
-      {
-        globals.insert(v.name.clone(), v.var_type.clone());
+      let TopLevelVariableKind::Var {
+        address_space:
+          address_space @ (VariableAddressSpace::Uniform
+          | VariableAddressSpace::StorageRead
+          | VariableAddressSpace::StorageReadWrite),
+        ..
+      } = &v.kind
+      else {
+        continue;
+      };
+      let layout = BufferLayout::of(address_space);
+      if v.var_type.needs_host_encoding(layout) {
+        globals.insert(v.name.clone(), layout);
         if let Some(view) = self.storage_read_views.view_of(&v.name) {
-          globals.insert(view.view.clone(), v.var_type.clone());
+          globals.insert(view.view.clone(), layout);
         }
       }
     }

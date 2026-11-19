@@ -54,6 +54,27 @@ fn scalar_suffix(element: &Type) -> Option<&'static str> {
   }
 }
 
+/// The layout rules a GPU buffer's contents follow. They differ only for
+/// enums: a uniform's arrays need a 16-byte stride, which an enum's data
+/// words (`array<u32, N>`) don't have, so a uniform holds them as `vec4u`s
+/// (see `host_encoding`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum BufferLayout {
+  Storage,
+  Uniform,
+}
+
+impl BufferLayout {
+  /// The layout of a binding in `space`.
+  pub(crate) fn of(space: &VariableAddressSpace) -> Self {
+    if *space == VariableAddressSpace::Uniform {
+      BufferLayout::Uniform
+    } else {
+      BufferLayout::Storage
+    }
+  }
+}
+
 /// The WGSL stride between a matrix's column vectors, in u32s, for a
 /// matrix of 32-bit elements with `rows` rows: a column is a `vec<rows>`,
 /// padded to its alignment.
@@ -1785,9 +1806,17 @@ impl Type {
       }
     })
   }
-  /// Returns the WGSL AlignOf for this type, in u32s (bytes / 4).
+  /// Returns the WGSL AlignOf for this type, in u32s (bytes / 4), in a
+  /// storage buffer.
   /// See <https://www.w3.org/TR/WGSL/#alignment-and-size>
   pub(crate) fn wgsl_alignment_in_u32s(&self) -> usize {
+    self.wgsl_alignment_in_u32s_in(BufferLayout::Storage)
+  }
+  /// [`Self::wgsl_alignment_in_u32s`] in a buffer with `layout`.
+  pub(crate) fn wgsl_alignment_in_u32s_in(
+    &self,
+    layout: BufferLayout,
+  ) -> usize {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
       Type::Struct(s) => match &*s.name {
@@ -1800,23 +1829,44 @@ impl Type {
         _ => s
           .fields
           .iter()
-          .map(|f| f.field_type.unwrap_known().wgsl_alignment_in_u32s())
+          .map(|f| {
+            f.field_type
+              .unwrap_known()
+              .wgsl_alignment_in_u32s_in(layout)
+          })
           .max()
           .unwrap_or(1),
       },
-      Type::Array(_, inner) => inner.unwrap_known().wgsl_alignment_in_u32s(),
+      Type::Array(_, inner) => {
+        inner.unwrap_known().wgsl_alignment_in_u32s_in(layout)
+      }
       Type::Function(_) => self
         .closure_data_type()
-        .map_or(1, |data| data.wgsl_alignment_in_u32s()),
+        .map_or(1, |data| data.wgsl_alignment_in_u32s_in(layout)),
+      // A uniform holds an enum's data as `vec4u`s.
+      Type::Enum(e)
+        if layout == BufferLayout::Uniform
+          && e.inner_flat_data_size_in_u32s().unwrap_or(0) > 0 =>
+      {
+        4
+      }
       _ => 1,
     }
   }
-  /// Returns the WGSL SizeOf for this type, in u32s (bytes / 4).
+  /// Returns the WGSL SizeOf for this type, in u32s (bytes / 4), in a
+  /// storage buffer.
   /// For vec3, this is 3 (12 bytes), NOT rounded up to its AlignOf of 16.
   /// For user-defined structs and arrays, inter-field / stride padding IS
   /// included.
   /// See <https://www.w3.org/TR/WGSL/#alignment-and-size>
   pub(crate) fn wgsl_flat_data_size_in_u32s(&self) -> usize {
+    self.wgsl_flat_data_size_in_u32s_in(BufferLayout::Storage)
+  }
+  /// [`Self::wgsl_flat_data_size_in_u32s`] in a buffer with `layout`.
+  pub(crate) fn wgsl_flat_data_size_in_u32s_in(
+    &self,
+    layout: BufferLayout,
+  ) -> usize {
     fn round_up(align: usize, size: usize) -> usize {
       if align == 0 {
         return size;
@@ -1841,21 +1891,27 @@ impl Type {
           let mut offset = 0usize;
           for field in &s.fields {
             let ft = field.field_type.unwrap_known();
-            offset = round_up(ft.wgsl_alignment_in_u32s(), offset);
-            offset += ft.wgsl_flat_data_size_in_u32s();
+            offset = round_up(ft.wgsl_alignment_in_u32s_in(layout), offset);
+            offset += ft.wgsl_flat_data_size_in_u32s_in(layout);
           }
-          round_up(self.wgsl_alignment_in_u32s(), offset)
+          round_up(self.wgsl_alignment_in_u32s_in(layout), offset)
         }
       },
       Type::Enum(e) => {
-        // Compiled as struct { discriminant: u32, data: array<u32, N> }
-        e.inner_flat_data_size_in_u32s().unwrap_or(0) + 1
+        // Compiled as struct { discriminant: u32, data: array<u32, N> },
+        // or in a uniform `data: array<vec4u, ⌈N/4⌉>`, which starts 16
+        // bytes in.
+        let data = e.inner_flat_data_size_in_u32s().unwrap_or(0);
+        match layout {
+          BufferLayout::Uniform if data > 0 => 4 + round_up(4, data),
+          _ => 1 + data,
+        }
       }
       Type::Array(size, inner_type) => {
         let inner_ty = inner_type.unwrap_known();
         let stride = round_up(
-          inner_ty.wgsl_alignment_in_u32s(),
-          inner_ty.wgsl_flat_data_size_in_u32s(),
+          inner_ty.wgsl_alignment_in_u32s_in(layout),
+          inner_ty.wgsl_flat_data_size_in_u32s_in(layout),
         );
         match size.as_ref().and_then(|s| s.as_literal()) {
           Some(x) => stride * x as usize,
@@ -1864,7 +1920,7 @@ impl Type {
       }
       Type::Function(_) => self
         .closure_data_type()
-        .map_or(0, |data| data.wgsl_flat_data_size_in_u32s()),
+        .map_or(0, |data| data.wgsl_flat_data_size_in_u32s_in(layout)),
       _ => 0,
     }
   }

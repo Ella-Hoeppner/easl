@@ -40,8 +40,9 @@ use crate::compiler::{
   program::{CompilerTarget, Program},
   structs::AbstractStruct,
   types::{
-    AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
-    TypeState, VariableKind, wgsl_matrix_column_stride_in_u32s,
+    AbstractType, BufferLayout, ConcreteArraySize, ConstGenericResolution,
+    ExpTypeInfo, Type, TypeState, VariableKind,
+    wgsl_matrix_column_stride_in_u32s,
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
@@ -3291,19 +3292,23 @@ impl Value {
       data => data,
     }
   }
-  /// Serializes this value to raw bytes for uploading to a uniform buffer.
-  /// The `ty` parameter is used to determine field ordering for struct types.
-  pub(crate) fn to_uniform_bytes(&self, ty: &Type) -> Vec<u8> {
+  /// Serializes this value of type `ty` to raw bytes for uploading to a GPU
+  /// buffer with `layout`.
+  pub(crate) fn to_binding_bytes(
+    &self,
+    ty: &Type,
+    layout: BufferLayout,
+  ) -> Vec<u8> {
     // A closure is laid out as its scope data, whether typed as a function
     // or as the scope struct its stored position lowered to.
     if let Some(data_type) = ty.closure_data_type() {
-      return self.closure_data().to_uniform_bytes(&data_type);
+      return self.closure_data().to_binding_bytes(&data_type, layout);
     }
     if let Value::Fun(_) = self {
-      return self.closure_data().to_uniform_bytes(ty);
+      return self.closure_data().to_binding_bytes(ty, layout);
     }
     if let Some((_, rows)) = ty.matrix_dimensions() {
-      return matrix_to_uniform_bytes(self, ty, rows);
+      return matrix_to_binding_bytes(self, ty, rows);
     }
     match self {
       Value::Prim(Primitive::F32(f)) => f.to_bits().to_ne_bytes().to_vec(),
@@ -3312,18 +3317,18 @@ impl Value {
       Value::Prim(Primitive::Bool(b)) => (*b as u32).to_ne_bytes().to_vec(),
       Value::Struct(fields) => {
         let Type::Struct(s) = ty else { panic!() };
-        let struct_size_u32s = ty.wgsl_flat_data_size_in_u32s();
+        let struct_size_u32s = ty.wgsl_flat_data_size_in_u32s_in(layout);
         let mut bytes = vec![];
         let mut offset_u32s = 0usize;
         for field in &s.fields {
           let ft = field.field_type.unwrap_known();
-          let align = ft.wgsl_alignment_in_u32s();
-          let field_size = ft.wgsl_flat_data_size_in_u32s();
+          let align = ft.wgsl_alignment_in_u32s_in(layout);
+          let field_size = ft.wgsl_flat_data_size_in_u32s_in(layout);
           let target = ((offset_u32s + align - 1) / align) * align;
           bytes.extend(std::iter::repeat(0u8).take((target - offset_u32s) * 4));
           offset_u32s = target;
           if let Some(v) = fields.get(&field.name) {
-            bytes.extend(v.to_uniform_bytes(&ft));
+            bytes.extend(v.to_binding_bytes(&ft, layout));
           } else {
             bytes.extend(std::iter::repeat(0u8).take(field_size * 4));
           }
@@ -3339,13 +3344,12 @@ impl Value {
           panic!()
         };
         let inner_ty = inner_type.unwrap_known();
-        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
-        let stride = ((elem_size + inner_ty.wgsl_alignment_in_u32s() - 1)
-          / inner_ty.wgsl_alignment_in_u32s())
-          * inner_ty.wgsl_alignment_in_u32s();
+        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s_in(layout);
+        let align = inner_ty.wgsl_alignment_in_u32s_in(layout);
+        let stride = ((elem_size + align - 1) / align) * align;
         let mut bytes = vec![];
         for value in inner_values {
-          bytes.extend(value.to_uniform_bytes(&inner_ty));
+          bytes.extend(value.to_binding_bytes(&inner_ty, layout));
           bytes.extend(std::iter::repeat(0u8).take((stride - elem_size) * 4));
         }
         bytes
@@ -3355,8 +3359,8 @@ impl Value {
           panic!()
         };
         let inner_ty = inner_type.unwrap_known();
-        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
-        let align = inner_ty.wgsl_alignment_in_u32s();
+        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s_in(layout);
+        let align = inner_ty.wgsl_alignment_in_u32s_in(layout);
         let stride = ((elem_size + align - 1) / align) * align;
         vec![0u8; length * stride * 4]
       }
@@ -3372,6 +3376,10 @@ impl Value {
         let max_inner_size = e.inner_flat_data_size_in_u32s().unwrap_or(0);
         let mut bytes = discriminant.to_ne_bytes().to_vec();
         if max_inner_size > 0 {
+          // A uniform's data (`array<vec4u, M>`) starts 16 bytes in.
+          if layout == BufferLayout::Uniform {
+            bytes.resize(16, 0);
+          }
           // The payload is the enum's `data: array<u32, N>`, which shaders
           // pack and unpack word by word with no alignment padding — the
           // flat VM word layout, not the payload type's own WGSL layout.
@@ -3385,7 +3393,7 @@ impl Value {
               }
             }
           }
-          bytes.resize((1 + max_inner_size) * 4, 0);
+          bytes.resize(ty.wgsl_flat_data_size_in_u32s_in(layout) * 4, 0);
         }
         bytes
       }
@@ -3656,7 +3664,7 @@ impl Value {
         *offset += inner_size * 4;
         if let Some(variant) = e.variants.get(discriminant) {
           let inner_ty = variant.inner_type.unwrap_known();
-          // The payload words are flat (see `to_uniform_bytes`).
+          // The payload words are flat (see `to_binding_bytes`).
           let inner_value = if inner_ty == Type::Unit {
             Value::Unit
           } else {
@@ -4167,7 +4175,7 @@ const VECTOR_COMPONENTS: [&str; 4] = ["x", "y", "z", "w"];
 /// A matrix value's GPU bytes: its columns (vector structs, the runtimes'
 /// matrix representation) laid out as WGSL's column vectors, each padded to
 /// the column stride.
-fn matrix_to_uniform_bytes(matrix: &Value, ty: &Type, rows: usize) -> Vec<u8> {
+fn matrix_to_binding_bytes(matrix: &Value, ty: &Type, rows: usize) -> Vec<u8> {
   let Type::Struct(s) = ty else { unreachable!() };
   let element = s.fields[0].field_type.unwrap_known();
   let Value::Array(columns) = matrix else {
@@ -4180,7 +4188,10 @@ fn matrix_to_uniform_bytes(matrix: &Value, ty: &Type, rows: usize) -> Vec<u8> {
       panic!("a matrix column wasn't a vector")
     };
     for component in &VECTOR_COMPONENTS[..rows] {
-      bytes.extend(components[*component].to_uniform_bytes(&element));
+      bytes.extend(
+        components[*component]
+          .to_binding_bytes(&element, BufferLayout::Storage),
+      );
     }
     bytes.extend(std::iter::repeat_n(0u8, padding));
   }
@@ -4188,7 +4199,7 @@ fn matrix_to_uniform_bytes(matrix: &Value, ty: &Type, rows: usize) -> Vec<u8> {
 }
 
 /// Reads a matrix from GPU bytes at `offset`, the inverse of
-/// `matrix_to_uniform_bytes`.
+/// `matrix_to_binding_bytes`.
 fn matrix_from_gpu_bytes(
   bytes: &[u8],
   ty: &Type,
@@ -4281,7 +4292,7 @@ fn gpu_binding_infos_from(
         if matches!(kind, GpuBufferKind::Texture2D | GpuBufferKind::Sampler) {
           0
         } else {
-          let u32s = ty.wgsl_flat_data_size_in_u32s();
+          let u32s = ty.wgsl_flat_data_size_in_u32s_in(BufferLayout::of(addr));
           if u32s == 0 {
             0
           } else {
@@ -6555,14 +6566,15 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .get(name)
         .and_then(|v| v.last())
         .map(|(v, _)| v);
+      let layout = BufferLayout::of(addr);
       let upload = match value {
         Some(Value::ZeroedArray { length }) => {
           let Type::Array(_, inner_type_info) = ty else {
             panic!()
           };
           let inner_ty = inner_type_info.unwrap_known();
-          let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
-          let align = inner_ty.wgsl_alignment_in_u32s();
+          let elem_size = inner_ty.wgsl_flat_data_size_in_u32s_in(layout);
+          let align = inner_ty.wgsl_alignment_in_u32s_in(layout);
           let stride = ((elem_size + align - 1) / align) * align;
           // Minimum one element: wgpu rejects storage bindings smaller
           // than the element stride.
@@ -6589,7 +6601,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
         _ => {
           let mut bytes = value
-            .map(|v| v.to_uniform_bytes(ty))
+            .map(|v| v.to_binding_bytes(ty, layout))
             .unwrap_or(vec![0u8; 4]);
           let target = padded_buffer_bytes(
             (bytes.len() as u64).max(unsized_array_min_bytes(ty).unwrap_or(0)),

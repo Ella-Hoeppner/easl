@@ -1,0 +1,61 @@
+; Enums in uniforms, which need every array's stride to be a multiple of 16
+; bytes: the binding holds the enum's data as `vec4u`s (and the CPU uploads
+; that layout), read in a shader as the ordinary enum. An `(Option vec2f)`, a
+; struct holding an enum beside a bool and an f32, and an array of enums
+; with several values each, changed by the CPU between dispatches.
+(enum Shape
+  Dot
+  (Ring f32 vec3f)
+  (Box vec2f))
+
+(struct Settings
+  shape: Shape
+  visible: bool
+  scale: f32)
+
+@uniform
+(var light-pos: (Option vec2f))
+
+@uniform
+(var settings: Settings)
+
+@uniform
+(var shapes: [2: Shape])
+
+(var out: [4: f32])
+
+(defn size [s: Shape]: f32
+  (match s
+    Shape/Dot 0.
+    (Shape/Ring radius center) (+ radius center.z)
+    (Shape/Box extent) (+ extent.x extent.y)))
+
+@compute
+@{workgroup-size 1}
+(defn read []
+  (= (out 0u)
+     (match light-pos
+       (Some p) (+ p.x p.y)
+       None -1.))
+  (= (out 1u)
+     (if (.visible settings)
+       (* (size (.shape settings)) (.scale settings))
+       0.))
+  (= (out 2u) (size (shapes 0u)))
+  (= (out 3u) (size (shapes 1u))))
+
+@cpu
+(defn main []
+  (= light-pos (Some (vec2f 1. 2.)))
+  (= settings (Settings (Shape/Ring 2. (vec3f 0. 0. 0.5)) true 3.))
+  (= shapes [(Shape/Box (vec2f 3. 4.)) Shape/Dot])
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader read (vec3u 1u))
+      (print out)
+      (= light-pos None)
+      (= settings (Settings Shape/Dot false 1.))
+      (= shapes [Shape/Dot (Shape/Ring 1. (vec3f 0. 0. 0.25))])
+      (dispatch-compute-shader read (vec3u 1u))
+      (print out)
+      (close-window))))

@@ -38,8 +38,8 @@ use crate::{
     program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
-      ConcreteArraySize, ExpTypeInfo, GenericArgument, GenericArgumentValue,
-      NameDefinitionSource, Type,
+      BufferLayout, ConcreteArraySize, ExpTypeInfo, GenericArgument,
+      GenericArgumentValue, NameDefinitionSource, Type,
       TypeState::{self, *},
       Variable, VariableKind, extract_type_annotation,
       extract_type_annotation_ast,
@@ -2118,15 +2118,15 @@ impl TypedExp {
     }
     Ok(())
   }
-  /// Whether this is a place rooted at a global WGSL declares with its host
-  /// type (a name, with field accesses, swizzles, and indexing on it; see
-  /// `host_encoding`).
-  fn is_host_encoded_place(&self, names: &NameContext) -> bool {
+  /// The layout of the global this is a place rooted at, if WGSL declares
+  /// it with its host type (a name, with field accesses, swizzles, and
+  /// indexing on it; see `host_encoding`).
+  fn host_encoded_place(&self, names: &NameContext) -> Option<BufferLayout> {
     let mut place = self;
     loop {
       match &place.kind {
         ExpKind::Name(name) => {
-          return names.host_encoding.globals.contains_key(name);
+          return names.host_encoding.globals.get(name).copied();
         }
         ExpKind::Access(_, inner) => place = inner,
         ExpKind::Application(f, _)
@@ -2134,11 +2134,11 @@ impl TypedExp {
         {
           place = f
         }
-        _ => return false,
+        _ => return None,
       }
     }
   }
-  /// A host-encoded place (`is_host_encoded_place`) as WGSL accesses it:
+  /// A host-encoded place (`host_encoded_place`) as WGSL accesses it:
   /// its host type, unconverted.
   fn compile_host_place(
     self,
@@ -2221,10 +2221,10 @@ impl TypedExp {
         InnerExpression => s,
       }
     };
-    if self.is_host_encoded_place(names) {
+    if let Some(layout) = self.host_encoded_place(names) {
       let t = self.data.unwrap_known();
       let raw = self.compile_host_place(names, target);
-      return wrap(names.host_unpack(&t, raw));
+      return wrap(names.host_unpack(&t, layout, raw));
     }
     match self.kind {
       Wildcard => panic!("compiling wildcard"),
@@ -2297,8 +2297,9 @@ impl TypedExp {
           // An assignment into a host-encoded place stores the value packed
           // (only `=` can, the compound assignments being integer-only).
           let packs_assigned_value = is_assignment_operator
-            && args[0].is_host_encoded_place(names)
-            && arg_types[0].needs_host_encoding();
+            .then(|| args[0].host_encoded_place(names))
+            .flatten()
+            .filter(|layout| arg_types[0].needs_host_encoding(*layout));
           let mut arg_strs: Vec<String> = args
             .into_iter()
             .zip(if let Some(ancestor) = &signature.abstract_ancestor {
@@ -2337,7 +2338,7 @@ impl TypedExp {
               }
 
               if (needs_ref || i == 0 && is_assignment_operator)
-                && arg.is_host_encoded_place(names)
+                && arg.host_encoded_place(names).is_some()
               {
                 let place = arg.compile_host_place(names, target);
                 if needs_ref {
@@ -2378,10 +2379,10 @@ impl TypedExp {
               }
             })
             .collect();
-          if packs_assigned_value {
-            assert_eq!(f_str, "=", "only `=` assigns bools");
+          if let Some(layout) = packs_assigned_value {
+            assert_eq!(f_str, "=", "only `=` assigns host-encoded values");
             let value = arg_strs.pop().unwrap();
-            arg_strs.push(names.host_pack(&arg_types[0], value));
+            arg_strs.push(names.host_pack(&arg_types[0], layout, value));
           }
           if let Some(abstract_ancestor) = &signature.abstract_ancestor {
             match abstract_ancestor.read().unwrap().implementation {

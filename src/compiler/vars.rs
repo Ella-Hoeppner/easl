@@ -494,8 +494,10 @@ impl TopLevelVar {
           TopLevelVariableKind::Const => "const",
         };
 
-        let var_type = if names.host_encoding.globals.contains_key(&self.name) {
-          names.host_type_name(&self.var_type)
+        let var_type = if let Some(layout) =
+          names.host_encoding.globals.get(&self.name).copied()
+        {
+          names.host_type_name(&self.var_type, layout)
         } else {
           self.var_type.monomorphized_name(names, target)
         };
