@@ -91,6 +91,30 @@ fn long_annotation_drops_type_below() {
 }
 
 #[test]
+fn long_pattern_puts_arm_body_below() {
+  // A `match` arm whose body would break into a tall column beside its long
+  // pattern puts the body on the next line, one column past the pattern.
+  // An arm that fits beside its pattern stays there.
+  let source = "(defn f [s: Shape]: f32
+     (match (classify-the-shape s)
+       (Shape/RoundedRectangle corner-position corner-radius) (let [x (+ corner-position.x corner-position.y corner-radius)] (* x x))
+       Shape/Dot 0.))";
+  let out = fmt(source);
+  assert!(
+    out.contains(
+      "    (Shape/RoundedRectangle corner-position corner-radius)\n     (let"
+    ),
+    "a long arm's body should go below its pattern:\n{out}"
+  );
+  assert!(
+    out.contains("    Shape/Dot 0.))"),
+    "a short arm should stay beside its pattern:\n{out}"
+  );
+  assert_idempotent(source);
+  assert_within_width(source);
+}
+
+#[test]
 fn short_named_call_stays_aligned() {
   // A short name with a multi-line first argument keeps the aligned layout
   // (args under the first argument), not the fully-below layout.
