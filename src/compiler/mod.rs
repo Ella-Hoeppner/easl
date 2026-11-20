@@ -1,6 +1,7 @@
 pub(crate) mod annotation;
 pub mod builtins;
 pub(crate) mod closure_lift;
+pub(crate) mod constants;
 pub mod core;
 pub(crate) mod effects;
 pub mod entry;

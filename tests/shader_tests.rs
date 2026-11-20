@@ -515,7 +515,8 @@ error_test!(
 error_test!(
   non_constant_initializer_in_shader_failure,
   CompileErrorKind::NonConstantInitializerInShader("doubled".to_string()),
-  CompileErrorKind::NonConstantInitializerInShader("start".to_string())
+  CompileErrorKind::NonConstantInitializerInShader("start".to_string()),
+  CompileErrorKind::NonConstantInitializerInShader("wave".to_string())
 );
 success_test!(closure);
 success_test!(return_fn);

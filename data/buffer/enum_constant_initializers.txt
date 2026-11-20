@@ -1,0 +1,9 @@
+None
+(Some 1.5)
+[(Item (Circle 1.5 (vec2f 3. 1.)) 2.) (Item (Tagged true -4) 1.) (Item (Inner (Some 7u)) 0.25)]
+[9. 1.5 11. -4. 1.75 5.5 -1. 0.5]
+11.
+-4.
+1.75
+5.5
+-1.

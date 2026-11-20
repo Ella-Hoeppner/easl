@@ -1,0 +1,20 @@
+; Top-level initializers are monomorphized like function bodies: a generic
+; enum's unit variant names its instance, and a generic function call its
+; instance.
+(defn (first-of T) [a: T b: T]: T
+  a)
+
+(def nothing: (Option vec2f) None)
+
+(def picked: f32 (first-of 1.5 2.))
+
+(def picked-vector: vec3u (first-of (vec3u 1u 2u 3u) (vec3u 0u)))
+
+(def maybe: (Option u32) (first-of None (Some 4u)))
+
+@cpu
+(defn main []
+  (print nothing)
+  (print picked)
+  (print picked-vector)
+  (print maybe))

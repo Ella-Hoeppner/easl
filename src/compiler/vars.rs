@@ -543,10 +543,11 @@ impl TopLevelVar {
 impl Program {
   /// The top-level vars whose initializers aren't WGSL constant
   /// expressions: they call a function WGSL emits as a function (a user
-  /// function, an enum constructor, a generated function like enum `==`,
-  /// or a builtin WGSL emulates with a helper), read a `var` or a builtin
-  /// that becomes one (`sample-rate`, the MIDI queries), or read another
-  /// such value.
+  /// function, a generated function like enum `==`, or a builtin WGSL
+  /// emulates with a helper), construct an enum value the compiler can't
+  /// compute (`ConstantFolder`: WGSL emits a construction it can as the
+  /// value's words), read a `var` or a builtin that becomes one
+  /// (`sample-rate`, the MIDI queries), or read another such value.
   /// The CPU runtimes run them; WGSL can't declare them.
   pub(crate) fn non_constant_initializers(&self) -> HashSet<Arc<str>> {
     let initializers: HashMap<&Arc<str>, &TypedExp> = self
@@ -561,11 +562,14 @@ impl Program {
       .filter(|v| matches!(v.kind, TopLevelVariableKind::Var { .. }))
       .map(|v| &v.name)
       .collect();
+    let folder = self.constant_folder();
     let mut non_constant: HashSet<Arc<str>> = initializers
       .iter()
       .filter(|(_, value)| {
         value.any_subexpression(|exp| {
           exp.calls_a_function()
+            || (exp.constructed_enum_variant().is_some()
+              && folder.fold(exp).is_err())
             || matches!(&exp.kind, ExpKind::Name(name) if vars.contains(name))
             || exp.reads_input().is_some()
         })
@@ -657,7 +661,9 @@ impl TypedExp {
   }
 
   /// Whether this is an application WGSL emits as a function call, which
-  /// a constant expression can't contain.
+  /// a constant expression can't contain. An initializer's enum
+  /// construction is emitted as its value instead
+  /// (`TypedExp::compile_enum_value`).
   fn calls_a_function(&self) -> bool {
     let ExpKind::Application(callee, _) = &self.kind else {
       return false;
@@ -669,8 +675,8 @@ impl TypedExp {
       return false;
     };
     match &ancestor.read().unwrap().implementation {
-      FunctionImplementationKind::Composite(_)
-      | FunctionImplementationKind::EnumConstructor(_) => true,
+      FunctionImplementationKind::Composite(_) => true,
+      FunctionImplementationKind::EnumConstructor(_) => false,
       FunctionImplementationKind::Builtin {
         target_specific_emulations,
         ..

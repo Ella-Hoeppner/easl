@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::compiler::constants::ConstantFolder;
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::function_values::{
   function_box_op, holds_boxed_function, is_function_value_borrow,
@@ -2138,6 +2139,49 @@ impl TypedExp {
       }
     }
   }
+  /// The variant this constructs, if it's an application of an enum
+  /// variant's constructor.
+  pub(crate) fn constructed_enum_variant(&self) -> Option<Arc<str>> {
+    let ExpKind::Application(callee, _) = &self.kind else {
+      return None;
+    };
+    let TypeState::Known(Type::Function(signature)) = &callee.data.kind else {
+      return None;
+    };
+    let ancestor = signature.abstract_ancestor.as_ref()?.read().unwrap();
+    match &ancestor.implementation {
+      FunctionImplementationKind::EnumConstructor(variant) => {
+        Some(variant.clone())
+      }
+      _ => None,
+    }
+  }
+  /// This enum construction as the WGSL value it builds, the enum's struct
+  /// with its data words computed by `folder`: a constant expression, unlike
+  /// a call of the variant's constructor function. Only a construction the
+  /// folder computes is in an initializer WGSL declares
+  /// (`Program::non_constant_initializers`).
+  fn compile_enum_value(
+    self,
+    folder: &ConstantFolder,
+    names: &mut NameContext,
+  ) -> String {
+    let enum_type = self.data.unwrap_known();
+    let enum_name = enum_type.monomorphized_name(names, CompilerTarget::WGSL);
+    let mut words = folder
+      .fold(&self)
+      .expect("a WGSL initializer's enum constructions are constant")
+      .words()
+      .into_iter()
+      .map(|word| format!("{word}u"));
+    let discriminant = words.next().unwrap();
+    let data = words.collect::<Vec<_>>();
+    if data.is_empty() {
+      format!("{enum_name}({discriminant})")
+    } else {
+      format!("{enum_name}({discriminant}, array({}))", data.join(", "))
+    }
+  }
   /// A host-encoded place (`host_encoded_place`) as WGSL accesses it:
   /// its host type, unconverted.
   fn compile_host_place(
@@ -2225,6 +2269,11 @@ impl TypedExp {
       let t = self.data.unwrap_known();
       let raw = self.compile_host_place(names, target);
       return wrap(names.host_unpack(&t, layout, raw));
+    }
+    if let Some(folder) = names.constant_folder.clone()
+      && self.constructed_enum_variant().is_some()
+    {
+      return wrap(self.compile_enum_value(&folder, names));
     }
     match self.kind {
       Wildcard => panic!("compiling wildcard"),

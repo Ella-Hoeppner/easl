@@ -12,6 +12,7 @@ use crate::compiler::builtins::{
   EmulatedFunctionRecord, EmulatedFunctionSignature,
   built_in_structs_for_target,
 };
+use crate::compiler::constants::{ConstantFolder, FoldError};
 use crate::compiler::host_encoding::HostEncoding;
 use crate::compiler::types::{BufferLayout, ExpTypeInfo, PRIMITIVE_TYPE_NAMES};
 use crate::compiler::vars::{
@@ -236,6 +237,12 @@ pub struct NameContext {
   /// The bindings the current WGSL emission declares with host types, and
   /// their conversions (see `host_encoding`).
   pub(crate) host_encoding: HostEncoding,
+  /// Set while WGSL emission compiles a top-level variable, whose
+  /// initializer must be a constant expression: an enum construction there
+  /// is emitted as the enum's value, its words computed by the folder
+  /// (`TypedExp::compile_enum_value`), not as a call of its constructor
+  /// function.
+  pub(crate) constant_folder: Option<Arc<ConstantFolder>>,
 }
 
 impl NameContext {
@@ -246,6 +253,7 @@ impl NameContext {
       monomorphized_names: HashMap::new(),
       next_gensym_suffixes: HashMap::new(),
       host_encoding: HostEncoding::default(),
+      constant_folder: None,
     }
   }
   fn track_all_ast_names(&mut self, ast: &EaslTree) {
@@ -433,135 +441,19 @@ impl TypeDefs {
 /// Why a `def` named as an array size has no size.
 #[derive(Debug, Clone, Copy)]
 enum SizeFoldError {
-  /// Its value isn't one `fold_size_expression` computes.
+  /// Its value isn't an integer `ConstantFolder` computes.
   NotConstant,
   /// Computing it divides by zero (an error at runtime too).
   DividesByZero,
   Negative(i64),
 }
 
-/// The integer type of a value an array size is computed from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SizeKind {
-  U32,
-  I32,
-}
-
-impl SizeKind {
-  fn of(t: &Type) -> Option<Self> {
-    match t {
-      Type::U32 => Some(Self::U32),
-      Type::I32 => Some(Self::I32),
-      _ => None,
+impl From<FoldError> for SizeFoldError {
+  fn from(error: FoldError) -> Self {
+    match error {
+      FoldError::NotConstant => SizeFoldError::NotConstant,
+      FoldError::DividesByZero => SizeFoldError::DividesByZero,
     }
-  }
-  /// Whether `n` is a value of this type.
-  fn holds(self, n: i64) -> bool {
-    match self {
-      Self::U32 => u32::try_from(n).is_ok(),
-      Self::I32 => i32::try_from(n).is_ok(),
-    }
-  }
-  /// `n`'s bits, as a value of this type (`u32` and `i32` conversions).
-  fn convert(self, n: i64) -> i64 {
-    match self {
-      Self::U32 => n as u32 as i64,
-      Self::I32 => n as i32 as i64,
-    }
-  }
-  /// `a op b` in this type, as the runtime computes it: `+`, `-`, and `*`
-  /// wrap, and `/` and `%` truncate toward zero (so `%` takes the sign of
-  /// the dividend).
-  fn apply(self, op: &str, a: i64, b: i64) -> Result<i64, SizeFoldError> {
-    if matches!(op, "/" | "%") && b == 0 {
-      return Err(SizeFoldError::DividesByZero);
-    }
-    Ok(match self {
-      Self::U32 => {
-        let (a, b) = (a as u32, b as u32);
-        (match op {
-          "+" => a.wrapping_add(b),
-          "-" => a.wrapping_sub(b),
-          "*" => a.wrapping_mul(b),
-          "/" => a / b,
-          _ => a % b,
-        }) as i64
-      }
-      Self::I32 => {
-        let (a, b) = (a as i32, b as i32);
-        (match op {
-          "+" => a.wrapping_add(b),
-          "-" => a.wrapping_sub(b),
-          "*" => a.wrapping_mul(b),
-          "/" => a.wrapping_div(b),
-          _ => a.wrapping_rem(b),
-        }) as i64
-      }
-    })
-  }
-}
-
-/// The type of a value an array size is computed from: an integer, or a
-/// vector of `width` of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SizeType {
-  kind: SizeKind,
-  width: Option<usize>,
-}
-
-impl SizeType {
-  fn scalar(kind: SizeKind) -> Self {
-    Self { kind, width: None }
-  }
-  fn of(t: &Type) -> Option<Self> {
-    if let Some(kind) = SizeKind::of(t) {
-      return Some(Self::scalar(kind));
-    }
-    let Type::Struct(s) = t else {
-      return None;
-    };
-    if !t.is_vector() {
-      return None;
-    }
-    Some(Self {
-      kind: s.fields[0].field_type.with_known(SizeKind::of)?,
-      width: Some(s.fields.len()),
-    })
-  }
-  /// The type of the integer vector constructor named `name` (`vec2u`,
-  /// `vec3i`, ...).
-  fn of_constructor(name: &str) -> Option<Self> {
-    let rest = name.strip_prefix("vec")?;
-    let width: usize = rest
-      .get(..1)?
-      .parse()
-      .ok()
-      .filter(|w| (2..=4).contains(w))?;
-    let kind = match rest.get(1..)? {
-      "u" => SizeKind::U32,
-      "i" => SizeKind::I32,
-      _ => return None,
-    };
-    Some(Self {
-      kind,
-      width: Some(width),
-    })
-  }
-}
-
-/// A value an array size is computed from (see
-/// `Program::fold_size_expression`): its type, and its components (one for
-/// an integer).
-#[derive(Debug, Clone, PartialEq)]
-struct SizeValue {
-  t: SizeType,
-  components: Vec<i64>,
-}
-
-impl SizeValue {
-  /// The integer this is, if it's one.
-  fn scalar(&self) -> Option<i64> {
-    self.t.width.is_none().then(|| self.components[0])
   }
 }
 
@@ -1695,6 +1587,18 @@ impl Program {
         monomorphized_ctx.add_abstract_function(Arc::clone(f));
       }
     }
+    // Initializers are bodies too: a generic unit variant needs its
+    // instance's name, and a generic function its instance.
+    let mut top_level_vars = std::mem::take(&mut self.top_level_vars);
+    for v in top_level_vars.iter_mut() {
+      if let Some(value) = &mut v.value
+        && let Err(e) =
+          value.monomorphize(&self, &mut monomorphized_ctx, target)
+      {
+        errors.log(e);
+      }
+    }
+    self.top_level_vars = top_level_vars;
     for s in self.typedefs.structs.iter() {
       if s.generic_args.is_empty() {
         monomorphized_ctx.add_monomorphized_struct(s.clone());
@@ -5435,7 +5339,6 @@ impl Program {
     self,
     target: CompilerTarget,
   ) -> CompileResult<String> {
-    let mut names = self.names.write().unwrap();
     let mut compiled_string = target.program_header();
     // A compiler-generated GPU-space var (the implicit `easl_midi_*` /
     // window-info query bindings) emits its WGSL declaration only when a
@@ -5452,6 +5355,10 @@ impl Program {
     } else {
       HashSet::new()
     };
+    // The analyses above read the names (`ConstantFolder`), so the lock is
+    // taken after them.
+    let constant_folder = Arc::new(self.constant_folder());
+    let mut names = self.names.write().unwrap();
     names.begin_host_encoding(if target == CompilerTarget::WGSL {
       self.host_encoded_globals()
     } else {
@@ -5476,7 +5383,11 @@ impl Program {
       if self.omits_global(v, target, &non_constant_initializers) {
         continue;
       }
+      if target == CompilerTarget::WGSL {
+        names.constant_folder = Some(constant_folder.clone());
+      }
       compiled_string += &v.clone().compile(&mut names, target);
+      names.constant_folder = None;
       compiled_string += ";\n";
       if target == CompilerTarget::WGSL
         && let Some(view) = self.storage_read_view_declaration(v)
@@ -6574,21 +6485,22 @@ impl Program {
   /// A size `def`'s value is computed from integer literals and other such
   /// `def`s with `+`, `-`, `*`, `/`, and `%`, the integer conversions
   /// (`u32`, `i32`), integer vectors (`vec2u`, ...), and their components,
-  /// as the runtime would compute it (`fold_size_expression`). A size naming
-  /// a `def` with any other value, or a `var`, is an error, reported at the
-  /// `def` or `var`. (A size naming nothing is reported by the module
-  /// resolver.)
+  /// as the runtime would compute it (`ConstantFolder`, folding integers
+  /// only). A size naming a `def` with any other value, or a `var`, is an
+  /// error, reported at the `def` or `var`. (A size naming nothing is
+  /// reported by the module resolver.)
   pub(crate) fn inline_def_array_sizes(&mut self, errors: &mut ErrorLog) {
-    let mut memo: HashMap<Arc<str>, Result<SizeValue, SizeFoldError>> =
-      HashMap::new();
+    let folder = self.constant_folder();
+    let mut folding = folder.folding(true);
     let folded: Vec<(Arc<str>, Result<i64, SizeFoldError>)> = self
       .top_level_vars
       .iter()
       .filter(|v| v.kind != TopLevelVariableKind::Override)
       .map(|v| {
-        let result = self
-          .fold_size_constant(&v.name, &mut memo, &mut HashSet::new())
-          .and_then(|value| value.scalar().ok_or(SizeFoldError::NotConstant));
+        let result = folding
+          .def(&v.name)
+          .map_err(SizeFoldError::from)
+          .and_then(|value| value.integer().ok_or(SizeFoldError::NotConstant));
         (v.name.clone(), result)
       })
       .collect();
@@ -6669,218 +6581,6 @@ impl Program {
         },
         source,
       ));
-    }
-  }
-  /// The value of the `def` `name`, if it's one an array size can be
-  /// computed from (see `fold_size_expression`). Results are memoized in
-  /// `folded`.
-  fn fold_size_constant(
-    &self,
-    name: &Arc<str>,
-    folded: &mut HashMap<Arc<str>, Result<SizeValue, SizeFoldError>>,
-    visiting: &mut HashSet<Arc<str>>,
-  ) -> Result<SizeValue, SizeFoldError> {
-    if let Some(result) = folded.get(name) {
-      return result.clone();
-    }
-    let Some(def) = self
-      .top_level_vars
-      .iter()
-      .find(|v| &v.name == name && v.kind == TopLevelVariableKind::Const)
-    else {
-      return Err(SizeFoldError::NotConstant);
-    };
-    // A cycle is reported elsewhere (`CyclicTopLevelDefinitions`).
-    if !visiting.insert(name.clone()) {
-      return Err(SizeFoldError::NotConstant);
-    }
-    let result = match (SizeType::of(&def.var_type), &def.value) {
-      (Some(t), Some(value)) => self
-        .fold_size_expression(value, Some(t), folded, visiting)
-        .and_then(|value| {
-          if value.t == t {
-            Ok(value)
-          } else {
-            Err(SizeFoldError::NotConstant)
-          }
-        }),
-      _ => Err(SizeFoldError::NotConstant),
-    };
-    visiting.remove(name);
-    folded.insert(name.clone(), result.clone());
-    result
-  }
-  /// The value of `exp`, a `def`'s value or part of one, computed as the
-  /// runtime would: integer literals and other such `def`s, combined with
-  /// `+`, `-`, `*`, `/`, and `%` (on integers, or component-wise on vectors
-  /// of the same type), the integer conversions (`u32`, `i32`), integer
-  /// vector constructors (`vec2u`, `vec3i`, ...), and vector components
-  /// (`.x`, `.xy`, ...). `expected` is the type the context gives it, which
-  /// is what an unsuffixed integer literal has. This runs before type
-  /// inference: a program it computes a value for that doesn't type check
-  /// is rejected by inference anyway.
-  fn fold_size_expression(
-    &self,
-    exp: &TypedExp,
-    expected: Option<SizeType>,
-    folded: &mut HashMap<Arc<str>, Result<SizeValue, SizeFoldError>>,
-    visiting: &mut HashSet<Arc<str>>,
-  ) -> Result<SizeValue, SizeFoldError> {
-    let not_constant = Err(SizeFoldError::NotConstant);
-    match &exp.kind {
-      ExpKind::NumberLiteral(Number::Int(n)) => {
-        let t = match &exp.data.kind {
-          TypeState::Known(t) => SizeType::of(t),
-          _ => expected.filter(|t| t.width.is_none()),
-        };
-        match t {
-          Some(t) if t.width.is_none() && t.kind.holds(*n) => Ok(SizeValue {
-            t,
-            components: vec![*n],
-          }),
-          _ => not_constant,
-        }
-      }
-      ExpKind::Name(name) => self.fold_size_constant(name, folded, visiting),
-      ExpKind::Access(accessor, inner) => {
-        let indices: Vec<usize> = match accessor {
-          Accessor::Field(field) => match &**field {
-            "x" => vec![0],
-            "y" => vec![1],
-            "z" => vec![2],
-            "w" => vec![3],
-            _ => return not_constant,
-          },
-          Accessor::Swizzle(fields) => {
-            fields.iter().map(|field| field.index()).collect()
-          }
-          Accessor::ArrayIndex(_) => return not_constant,
-        };
-        let inner = self.fold_size_expression(inner, None, folded, visiting)?;
-        let Some(width) = inner.t.width else {
-          return not_constant;
-        };
-        if indices.iter().any(|i| *i >= width) {
-          return not_constant;
-        }
-        Ok(SizeValue {
-          t: SizeType {
-            kind: inner.t.kind,
-            width: (indices.len() > 1).then_some(indices.len()),
-          },
-          components: indices.iter().map(|i| inner.components[*i]).collect(),
-        })
-      }
-      ExpKind::Application(f, args) => {
-        let ExpKind::Name(op) = &f.kind else {
-          return not_constant;
-        };
-        let conversion = match &**op {
-          "u32" => Some(SizeKind::U32),
-          "i32" => Some(SizeKind::I32),
-          _ => None,
-        };
-        if let Some(kind) = conversion.filter(|_| args.len() == 1) {
-          let value =
-            self.fold_size_expression(&args[0], None, folded, visiting)?;
-          let Some(n) = value.scalar() else {
-            return not_constant;
-          };
-          return Ok(SizeValue {
-            t: SizeType::scalar(kind),
-            components: vec![kind.convert(n)],
-          });
-        }
-        if let Some(t) = SizeType::of_constructor(op) {
-          return self.fold_size_vector(t, args, folded, visiting);
-        }
-        if !matches!(&**op, "+" | "-" | "*" | "/" | "%") {
-          return not_constant;
-        }
-        // The operands share a type: the one the context gives, or else
-        // the first one with a type of its own.
-        let Some(t) = expected.or_else(|| {
-          args.iter().find_map(|arg| {
-            self
-              .fold_size_expression(arg, None, folded, visiting)
-              .ok()
-              .map(|value| value.t)
-          })
-        }) else {
-          return not_constant;
-        };
-        let operands = args
-          .iter()
-          .map(|arg| self.fold_size_expression(arg, Some(t), folded, visiting))
-          .collect::<Result<Vec<SizeValue>, SizeFoldError>>()?;
-        if operands.iter().any(|operand| operand.t != t) {
-          return not_constant;
-        }
-        let combine = |a: &SizeValue, b: &SizeValue| {
-          Ok(SizeValue {
-            t,
-            components: a
-              .components
-              .iter()
-              .zip(&b.components)
-              .map(|(a, b)| t.kind.apply(op, *a, *b))
-              .collect::<Result<Vec<i64>, SizeFoldError>>()?,
-          })
-        };
-        match (&**op, operands.as_slice()) {
-          ("-", [n]) if t.kind == SizeKind::I32 => Ok(SizeValue {
-            t,
-            components: n
-              .components
-              .iter()
-              .map(|n| (*n as i32).wrapping_neg() as i64)
-              .collect(),
-          }),
-          ("+" | "*", [first, rest @ ..]) if !rest.is_empty() => {
-            rest.iter().try_fold(first.clone(), |a, b| combine(&a, b))
-          }
-          ("-" | "/" | "%", [a, b]) => combine(a, b),
-          _ => not_constant,
-        }
-      }
-      _ => not_constant,
-    }
-  }
-  /// The integer vector of type `t` the constructor applied to `args`
-  /// builds: its components in order, one integer repeated, or a vector of
-  /// the same width converted.
-  fn fold_size_vector(
-    &self,
-    t: SizeType,
-    args: &[TypedExp],
-    folded: &mut HashMap<Arc<str>, Result<SizeValue, SizeFoldError>>,
-    visiting: &mut HashSet<Arc<str>>,
-  ) -> Result<SizeValue, SizeFoldError> {
-    let width = t.width.unwrap();
-    let element = SizeType::scalar(t.kind);
-    let values = args
-      .iter()
-      .map(|arg| {
-        self.fold_size_expression(arg, Some(element), folded, visiting)
-      })
-      .collect::<Result<Vec<SizeValue>, SizeFoldError>>()?;
-    let components: Vec<i64> = match values.as_slice() {
-      [value] if value.t.width == Some(width) => value
-        .components
-        .iter()
-        .map(|n| t.kind.convert(*n))
-        .collect(),
-      [value] if value.t == element => vec![value.components[0]; width],
-      _ if values.iter().all(|value| value.t.kind == t.kind) => values
-        .into_iter()
-        .flat_map(|value| value.components)
-        .collect(),
-      _ => return Err(SizeFoldError::NotConstant),
-    };
-    if components.len() == width {
-      Ok(SizeValue { t, components })
-    } else {
-      Err(SizeFoldError::NotConstant)
     }
   }
   pub(crate) fn inline_static_array_length_calls(&mut self) {

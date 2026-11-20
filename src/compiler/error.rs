@@ -696,9 +696,10 @@ pub enum CompileErrorKind {
   )]
   VertexLocationOutOfRange(usize),
   #[error(
-    "shaders can't read \"{0}\": its initial value calls a function, and \
-     WGSL only allows constant expressions there. Compute it in the shader, \
-     or keep it in a GPU variable"
+    "shaders can't read \"{0}\": WGSL needs its initial value to be a \
+     constant expression, and this one calls a function, reads a variable, \
+     or builds an enum value from something the compiler can't compute \
+     ahead of time. Compute it in the shader, or keep it in a GPU variable"
   )]
   NonConstantInitializerInShader(String),
   #[error(

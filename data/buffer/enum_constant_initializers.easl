@@ -1,0 +1,71 @@
+; Top-level initializers constructing enum values are WGSL constant
+; expressions: the compiler computes each construction's words, so shaders
+; can read them. Generic and user enums, unit variants, payloads that are
+; vectors, structs, bools, negative integers, nested enums, and several
+; values, computed with arithmetic, conversions, swizzles, field and index
+; accesses, and other `def`s. The shader and the CPU must agree.
+(enum Shape
+  Dot
+  (Circle f32 vec2f)
+  (Tagged bool i32)
+  (Inner (Option u32)))
+
+(struct Item
+  shape: Shape
+  weight: f32)
+
+(def half: f32 0.5)
+
+(def corner: vec3f (vec3f 1. -2. 3.))
+
+(def nothing: (Option f32) None)
+
+(def something: (Option f32) (Some (* half 3.)))
+
+(def items: [3: Item]
+  [(Item (Shape/Circle (+ half 1.) corner.zx) 2.)
+   (Item (Shape/Tagged true (- 4i)) 1.)
+   (Item (Shape/Inner (Some (u32 7.5))) 0.25)])
+
+(def first-shape: Shape (.shape (items 0u)))
+
+(def no-shape: Shape Shape/Dot)
+
+(var out: [8: f32])
+
+(defn or-nine [o: (Option f32)]: f32
+  (match o
+    (Some v) v
+    None 9.))
+
+(defn measure [s: Shape]: f32
+  (match s
+    Shape/Dot -1.
+    (Shape/Circle r center) (+ r center.x center.y)
+    (Shape/Tagged on n) (if on (f32 n) 100.)
+    (Shape/Inner inner) (match inner
+                          (Some n) (f32 n)
+                          None 1000.)))
+
+@compute
+@{workgroup-size 1}
+(defn read []
+  (= (out 0u) (or-nine nothing))
+  (= (out 1u) (or-nine something))
+  (for [i 0u (< i 3u) (+= i 1u)]
+    (= (out (+ i 2u)) (* (measure (.shape (items i))) (.weight (items i)))))
+  (= (out 5u) (measure first-shape))
+  (= (out 6u) (measure no-shape))
+  (= (out 7u) half))
+
+@cpu
+(defn main []
+  (print nothing)
+  (print something)
+  (print items)
+  (dispatch-compute-shader read (vec3u 1u))
+  (print out)
+  (for [i 0u (< i 3u) (+= i 1u)]
+    (print (* (measure (.shape (items i))) (.weight (items i)))))
+  (print (measure first-shape))
+  (print (measure no-shape)))

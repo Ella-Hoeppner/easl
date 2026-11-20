@@ -1,5 +1,7 @@
 ; Shaders can't read a top-level value whose initializer calls a function:
-; directly, through a helper, or through a `@local` var.
+; directly, through a helper, or through a `@local` var; or builds an enum
+; value from a payload the compiler can't compute (`sin`), which WGSL would
+; need a non-constant `bitcast` for. A computable payload is fine.
 (defn twice [x: u32]: u32
   (* 2u x))
 
@@ -10,6 +12,15 @@
 
 (def plain: u32 5u)
 
+(def wave: (Option f32) (Some (sin 1.)))
+
+(def fine: (Option f32) (Some (* 2. 0.5)))
+
+(defn or-zero [o: (Option f32)]: f32
+  (match o
+    (Some v) v
+    None 0.))
+
 (defn read-doubled []: u32
   doubled)
 
@@ -19,4 +30,4 @@
 
 @fragment
 (defn frag []: vec4f
-  (vec4f (f32 (+ start plain))))
+  (vec4f (+ (f32 (+ start plain)) (or-zero wave) (or-zero fine))))

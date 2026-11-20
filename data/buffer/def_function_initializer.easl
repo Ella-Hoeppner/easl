@@ -1,6 +1,7 @@
 ; Top-level initializers that WGSL can't take as constant expressions: a
-; user function call, an enum constructor, enum `==` (a generated function),
-; and a definition reading one of those. They run on the CPU, and the
+; user function call, enum `==` (a generated function), and a definition
+; reading one of those. An enum construction is a constant expression (the
+; compiler computes its words), so `circle` is declared. They run on the CPU, and the
 ; emitted WGSL leaves them out instead of declaring them invalidly. Plain
 ; constant initializers are still declared, and shaders can read them.
 (enum Shape
