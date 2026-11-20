@@ -115,6 +115,33 @@ fn long_pattern_puts_arm_body_below() {
 }
 
 #[test]
+fn long_binding_name_puts_value_below() {
+  // A `let` binding whose value doesn't fit beside a long name puts the
+  // value on the next line, one column past the name, as a long-named
+  // call puts its arguments below the name.
+  let source = "(defn f []
+     (let [place-camera-at-angle (fn [x: f32] (let [camera-pos (* 2. (normalize (vec3f (* 4. (cis (* 0.25 x))) 1.)))] (place camera-pos)))]
+       (place-camera-at-angle 1.)))";
+  let out = fmt(source);
+  assert!(
+    out.contains("(let [place-camera-at-angle\n         (fn [x: f32]"),
+    "a long binding name's value should go below it:\n{out}"
+  );
+  assert_idempotent(source);
+  assert_within_width(source);
+}
+
+#[test]
+fn binding_one_column_too_wide_breaks() {
+  // A binding whose line is exactly one column past the limit breaks: the
+  // space between a name and its value counts toward the width.
+  let value = "x".repeat(71);
+  let source = format!("(defn f []\n  (let [a {value}\n        b 1]\n    a))");
+  assert_within_width(&source);
+  assert_idempotent(&source);
+}
+
+#[test]
 fn short_named_call_stays_aligned() {
   // A short name with a multi-line first argument keeps the aligned layout
   // (args under the first argument), not the fully-below layout.

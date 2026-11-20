@@ -151,10 +151,11 @@ pub enum Block {
   /// column past `fn`).
   Lambda(Vec<Self>),
   Bindings(Vec<(Self, Option<Self>)>),
-  /// A `match` arm whose body is on the line after its pattern, indented
-  /// one column past it: the vertical fallback for an arm whose body
-  /// doesn't fit beside its pattern (`refine_match_arms`).
-  ArmBelow(Box<Self>, Box<Self>),
+  /// A binding whose value is on the line after its name (a `let`
+  /// binding's, or a `match` arm's body after its pattern), indented one
+  /// column past it: the vertical fallback for a value that doesn't fit
+  /// beside its name (`refine_bindings`).
+  BindingBelow(Box<Self>, Box<Self>),
   IndentedBody {
     opener: String,
     prefix: Box<Self>,
@@ -185,7 +186,7 @@ impl Block {
           + ty.as_ref().map(|ty| ty.last_line_width()).unwrap_or(0)
       }
       TypedVertical(_, ty) => 1 + ty.last_line_width(),
-      ArmBelow(_, body) => 1 + body.last_line_width(),
+      BindingBelow(_, value) => 1 + value.last_line_width(),
       AnnotationHorizontal(data, term) => {
         data.width() + term.as_ref().map(|term| term.width()).unwrap_or(0) + 2
       }
@@ -256,7 +257,7 @@ impl Block {
         .width()
         .max(term.last_line_width() + 1)
         .max(1 + ty.width()),
-      ArmBelow(pattern, body) => pattern.width().max(1 + body.width()),
+      BindingBelow(name, value) => name.width().max(1 + value.width()),
       AnnotationHorizontal(data, term) => {
         data.width() + 2 + term.as_ref().map(|term| term.width()).unwrap_or(0)
       }
@@ -273,7 +274,7 @@ impl Block {
         .iter()
         .map(|(name, value)| {
           if let Some(value) = value {
-            name.width().max(name.last_line_width() + value.width())
+            name.width().max(name.last_line_width() + 1 + value.width())
           } else {
             name.width()
           }
@@ -304,7 +305,7 @@ impl Block {
         term.height() + ty.as_ref().map(|ty| ty.width()).unwrap_or(1) - 1
       }
       TypedVertical(term, ty) => term.height() + ty.height(),
-      ArmBelow(pattern, body) => pattern.height() + body.height(),
+      BindingBelow(name, value) => name.height() + value.height(),
       AnnotationHorizontal(_, _) => 1,
       AnnotationVertical(data, term) => {
         data.height() + term.as_ref().map(|term| term.width()).unwrap_or(0)
@@ -348,7 +349,7 @@ impl Block {
       AnnotationVertical(_, _)
       | ApplicationBelow(_, _)
       | TypedVertical(_, _)
-      | ArmBelow(_, _) => true,
+      | BindingBelow(_, _) => true,
       ApplicationIndentation(_, inner) => inner.prints_multiline(),
       Bindings(bindings) => {
         bindings.len() > 1
@@ -422,9 +423,9 @@ impl Block {
         Box::new(term.refine(indent, 1)),
         Box::new(ty.refine(indent + 1, trailing)),
       ),
-      ArmBelow(pattern, body) => ArmBelow(
-        Box::new(pattern.refine(indent, 0)),
-        Box::new(body.refine(indent + 1, trailing)),
+      BindingBelow(name, value) => BindingBelow(
+        Box::new(name.refine(indent, 0)),
+        Box::new(value.refine(indent + 1, trailing)),
       ),
       AnnotationHorizontal(data, term) | AnnotationVertical(data, term) => {
         let data = data.refine(indent + 1, 0);
@@ -477,30 +478,7 @@ impl Block {
         .refine(indent, trailing)
       }
       Bindings(bindings) => {
-        let count = bindings.len();
-        Bindings(
-          bindings
-            .into_iter()
-            .enumerate()
-            .map(|(i, (name, value))| {
-              let last = i + 1 == count;
-              let name_trailing = if value.is_some() {
-                0
-              } else if last {
-                trailing
-              } else {
-                0
-              };
-              let name = name.refine(indent, name_trailing);
-              let value = value.map(|value| {
-                let offset = name.last_line_width();
-                value
-                  .refine(indent + offset + 1, if last { trailing } else { 0 })
-              });
-              (name, value)
-            })
-            .collect(),
-        )
+        Bindings(refine_bindings(bindings, indent, trailing, true))
       }
       IndentedBody {
         opener,
@@ -511,7 +489,7 @@ impl Block {
         // A `match`'s one body is its arms.
         let bodies = match bodies.as_mut_slice() {
           [Bindings(arms)] if opener == "match" => vec![Bindings(
-            refine_match_arms(std::mem::take(arms), indent + 1, trailing),
+            refine_bindings(std::mem::take(arms), indent + 1, trailing, false),
           )],
           _ => refine_vertical(bodies, indent + 1, trailing),
         };
@@ -574,10 +552,10 @@ impl Block {
           + &indented_newline(indentation + 1)
           + &ty.print(indentation + 1)
       }
-      ArmBelow(pattern, body) => {
-        pattern.print(indentation)
+      BindingBelow(name, value) => {
+        name.print(indentation)
           + &indented_newline(indentation + 1)
-          + &body.print(indentation + 1)
+          + &value.print(indentation + 1)
       }
       AnnotationHorizontal(data, term) => {
         "@".to_string()
@@ -916,32 +894,42 @@ fn refine_vertical(
     .collect()
 }
 
-/// Refines a `match`'s arms, laid out one per line at `indent`. An arm's
-/// body stays beside its pattern when it fits there as it is; otherwise it
-/// goes on the next line, one column past the pattern (`ArmBelow`), rather
-/// than breaking into a narrow column wherever a long pattern pushed it.
-fn refine_match_arms(
-  arms: Vec<(Block, Option<Block>)>,
+/// Refines bindings laid out one per line at `indent`: a `let`'s (or a
+/// `{}` map's) names and values, or a `match`'s patterns and bodies. A value
+/// that fits beside its name stays there. Otherwise, with `breaks_beside`
+/// (a `let`), it's broken beside a short name when that fits, as a call's
+/// arguments are aligned after a short name
+/// (`MAX_INLINE_APPLICATION_NAME_WIDTH`). Any other value goes on the next
+/// line, one column past its name (`BindingBelow`), rather than breaking
+/// into a narrow column wherever a long name pushed it.
+fn refine_bindings(
+  bindings: Vec<(Block, Option<Block>)>,
   indent: usize,
   trailing: usize,
+  breaks_beside: bool,
 ) -> Vec<(Block, Option<Block>)> {
-  let count = arms.len();
-  arms
+  let count = bindings.len();
+  bindings
     .into_iter()
     .enumerate()
-    .map(|(i, (pattern, body))| {
+    .map(|(i, (name, value))| {
       let trailing = if i + 1 == count { trailing } else { 0 };
-      let Some(body) = body else {
-        return (pattern.refine(indent, trailing), None);
+      let Some(value) = value else {
+        return (name.refine(indent, trailing), None);
       };
-      let pattern = pattern.refine(indent, 0);
-      let body_indent = indent + pattern.last_line_width() + 1;
-      if body_indent + body.effective_width(trailing) <= MAX_WIDTH {
-        (pattern, Some(body))
-      } else {
-        let body = body.refine(indent + 1, trailing);
-        (ArmBelow(Box::new(pattern), Box::new(body)), None)
+      let name = name.refine(indent, 0);
+      let value_indent = indent + name.last_line_width() + 1;
+      if value_indent + value.effective_width(trailing) <= MAX_WIDTH {
+        return (name, Some(value));
       }
+      if breaks_beside && name.width() <= MAX_INLINE_APPLICATION_NAME_WIDTH {
+        let beside = value.clone().refine(value_indent, trailing);
+        if value_indent + beside.effective_width(trailing) <= MAX_WIDTH {
+          return (name, Some(beside));
+        }
+      }
+      let value = value.refine(indent + 1, trailing);
+      (BindingBelow(Box::new(name), Box::new(value)), None)
     })
     .collect()
 }
