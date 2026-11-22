@@ -201,6 +201,7 @@ buffer_test!(bool_xor);
 buffer_test!(gpu_sample_rate);
 buffer_test!(multi_value_variants_gpu);
 buffer_test!(uniform_enums);
+buffer_test!(uniform_layouts);
 buffer_test!(enum_constant_initializers);
 buffer_test!(gpu_bool_corners);
 buffer_test!(gpu_bool_uniforms_and_captures);

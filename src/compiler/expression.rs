@@ -2182,18 +2182,34 @@ impl TypedExp {
       format!("{enum_name}({discriminant}, array({}))", data.join(", "))
     }
   }
-  /// A host-encoded place (`host_encoded_place`) as WGSL accesses it:
-  /// its host type, unconverted.
+  /// A host-encoded place (`host_encoded_place`) in a binding with
+  /// `layout` as WGSL accesses it: its host type, unconverted. An element
+  /// of an array a uniform wraps (`Type::wraps_uniform_elements`) is its
+  /// wrapper's `value`.
   fn compile_host_place(
     self,
+    layout: BufferLayout,
     names: &mut NameContext,
     target: CompilerTarget,
   ) -> String {
+    let element = |array: &TypedExp| {
+      if layout == BufferLayout::Uniform
+        && array.data.with_known(Type::wraps_uniform_elements)
+      {
+        ".value"
+      } else {
+        ""
+      }
+    };
     match self.kind {
       ExpKind::Name(name) => compile_word(name),
       ExpKind::Access(accessor, inner) => {
+        let element = match accessor {
+          Accessor::ArrayIndex(_) => element(&inner),
+          _ => "",
+        };
         let accessor = accessor.compile(&inner.data, names, target);
-        inner.compile_host_place(names, target) + &accessor
+        inner.compile_host_place(layout, names, target) + &accessor + element
       }
       ExpKind::Application(f, mut args) => {
         let index = args.remove(0).compile(
@@ -2201,7 +2217,11 @@ impl TypedExp {
           names,
           target,
         );
-        format!("{}[{index}]", f.compile_host_place(names, target))
+        let element = element(&f);
+        format!(
+          "{}[{index}]{element}",
+          f.compile_host_place(layout, names, target)
+        )
       }
       _ => unreachable!("a host-encoded place is a name and accessors on it"),
     }
@@ -2267,7 +2287,7 @@ impl TypedExp {
     };
     if let Some(layout) = self.host_encoded_place(names) {
       let t = self.data.unwrap_known();
-      let raw = self.compile_host_place(names, target);
+      let raw = self.compile_host_place(layout, names, target);
       return wrap(names.host_unpack(&t, layout, raw));
     }
     if let Some(folder) = names.constant_folder.clone()
@@ -2387,9 +2407,9 @@ impl TypedExp {
               }
 
               if (needs_ref || i == 0 && is_assignment_operator)
-                && arg.host_encoded_place(names).is_some()
+                && let Some(layout) = arg.host_encoded_place(names)
               {
-                let place = arg.compile_host_place(names, target);
+                let place = arg.compile_host_place(layout, names, target);
                 if needs_ref {
                   format!("&{place}")
                 } else {

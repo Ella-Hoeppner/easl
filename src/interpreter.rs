@@ -3345,8 +3345,7 @@ impl Value {
         };
         let inner_ty = inner_type.unwrap_known();
         let elem_size = inner_ty.wgsl_flat_data_size_in_u32s_in(layout);
-        let align = inner_ty.wgsl_alignment_in_u32s_in(layout);
-        let stride = ((elem_size + align - 1) / align) * align;
+        let stride = inner_ty.wgsl_array_stride_in_u32s_in(layout);
         let mut bytes = vec![];
         for value in inner_values {
           bytes.extend(value.to_binding_bytes(&inner_ty, layout));
@@ -3358,10 +3357,9 @@ impl Value {
         let Type::Array(_, inner_type) = &ty else {
           panic!()
         };
-        let inner_ty = inner_type.unwrap_known();
-        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s_in(layout);
-        let align = inner_ty.wgsl_alignment_in_u32s_in(layout);
-        let stride = ((elem_size + align - 1) / align) * align;
+        let stride = inner_type
+          .unwrap_known()
+          .wgsl_array_stride_in_u32s_in(layout);
         vec![0u8; length * stride * 4]
       }
       Value::Enum(variant, inner) => {
@@ -3393,8 +3391,8 @@ impl Value {
               }
             }
           }
-          bytes.resize(ty.wgsl_flat_data_size_in_u32s_in(layout) * 4, 0);
         }
+        bytes.resize(ty.wgsl_flat_data_size_in_u32s_in(layout) * 4, 0);
         bytes
       }
       _ => vec![],
@@ -6572,10 +6570,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let Type::Array(_, inner_type_info) = ty else {
             panic!()
           };
-          let inner_ty = inner_type_info.unwrap_known();
-          let elem_size = inner_ty.wgsl_flat_data_size_in_u32s_in(layout);
-          let align = inner_ty.wgsl_alignment_in_u32s_in(layout);
-          let stride = ((elem_size + align - 1) / align) * align;
+          let stride = inner_type_info
+            .unwrap_known()
+            .wgsl_array_stride_in_u32s_in(layout);
           // Minimum one element: wgpu rejects storage bindings smaller
           // than the element stride.
           let raw_bytes =

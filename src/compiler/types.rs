@@ -54,10 +54,11 @@ fn scalar_suffix(element: &Type) -> Option<&'static str> {
   }
 }
 
-/// The layout rules a GPU buffer's contents follow. They differ only for
-/// enums: a uniform's arrays need a 16-byte stride, which an enum's data
-/// words (`array<u32, N>`) don't have, so a uniform holds them as `vec4u`s
-/// (see `host_encoding`).
+/// The layout rules a GPU buffer's contents follow. A uniform's are
+/// WGSL's stricter ones: every struct, enum, and array in it is aligned to
+/// 16 bytes (so a struct's size is a multiple of 16), and every array's
+/// stride is a multiple of 16. WGSL emission declares a uniform whose types
+/// don't naturally follow them with host types that do (`host_encoding`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum BufferLayout {
   Storage,
@@ -73,6 +74,15 @@ impl BufferLayout {
       BufferLayout::Storage
     }
   }
+}
+
+/// `size` rounded up to a multiple of `align` (unchanged for an `align` of
+/// 0).
+pub(crate) fn round_up_to(align: usize, size: usize) -> usize {
+  if align == 0 {
+    return size;
+  }
+  size.div_ceil(align) * align
 }
 
 /// The WGSL stride between a matrix's column vectors, in u32s, for a
@@ -1817,6 +1827,29 @@ impl Type {
     &self,
     layout: BufferLayout,
   ) -> usize {
+    let natural = self.wgsl_natural_alignment_in_u32s_in(layout);
+    if layout == BufferLayout::Uniform && self.is_wgsl_composite() {
+      natural.max(4)
+    } else {
+      natural
+    }
+  }
+  /// Whether this is a struct, enum, or array in WGSL (a vector or matrix
+  /// isn't): the types a uniform aligns to 16 bytes.
+  pub(crate) fn is_wgsl_composite(&self) -> bool {
+    match self {
+      Type::Struct(_) => {
+        !self.is_vector() && self.matrix_dimensions().is_none()
+      }
+      Type::Enum(_) | Type::Array(..) => true,
+      Type::Function(_) => self
+        .closure_data_type()
+        .is_some_and(|data| data.is_wgsl_composite()),
+      _ => false,
+    }
+  }
+  /// The alignment of this type's parts, before a uniform raises it.
+  fn wgsl_natural_alignment_in_u32s_in(&self, layout: BufferLayout) -> usize {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
       Type::Struct(s) => match &*s.name {
@@ -1843,14 +1876,23 @@ impl Type {
       Type::Function(_) => self
         .closure_data_type()
         .map_or(1, |data| data.wgsl_alignment_in_u32s_in(layout)),
-      // A uniform holds an enum's data as `vec4u`s.
-      Type::Enum(e)
-        if layout == BufferLayout::Uniform
-          && e.inner_flat_data_size_in_u32s().unwrap_or(0) > 0 =>
-      {
-        4
-      }
       _ => 1,
+    }
+  }
+  /// The stride between elements of an array of this type in a buffer
+  /// with `layout`, in u32s: the element's size rounded up to its
+  /// alignment, and in a uniform to 16 bytes.
+  pub(crate) fn wgsl_array_stride_in_u32s_in(
+    &self,
+    layout: BufferLayout,
+  ) -> usize {
+    let stride = round_up_to(
+      self.wgsl_alignment_in_u32s_in(layout),
+      self.wgsl_flat_data_size_in_u32s_in(layout),
+    );
+    match layout {
+      BufferLayout::Uniform => round_up_to(4, stride),
+      BufferLayout::Storage => stride,
     }
   }
   /// Returns the WGSL SizeOf for this type, in u32s (bytes / 4), in a
@@ -1867,12 +1909,7 @@ impl Type {
     &self,
     layout: BufferLayout,
   ) -> usize {
-    fn round_up(align: usize, size: usize) -> usize {
-      if align == 0 {
-        return size;
-      }
-      ((size + align - 1) / align) * align
-    }
+    let round_up = round_up_to;
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
       Type::Unit => 0,
@@ -1900,19 +1937,19 @@ impl Type {
       Type::Enum(e) => {
         // Compiled as struct { discriminant: u32, data: array<u32, N> },
         // or in a uniform `data: array<vec4u, ⌈N/4⌉>`, which starts 16
-        // bytes in.
+        // bytes in; a uniform's enum is 16-byte aligned, so it's a
+        // multiple of 16 bytes.
         let data = e.inner_flat_data_size_in_u32s().unwrap_or(0);
         match layout {
           BufferLayout::Uniform if data > 0 => 4 + round_up(4, data),
-          _ => 1 + data,
+          BufferLayout::Uniform => 4,
+          BufferLayout::Storage => 1 + data,
         }
       }
       Type::Array(size, inner_type) => {
-        let inner_ty = inner_type.unwrap_known();
-        let stride = round_up(
-          inner_ty.wgsl_alignment_in_u32s_in(layout),
-          inner_ty.wgsl_flat_data_size_in_u32s_in(layout),
-        );
+        let stride = inner_type
+          .unwrap_known()
+          .wgsl_array_stride_in_u32s_in(layout);
         match size.as_ref().and_then(|s| s.as_literal()) {
           Some(x) => stride * x as usize,
           None => 0,

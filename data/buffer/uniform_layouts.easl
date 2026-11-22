@@ -1,0 +1,111 @@
+; Uniforms whose types WGSL's uniform layout rules (16-byte array strides,
+; struct, enum, and array members on 16-byte boundaries) don't hold as
+; they are: arrays of scalars, vectors, bools, a payload-less enum, arrays,
+; and small structs, and a struct with small struct, enum, and array
+; members followed by scalars. A shader reads each, by element, whole, and
+; through `@ref` parameters, before and after the CPU changes them.
+(enum Mode
+  Off
+  Low
+  High)
+
+(struct Item
+  a: f32
+  b: f32)
+
+(struct Params
+  scale: f32
+  item: Item
+  mode: Mode
+  count: u32
+  pair: [2: u32]
+  tail: f32)
+
+@uniform
+(var weights: [4: f32])
+
+@uniform
+(var offsets: [3: vec2f])
+
+@uniform
+(var flags: [3: bool])
+
+@uniform
+(var modes: [3: Mode])
+
+@uniform
+(var grid: [2: [2: f32]])
+
+@uniform
+(var items: [2: Item])
+
+@uniform
+(var params: Params)
+
+(var out: [14: f32])
+
+(defn mode-value [m: Mode]: f32
+  (match m
+    Mode/Off 0.
+    Mode/Low 1.
+    Mode/High 2.))
+
+(defn total [values: [4: f32]]: f32
+  (+ (values 0u) (values 1u) (values 2u) (values 3u)))
+
+(defn last-of [@ref values: [4: f32]]: f32
+  (values 3u))
+
+(defn pair-sum [@ref pair: [2: u32]]: u32
+  (+ (pair 0u) (pair 1u)))
+
+@compute
+@{workgroup-size 1}
+(defn read []
+  (let [@var weighted 0.]
+    (for [i 4u]
+      (+= weighted (* (weights i) (f32 (+ i 1u)))))
+    (= (out 0u) weighted))
+  (= (out 1u) (total weights))
+  (= (out 2u) (+ (.x (offsets 1u)) (.y (offsets 2u))))
+  (let [@var on 0.]
+    (for [i 3u]
+      (when (flags i)
+        (+= on (f32 (+ i 1u)))))
+    (= (out 3u) on))
+  (= (out 4u)
+     (+ (mode-value (modes 0u))
+        (* 10. (mode-value (modes 2u)))))
+  (= (out 5u) (+ ((grid 0u) 1u) (* 10. ((grid 1u) 0u))))
+  (= (out 6u) (+ (.a (items 0u)) (.b (items 1u))))
+  (= (out 7u) (* params.scale (+ params.item.a params.item.b)))
+  (= (out 8u) (mode-value params.mode))
+  (= (out 9u) (f32 (+ params.count (params.pair 0u) (params.pair 1u))))
+  (= (out 10u) params.tail)
+  (= (out 11u) (.b (.item params)))
+  (= (out 12u) (last-of weights))
+  (= (out 13u) (f32 (pair-sum params.pair))))
+
+@cpu
+(defn main []
+  (= weights [1. 2. 3. 4.])
+  (= offsets [(vec2f 1. 2.) (vec2f 3. 4.) (vec2f 5. 6.)])
+  (= flags [true false true])
+  (= modes [Mode/Low Mode/Off Mode/High])
+  (= grid [[1. 2.] [3. 4.]])
+  (= items [(Item 1. 2.) (Item 3. 4.)])
+  (= params (Params 2. (Item 1.5 2.5) Mode/High 3u [4u 5u] 6.))
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader read (vec3u 1u))
+      (print out)
+      (= (weights 3u) 10.)
+      (= offsets [(vec2f -1. -2.) (vec2f -3. -4.) (vec2f -5. -6.)])
+      (= (flags 1u) true)
+      (= modes [Mode/High Mode/High Mode/Off])
+      (= ((grid 1u) 0u) 30.)
+      (= (items 1u) (Item 7. 8.))
+      (= params (Params 1. (Item 0.5 0.25) Mode/Off 1u [1u 1u] -1.))
+      (dispatch-compute-shader read (vec3u 1u))
+      (print out)
+      (close-window))))
