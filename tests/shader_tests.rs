@@ -522,6 +522,14 @@ success_test!(closure);
 success_test!(return_fn);
 success_test!(okhsl);
 success_test!(bitcast);
+success_test!(texture_load_integer_coordinates);
+error_test!(
+  texture_load_float_coordinates_failure,
+  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
+    name: "Integer".into(),
+    args: vec![],
+  })
+);
 success_test!(mixed_vec);
 success_test!(flowers);
 success_test!(enum_type);

@@ -243,6 +243,7 @@ pub(crate) fn function_type(
 ) -> Type {
   let s = signature.read().unwrap();
   Type::Function(Box::new(FunctionSignature {
+    bounded_generics: vec![],
     abstract_ancestor: Some(signature.clone()),
     args: params
       .iter()

@@ -1,0 +1,14 @@
+; `texture-load` takes `u32` or `i32` coordinates, including a generic's
+; whose bounds allow only those (`I: Integer`), which every instance of
+; the generic function satisfies.
+(var tex: (Texture2D f32))
+
+(defn (load-at I: Integer) [coords: (vec2 I)]: vec4f
+  (texture-load tex coords 0u))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: vec4f
+  (+ (texture-load tex (vec2u pos.xy) 0u)
+     (texture-load tex (vec2i pos.xy) 0i)
+     (load-at (vec2u pos.xy))
+     (load-at (vec2i pos.xy))))

@@ -1375,7 +1375,51 @@ impl Program {
           }
           error
         }));
+        if errors.is_empty() {
+          self.check_generic_bounds(errors);
+        }
         return;
+      }
+    }
+  }
+  /// Checks the type inference gave each bounded generic of each call
+  /// against the generic's bounds (`FunctionSignature::bounded_generics`):
+  /// inference doesn't consult bounds, so this is where a bound on a generic
+  /// only inside a parameter's type (`texture-load`'s `(vec2 C)`) is
+  /// checked.
+  fn check_generic_bounds(&self, errors: &mut ErrorLog) {
+    let mut check = |exp: &TypedExp| {
+      exp
+        .walk(&mut |exp| {
+          if let ExpKind::Application(f, _) = &exp.kind
+            && let TypeState::Known(Type::Function(signature)) = &f.data.kind
+          {
+            for (variable, bounds) in &signature.bounded_generics {
+              if let Some(t) = variable.kind.try_unwrap_known()
+                && let Some(bound) =
+                  bounds.iter().find(|bound| !t.satisfies_constraint(bound))
+              {
+                errors.log(CompileError::new(
+                  UnsatisfiedTypeConstraint(bound.clone().into()),
+                  exp.source_trace.clone(),
+                ));
+              }
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    };
+    for signature in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.read().unwrap().implementation
+      {
+        check(&f.read().unwrap().expression);
+      }
+    }
+    for var in self.top_level_vars.iter() {
+      if let Some(value) = &var.value {
+        check(value);
       }
     }
   }
@@ -5018,6 +5062,7 @@ impl Program {
                     let b = ExpBuilder::at(&exp.source_trace);
                     let closure_type =
                       Type::Function(Box::new(FunctionSignature {
+                        bounded_generics: vec![],
                         abstract_ancestor: Some(Arc::new(RwLock::new(
                           signature,
                         ))),
@@ -5043,6 +5088,7 @@ impl Program {
                           // application. (The closure-ness of the node lives in
                           // the expression's own type: a function type whose
                           // ancestor is the extracted inner fn.)
+                          bounded_generics: vec![],
                           abstract_ancestor: Some(struct_constructor(
                             &captured_scope.name.0,
                             &capture_types,

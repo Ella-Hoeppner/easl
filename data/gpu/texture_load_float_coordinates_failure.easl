@@ -1,0 +1,8 @@
+; `texture-load` takes integer coordinates (`(vec2 C)`, `C` an integer):
+; float ones are a type error, not WGSL that fails to compile. A bound on a
+; generic inside a parameter's type holds like one on a parameter.
+(var tex: (Texture2D f32))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: vec4f
+  (texture-load tex pos.xy 0u))

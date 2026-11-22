@@ -944,6 +944,7 @@ impl TypedExp {
     };
     Ok(Exp {
       data: Known(Type::Function(Box::new(FunctionSignature {
+        bounded_generics: vec![],
         abstract_ancestor: None,
         args,
         return_type,
@@ -1113,6 +1114,7 @@ impl TypedExp {
                           .into();
                         Some(Exp {
                           data: Type::Function(Box::new(FunctionSignature {
+                            bounded_generics: vec![],
                             abstract_ancestor: None,
                             args: arg_types
                               .into_iter()
@@ -3658,6 +3660,7 @@ impl TypedExp {
         if !matches!(&f.kind, Name(_)) {
           let mut options = vec![
             Type::Function(Box::new(FunctionSignature {
+              bounded_generics: vec![],
               abstract_ancestor: None,
               args: args
                 .iter()
@@ -5249,6 +5252,7 @@ impl TypedExp {
       kind: ExpKind::Name("=".into()),
       data: Type::Function(
         FunctionSignature {
+          bounded_generics: vec![],
           abstract_ancestor: Some(Arc::new(RwLock::new(assignment_function()))),
           args: vec![
             (

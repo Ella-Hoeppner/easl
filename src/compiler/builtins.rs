@@ -2995,6 +2995,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![
         AbstractType::Type(Type::Function(
           FunctionSignature {
+            bounded_generics: vec![],
             abstract_ancestor: None,
             args: vec![],
             return_type: Type::Unit.known().into(),

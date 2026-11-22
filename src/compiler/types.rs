@@ -2017,6 +2017,7 @@ impl Type {
                 )),
                 Some(return_type_ast),
               ) => Ok(Self::Function(Box::new(FunctionSignature {
+                bounded_generics: vec![],
                 abstract_ancestor: None,
                 args: arg_type_asts
                   .into_iter()
@@ -4716,7 +4717,7 @@ impl Display for TypeConstraintDescription {
     write!(
       f,
       "{}",
-      if self.args.len() == 0 {
+      if !self.args.is_empty() {
         format!(
           "({} {})",
           self.name,

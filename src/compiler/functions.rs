@@ -1309,10 +1309,21 @@ impl AbstractFunctionSignature {
         &generic_constants,
       );
     }
+    let bounded_generics = f_borrowed
+      .generic_args
+      .iter()
+      .filter_map(|(name, generic_arg, _)| match generic_arg {
+        GenericArgument::Type(bounds) if !bounds.is_empty() => {
+          Some((generic_variables[name].clone(), bounds.clone()))
+        }
+        _ => None,
+      })
+      .collect();
     Ok(FunctionSignature {
       args,
       return_type,
       abstract_ancestor: Some(f.clone()),
+      bounded_generics,
     })
   }
 }
@@ -1322,6 +1333,11 @@ pub struct FunctionSignature {
   pub(crate) abstract_ancestor: Option<Arc<RwLock<AbstractFunctionSignature>>>,
   pub args: Vec<(Variable, Vec<TypeConstraint>)>,
   pub return_type: ExpTypeInfo,
+  /// In a concretization of a generic function (`concretize`), each
+  /// bounded generic's type variable with its bounds. Inference doesn't
+  /// consult them: once it's done, each variable's inferred type is checked
+  /// against its bounds (`Program::check_generic_bounds`).
+  pub(crate) bounded_generics: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
 }
 
 impl PartialEq for FunctionSignature {
