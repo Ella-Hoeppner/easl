@@ -9151,9 +9151,22 @@ impl Program {
           queue.push(f.clone());
         }
       }
-      // The functions an expression names or calls.
+      // The functions an expression names or calls: by name, through any
+      // callee (a closure in a local or a scope field), or by handing it to
+      // `spawn-window`, whose host calls it each frame. Building a closure
+      // value isn't a call: a closure this side only builds to hand to a
+      // dispatched shader (captured by it) runs only on the GPU, and
+      // compiling it could reach code only shaders can run, like a
+      // `texture-load` from a texture global.
       let referenced = |exp: &TypedExp| {
         let mut found: Vec<Arc<str>> = vec![];
+        let ancestor_of = |exp: &TypedExp| match &exp.data.kind {
+          TypeState::Known(Type::Function(signature)) => signature
+            .abstract_ancestor
+            .as_ref()
+            .map(|ancestor| ancestor.read().unwrap().name.clone()),
+          _ => None,
+        };
         exp
           .walk(&mut |exp| {
             if let ExpKind::Name(name) = &exp.kind
@@ -9161,12 +9174,13 @@ impl Program {
             {
               found.push(name.clone());
             }
-            if let ExpKind::Application(_, _) = &exp.kind
-              && let TypeState::Known(Type::Function(signature)) =
-                &exp.data.kind
-              && let Some(ancestor) = &signature.abstract_ancestor
-            {
-              found.push(ancestor.read().unwrap().name.clone());
+            if let ExpKind::Application(callee, args) = &exp.kind {
+              found.extend(ancestor_of(callee));
+              if let ExpKind::Name(name) = &callee.kind
+                && &**name == "spawn-window"
+              {
+                found.extend(args.iter().filter_map(ancestor_of));
+              }
             }
             Ok::<bool, Never>(true)
           })

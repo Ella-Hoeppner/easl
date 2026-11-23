@@ -1,0 +1,39 @@
+; A closure that wraps another and is captured by a dispatched closure is
+; built on the CPU but only ever called on the GPU, so the CPU runtimes
+; don't compile it: here it loads from a texture, which only shaders can.
+; A helper the shader and a top-level initializer both call is still
+; compiled for the CPU, which runs the initializer.
+@handle
+(var tex: (Texture2D f32))
+
+(var out: [2: vec4f])
+
+(defn doubled [x: f32]: f32
+  (* 2. x))
+
+(def two: f32 (doubled 1.))
+
+(defn run-each [n: u32
+                f: (Fn [u32] ())]
+  (dispatch-compute-shader
+    (fn []
+      (let [i (.x (global-invocation-id))]
+        (when (< i n)
+          (f i))))
+    (vec3u n 1u 1u)))
+
+(defn run-each-2d [size: vec2u
+                   f: (Fn [vec2u] ())]
+  (run-each (* size.x size.y)
+            (fn [i]
+              (f (vec2u (% i size.x) (/ i size.x))))))
+
+@cpu
+(defn main []
+  (run-each-2d (vec2u 2u 1u)
+               (fn [coords]
+                 (= (out coords.x)
+                    (+ (texture-load tex (vec2u 0u) 0u)
+                       (vec4f (doubled (f32 coords.x)))))))
+  (print out)
+  (print two))
