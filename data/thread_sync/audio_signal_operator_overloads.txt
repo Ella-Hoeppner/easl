@@ -1,0 +1,11 @@
+main-publish: <audio-scope>_signal
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_signal
+samples: 0.10253906 0.22265625 0.18066406 0.140625
+audio-publish: <audio-scope>_signal
+audio-batch 1 x4
+samples: 0.26660156 0.22265625 0.36035156 0
+audio-publish: <audio-scope>_signal

@@ -709,7 +709,16 @@ pub(crate) type ReferenceVariants =
 impl TypedExp {
   /// Expands n-ary applications of associative functions into nested
   /// binary ones: `(+ a b c)` becomes `(+ (+ a b) c)`.
-  pub(crate) fn expand_associative_applications(&mut self) {
+  /// Expands each application of an associative function with other than
+  /// two arguments into nested two-argument ones, `(+ a b c)` into
+  /// `(+ (+ a b) c)`. Each step calls the n-ary application's function,
+  /// unless `step_callee` gives it another callee and its return type for
+  /// the step's operand types (an application with `scalar_operands`
+  /// whose step mixes a vector and a scalar).
+  pub(crate) fn expand_associative_applications(
+    &mut self,
+    step_callee: &impl Fn(&TypedExp, [Type; 2]) -> Option<(TypedExp, Type)>,
+  ) {
     self
       .walk_mut::<()>(&mut |exp| {
         loop {
@@ -728,12 +737,22 @@ impl TypedExp {
                   needs_another_loop = true;
                 } else {
                   while let Some(next_arg) = args_iter.next() {
+                    let operand_types = [
+                      new_exp.data.unwrap_known(),
+                      next_arg.data.unwrap_known(),
+                    ];
+                    let (callee, data) = match step_callee(&f, operand_types) {
+                      Some((callee, return_type)) => {
+                        (Box::new(callee), return_type.known().into())
+                      }
+                      None => (f.clone(), exp.data.clone()),
+                    };
                     new_exp = Exp {
                       kind: ExpKind::Application(
-                        f.clone(),
+                        callee,
                         vec![new_exp, next_arg],
                       ),
-                      data: exp.data.clone(),
+                      data,
                       source_trace: exp.source_trace.clone(),
                     };
                   }
@@ -3694,14 +3713,24 @@ impl TypedExp {
                   &self.source_trace,
                   errors,
                 );
-                for (arg, (fn_arg, _)) in
-                  args.iter_mut().zip(signature.args.iter().cloned())
-                {
-                  anything_changed |= arg.data.constrain(
-                    &fn_arg.var_type.kind,
-                    &self.source_trace,
-                    errors,
+                // The operands of a `scalar_operands` application with more
+                // arguments than parameters needn't be the parameters' type
+                // (`FunctionSignature::mutually_constrain_arguments` types
+                // them).
+                let scalar_operands = args.len() != signature.args.len()
+                  && signature.abstract_ancestor.as_ref().is_some_and(
+                    |ancestor| ancestor.read().unwrap().scalar_operands,
                   );
+                if !scalar_operands {
+                  for (arg, (fn_arg, _)) in
+                    args.iter_mut().zip(signature.args.iter().cloned())
+                  {
+                    anything_changed |= arg.data.constrain(
+                      &fn_arg.var_type.kind,
+                      &self.source_trace,
+                      errors,
+                    );
+                  }
                 }
               } else {
                 errors.log(CompileError::new(
@@ -4646,6 +4675,7 @@ impl TypedExp {
                               variant_name.clone(),
                             ),
                           associative: false,
+                          scalar_operands: false,
                           captured_scope: None,
                           entry_point: None,
                           specialized_from: None,

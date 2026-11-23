@@ -1,0 +1,11 @@
+; A user's two-argument `+` isn't associative, so three arguments of its
+; type don't type check: the error lists the overloads and the arguments.
+(struct Foo
+  v: f32)
+
+(defn + [a: Foo b: Foo]: Foo
+  (Foo (+ a.v b.v)))
+
+@cpu
+(defn main []
+  (print (.v (+ (Foo 1.) (Foo 2.) (Foo 3.)))))

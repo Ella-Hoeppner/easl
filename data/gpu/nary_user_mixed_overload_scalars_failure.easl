@@ -1,0 +1,14 @@
+; Scalars standing beside a vector in n-ary applications is only for the
+; builtin vector signatures: a user's mixed-type `*` (a signal scaled by a
+; number) isn't associative, so it takes exactly two arguments.
+(defn * [s: (Fn [] f32)
+         factor: f32]: (Fn [] f32)
+  (fn [] (* (s) factor)))
+
+(defn constant [x: f32]: (Fn [] f32)
+  (fn [] x))
+
+@cpu
+(defn main []
+  (let [s (* (constant 1.) 0.5 0.5)]
+    (print (s))))

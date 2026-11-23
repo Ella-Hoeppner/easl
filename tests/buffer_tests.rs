@@ -198,6 +198,7 @@ macro_rules! buffer_test {
 buffer_test!(dispatch_capture_array_length);
 buffer_test!(gpu_bools);
 buffer_test!(bool_xor);
+buffer_test!(nary_mixed_arithmetic_gpu);
 buffer_test!(gpu_sample_rate);
 buffer_test!(multi_value_variants_gpu);
 buffer_test!(uniform_enums);

@@ -522,6 +522,48 @@ success_test!(closure);
 success_test!(return_fn);
 success_test!(okhsl);
 success_test!(bitcast);
+/// An application with more arguments than any overload of `+` takes,
+/// whose arguments no associative overload accepts, keeps the error that
+/// lists the overloads and the arguments as written.
+#[test]
+fn nary_user_overload_failures() {
+  for (name, argument_types) in [
+    (
+      "nary_user_binary_three_args_failure",
+      &["Foo", "Foo", "Foo"][..],
+    ),
+    ("nary_user_mixed_arity_failure", &["A", "B", "B"]),
+    (
+      "nary_user_mixed_overload_scalars_failure",
+      &["(Fn []: f32)", "f32", "f32"],
+    ),
+    (
+      "nary_mismatched_vector_sizes_failure",
+      &["vec2f", "vec3f", "f32"],
+    ),
+    ("nary_bool_operand_failure", &["vec2f", "bool", "f32"]),
+  ] {
+    let errors = compile_shader(name).expect_err(name);
+    assert!(
+      errors.iter().any(|e| matches!(
+        e,
+        CompileErrorKind::FunctionArgumentTypesIncompatible { args, .. }
+          if args.iter().map(|arg| arg.to_string()).eq(
+            argument_types.iter().map(|t| t.to_string())
+          )
+      )),
+      "{name}: {errors:?}"
+    );
+    assert!(
+      errors.iter().all(|e| matches!(
+        e,
+        CompileErrorKind::FunctionArgumentTypesIncompatible { .. }
+          | CompileErrorKind::CouldntInferTypes
+      )),
+      "{name}: {errors:?}"
+    );
+  }
+}
 success_test!(bool_varying_vertex_index_call);
 success_test!(generated_bindings);
 /// The compiler's own bindings get the same numbers on every compile:

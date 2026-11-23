@@ -1,0 +1,22 @@
+; User overloads of `+` beside the builtin ones: a two-argument one called
+; with two arguments, a three-argument one called with three (typed as
+; itself, not as an expansion), and the builtin vector n-ary applications
+; in the same program.
+(struct Foo
+  v: f32)
+
+(defn + [a: Foo b: Foo]: Foo
+  (Foo (+ a.v b.v)))
+
+(struct Bar
+  v: f32)
+
+(defn + [a: Bar b: Bar c: Bar]: Bar
+  (Bar (* a.v b.v c.v)))
+
+@cpu
+(defn main []
+  (print (.v (+ (Foo 1.) (Foo 2.))))
+  (print (.v (+ (Bar 2.) (Bar 3.) (Bar 4.))))
+  (print (+ (vec2f 1. 2.) 1. 2.))
+  (print (* 2. (vec2f 1. 2.) 3.)))

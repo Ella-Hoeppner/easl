@@ -1,0 +1,5 @@
+; Scalars can stand beside a vector in an n-ary `+`, but vectors of
+; different sizes can't share one.
+@cpu
+(defn main []
+  (print (+ (vec2f 1. 2.) (vec3f 1. 2. 3.) 1.)))

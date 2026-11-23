@@ -1,0 +1,5 @@
+; Only a number of the vector's element type can stand beside a vector in
+; an n-ary `+`.
+@cpu
+(defn main []
+  (print (+ (vec2f 1. 2.) true 1.)))

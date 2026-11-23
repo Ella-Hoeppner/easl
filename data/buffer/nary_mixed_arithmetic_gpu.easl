@@ -1,0 +1,27 @@
+; n-ary `+` and `*` mixing scalars and vectors (see
+; data/cpu/nary_mixed_arithmetic.easl), computed on the CPU and in a shader
+; from the same functions.
+(var gpu: [4: vec4f])
+
+(defn (scale-twice T: Scalar) [v: (vec3 T) s: T]: (vec3 T)
+  (* v s s))
+
+(defn results [x: f32]: [4: vec4f]
+  [(vec4f (* (vec3f 1. 2. 3.) x 0.5) 0.)
+   (vec4f (+ 1. x (vec2f 10. 20.)) (+ (vec2f 1. 2.) x (vec2f 10. 20.) 4.))
+   (vec4f (vec3f (scale-twice (vec3i 1i 2i 3i) (i32 x))) (* 2. x 3.))
+   (* 2 (+ x (vec4f 1. 2. 3. 4.) 1) 0.5)])
+
+@compute
+@{workgroup-size 1}
+(defn run []
+  (= gpu (results 2.)))
+
+@cpu
+(defn main []
+  (print (results 2.))
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader run (vec3u 1u))
+      (print gpu)
+      (close-window))))

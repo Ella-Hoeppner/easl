@@ -363,6 +363,14 @@ pub struct AbstractFunctionSignature {
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
   pub associative: bool,
+  /// For the associative vector signatures of `+` and `*`: an application
+  /// with more than two arguments may give some of them as scalars of the
+  /// vector's element type (`(* v 0.5 0.5)`), as long as one is the
+  /// vector. Associative expansion then gives each two-argument step the
+  /// overload its operands take (vector-scalar, scalar-vector, or
+  /// scalar-scalar). A stopgap until variadic functions with bounded
+  /// argument types can express this.
+  pub(crate) scalar_operands: bool,
   pub(crate) captured_scope: Option<AbstractStruct>,
   pub entry_point: Option<EntryPoint>,
   /// For a higher-order specialization, what it specializes; call sites
@@ -383,6 +391,7 @@ impl Default for AbstractFunctionSignature {
         target_specific_emulations: HashSet::new(),
       },
       associative: false,
+      scalar_operands: false,
       captured_scope: None,
       entry_point: None,
       specialized_from: None,
@@ -796,6 +805,7 @@ impl AbstractFunctionSignature {
                     return_type,
                     implementation,
                     associative: parsed_annotation.associative,
+                    scalar_operands: false,
                     entry_point: parsed_annotation.entry,
                     specialized_from: None,
                     captured_scope: None,
@@ -1125,6 +1135,7 @@ impl AbstractFunctionSignature {
         RwLock::new(implementation),
       )),
       associative: self.associative,
+      scalar_operands: self.scalar_operands,
       captured_scope: self.captured_scope.clone(),
       entry_point: self.entry_point,
       specialized_from: None,
@@ -1161,11 +1172,14 @@ impl AbstractFunctionSignature {
         .zip(arg_types)
         .all(|((t, _), arg)| t.may_be_compatible_with(arg))
     } else {
+      // An operand of a `scalar_operands` signature may be a scalar, which
+      // its vector parameter's shape doesn't show.
       self.associative
         && !arg_types.is_empty()
-        && self.arg_types.first().is_none_or(|(t, _)| {
-          arg_types.iter().all(|arg| t.may_be_compatible_with(arg))
-        })
+        && (self.scalar_operands
+          || self.arg_types.first().is_none_or(|(t, _)| {
+            arg_types.iter().all(|arg| t.may_be_compatible_with(arg))
+          }))
     }
   }
   pub(crate) fn concretize(
@@ -1331,6 +1345,22 @@ impl AbstractFunctionSignature {
   }
 }
 
+/// Whether `operand` may be a scalar operand of an application with
+/// `scalar_operands` whose vector's element type is `element`: a scalar
+/// (a number, or a generic bounded to one) of that type. The element type
+/// itself can't tell: while unresolved, it doesn't rule out a vector.
+fn may_be_scalar_operand(operand: &TypeState, element: &TypeState) -> bool {
+  let scalar = TypeConstraint::scalar();
+  TypeState::are_compatible(operand, element)
+    && operand.with_dereferenced(|operand| match operand {
+      TypeState::Known(t) => t.satisfies_constraint(&scalar),
+      TypeState::OneOf(types) => {
+        types.iter().any(|t| t.satisfies_constraint(&scalar))
+      }
+      _ => true,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
   pub(crate) abstract_ancestor: Option<Arc<RwLock<AbstractFunctionSignature>>>,
@@ -1388,10 +1418,21 @@ impl FunctionSignature {
             return false;
           }
           let (arg, arg_constraints) = &self.args[0];
+          let scalar = self.scalar_operand_type();
+          // Whether some operand can be the vector (see
+          // `AbstractFunctionSignature::scalar_operands`).
+          let mut any_vector = false;
           for arg_typestate in arg_types {
-            if !TypeState::are_compatible(arg_typestate, &arg.var_type.kind) {
+            let vector =
+              TypeState::are_compatible(arg_typestate, &arg.var_type.kind);
+            if !vector
+              && !scalar.as_ref().is_some_and(|scalar| {
+                may_be_scalar_operand(arg_typestate, scalar)
+              })
+            {
               return false;
             }
+            any_vector |= vector;
             if let TypeState::Known(t) = &**arg_typestate {
               for constraint in arg_constraints.iter() {
                 if !t.satisfies_constraint(constraint) {
@@ -1400,7 +1441,7 @@ impl FunctionSignature {
               }
             }
           }
-          return true;
+          return any_vector;
         }
       }
       return false;
@@ -1441,11 +1482,34 @@ impl FunctionSignature {
       if let Some(ancestor) = &self.abstract_ancestor {
         if ancestor.read().unwrap().associative {
           if args.len() != 0 {
+            let scalar = self.scalar_operand_type();
             let arg_type = &mut self.args.get_mut(0).unwrap().0.var_type;
             let mut any_arg_changed = false;
             for i in 0..args.len() {
-              let changed =
-                args[i].mutually_constrain(arg_type, &source_trace, errors);
+              // An operand that can only be the vector's element type is
+              // one (see `AbstractFunctionSignature::scalar_operands`); one
+              // that could still be either waits until it's known, and an
+              // unknown one is the vector.
+              let changed = match &scalar {
+                Some(scalar)
+                  if !args[i]
+                    .with_dereferenced(|t| matches!(t, TypeState::Unknown))
+                    && may_be_scalar_operand(args[i], scalar) =>
+                {
+                  if TypeState::are_compatible(args[i], arg_type) {
+                    false
+                  } else {
+                    args[i].mutually_constrain(
+                      &mut scalar.clone(),
+                      &source_trace,
+                      errors,
+                    )
+                  }
+                }
+                _ => {
+                  args[i].mutually_constrain(arg_type, &source_trace, errors)
+                }
+              };
               any_arg_changed |= changed;
             }
             return any_arg_changed;
@@ -1458,6 +1522,31 @@ impl FunctionSignature {
       ));
       false
     }
+  }
+  /// For a signature with `scalar_operands`, the element type of its
+  /// vector parameter, which an operand of an application with more
+  /// arguments than it has parameters may have in place of the vector.
+  fn scalar_operand_type(&self) -> Option<TypeState> {
+    if !self
+      .abstract_ancestor
+      .as_ref()?
+      .read()
+      .unwrap()
+      .scalar_operands
+    {
+      return None;
+    }
+    self
+      .args
+      .first()?
+      .0
+      .var_type
+      .with_dereferenced(|t| match t {
+        TypeState::Known(Type::Struct(s)) => {
+          Some(s.fields.first()?.field_type.kind.clone())
+        }
+        _ => None,
+      })
   }
   pub fn name(&self) -> Option<Arc<str>> {
     self

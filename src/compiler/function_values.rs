@@ -2121,6 +2121,7 @@ impl Program {
           implementation.clone(),
         ),
         associative: original.associative,
+        scalar_operands: original.scalar_operands,
         captured_scope: None,
         entry_point: None,
         specialized_from: None,

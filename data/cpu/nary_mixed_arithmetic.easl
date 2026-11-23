@@ -1,0 +1,43 @@
+; An application of `+` or `*` with more than two arguments can give some
+; of them as scalars beside a vector, each step of its expansion taking the
+; overload its operands need: a vector times scalars, scalars plus a
+; vector, integer vectors with literals, untyped literals beside a float
+; vector, a vector whose type only a later argument gives, a generic
+; vector and its bounded element type, in a function, a lambda, a
+; top-level `def`, and nested in other mixed applications.
+; Same-typed n-ary applications (scalars, vectors of one size among the
+; overloads for every size, `min`, `max`, `&&`) are as before.
+(def offset: vec2f (+ (vec2f 1. 2.) 0.5 0.5))
+
+(defn scaled [v: vec3f]: vec3f
+  (* v 0.5 2. 3.))
+
+(defn (scale-twice T: Scalar) [v: (vec3 T) s: T]: (vec3 T)
+  (* v s s))
+
+(defn later-vector [s: f32]: vec2f
+  (let [a 2.
+        v (* a s (vec2f 1. 2.))]
+    v))
+
+@cpu
+(defn main []
+  (print (* (vec3f 1. 2. 3.) 0.5 0.5))
+  (print (+ 1. 2. (vec2f 10. 20.)))
+  (print (+ (vec2f 1. 2.) 3. (vec2f 10. 20.) 4.))
+  (print (* 2 3 (vec2i 1i -1i)))
+  (print (scaled (vec3f 1.)))
+  (print offset)
+  (print (scale-twice (vec3f 1. 2. 3.) 2.))
+  (print (scale-twice (vec3i 1i 2i 3i) 2i))
+  (print (* (vec3f 1. 2. 3.) 2 3))
+  (print (+ 1 (vec2u 1u 2u) 2))
+  (print (later-vector 3.))
+  (let [f (fn [v: vec2f]: vec2f (* v 2. 0.5 3.))]
+    (print (f offset)))
+  (print (- (* 2. (+ 1. (vec2f 1. 2.) 1.) 0.5) (vec2f 1.)))
+  (print (vec3f (* (vec2f 1. 2.) (vec2f 3. 4.) (vec2f 0.5 0.5)) 0.))
+  (print (+ 1u 2u 3u 4u))
+  (print (min 5. 3. 4.))
+  (print (max (vec2f 1. 5.) (vec2f 3. 2.) (vec2f 0. 9.)))
+  (print (&& true true false)))

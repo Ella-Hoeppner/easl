@@ -678,6 +678,7 @@ impl Program {
             return_type: AbstractType::AbstractStruct(s.clone()),
             implementation: FunctionImplementationKind::StructConstructor,
             associative: false,
+            scalar_operands: false,
             captured_scope: None,
             entry_point: None,
             specialized_from: None,
@@ -709,6 +710,7 @@ impl Program {
                   variant.name.clone(),
                 ),
                 associative: false,
+                scalar_operands: false,
                 captured_scope: None,
                 entry_point: None,
                 specialized_from: None,
@@ -4920,6 +4922,7 @@ impl Program {
                       name: name.clone(),
                       generic_args: vec![],
                       associative: false,
+                      scalar_operands: false,
                       entry_point: None,
                       specialized_from: None,
                       arg_types,
@@ -5776,6 +5779,9 @@ impl Program {
   /// binary ones, `(+ a b c)` into `(+ (+ a b) c)`, in every function body
   /// and top-level variable's value.
   pub(crate) fn expand_associative_applications(&mut self) {
+    let mut top_level_vars = std::mem::take(&mut self.top_level_vars);
+    let step_callee =
+      |f: &TypedExp, operands: [Type; 2]| self.scalar_operand_step(f, operands);
     for f in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(f) =
         &f.read().unwrap().implementation
@@ -5783,14 +5789,67 @@ impl Program {
         f.write()
           .unwrap()
           .expression
-          .expand_associative_applications();
+          .expand_associative_applications(&step_callee);
       }
     }
-    for var in self.top_level_vars.iter_mut() {
+    for var in top_level_vars.iter_mut() {
       if let Some(value) = &mut var.value {
-        value.expand_associative_applications();
+        value.expand_associative_applications(&step_callee);
       }
     }
+    self.top_level_vars = top_level_vars;
+  }
+  /// For one step of an expanded application whose signature has
+  /// `scalar_operands`, when the step's operands aren't the signature's
+  /// (a vector and a scalar, or two scalars): the overload of the
+  /// function taking them, as a callee, and its return type.
+  fn scalar_operand_step(
+    &self,
+    f: &TypedExp,
+    operands: [Type; 2],
+  ) -> Option<(TypedExp, Type)> {
+    let TypeState::Known(Type::Function(signature)) = &f.data.kind else {
+      return None;
+    };
+    let ancestor = signature.abstract_ancestor.as_ref()?.read().unwrap();
+    if !ancestor.scalar_operands
+      || signature
+        .args
+        .iter()
+        .zip(&operands)
+        .all(|((param, _), operand)| param.var_type.unwrap_known() == *operand)
+    {
+      return None;
+    }
+    let ExpKind::Name(name) = &f.kind else {
+      return None;
+    };
+    let mut operand_types: Vec<TypeState> =
+      operands.into_iter().map(TypeState::Known).collect();
+    self.named_signatures(name)?.iter().find_map(|candidate| {
+      if candidate.read().unwrap().arg_types.len() != 2 {
+        return None;
+      }
+      let Ok(Type::Function(mut step)) =
+        self.concrete_signature(candidate, &f.source_trace)
+      else {
+        return None;
+      };
+      let mut operand_types: Vec<&mut TypeState> =
+        operand_types.iter_mut().collect();
+      if !step.are_args_compatible(&operand_types) {
+        return None;
+      }
+      step.mutually_constrain_arguments(
+        operand_types.drain(..).collect(),
+        f.source_trace.clone(),
+        &mut ErrorLog::new(),
+      );
+      let return_type = step.return_type.unwrap_known();
+      let callee =
+        ExpBuilder::at(&f.source_trace).name(name, &Type::Function(step));
+      Some((callee, return_type))
+    })
   }
   fn deshadow(&mut self, errors: &mut ErrorLog) {
     let globals = GlobalNames::new(

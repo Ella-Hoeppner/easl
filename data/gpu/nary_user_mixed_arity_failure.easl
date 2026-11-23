@@ -1,0 +1,18 @@
+; A user `+` taking an `A` and a `B`, called with an `A` and two `B`s: the
+; error lists the overloads and the arguments as written, not some step of
+; an expansion.
+(struct A
+  v: f32)
+
+(struct B
+  v: f32)
+
+(struct C
+  v: f32)
+
+(defn + [x: A y: B]: C
+  (C (+ x.v y.v)))
+
+@cpu
+(defn main []
+  (print (.v (+ (A 1.) (B 2.) (B 3.)))))

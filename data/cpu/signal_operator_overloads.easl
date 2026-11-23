@@ -1,0 +1,70 @@
+; Overloads of `+` and `*` on audio signals, the way a DSP library defines
+; them (after easl_art's audio/core.easl): signals are stateful closures,
+; `+` and `*` on two signals are associative (so they take any number of
+; signals), and `*` scales a signal by a number on either side. They
+; overload the builtins beside the vector signatures, whose n-ary
+; applications take scalars beside a vector.
+
+(defn create-phasor [freq: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (% (+ phase (/ freq 8.)) 1.))
+      phase)))
+
+(defn constant [x: f32]: (Fn [] f32)
+  (fn [] x))
+
+@associative
+(defn + [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (+ (a) (b))))
+
+@associative
+(defn * [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (* (a) (b))))
+
+(defn * [s: (Fn [] f32)
+         factor: f32]: (Fn [] f32)
+  (fn [] (* (s) factor)))
+
+(defn * [factor: f32
+         s: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (* (s) factor)))
+
+(defn (apply T U)
+      [signal: (Fn [] T)
+       effect: (Fn [T] U)]: (Fn [] U)
+  (fn [] (effect (signal))))
+
+(defn print-samples [signal: (Fn [] f32)]
+  (print [(signal) (signal) (signal) (signal)]))
+
+(defn create-mix []: (Fn [] f32)
+  (-> (+ (create-phasor 1.) (create-phasor 2.) (create-phasor 3.))
+      (* 0.25)
+      (apply (fn [x] (* 2. x 0.5 (+ 1 x 1.))))))
+
+@cpu
+(defn main []
+  ; n-ary sums and products of signals
+  (print-samples (+ (create-phasor 1.) (create-phasor 2.) (create-phasor 3.)))
+  (print-samples (* (create-phasor 1.)
+                    (constant 2.)
+                    (constant 0.5)
+                    (constant 3.)))
+  ; a signal scaled by a number, on either side, and in a threading macro
+  (print-samples (* (create-phasor 1.) 0.5))
+  (print-samples (* 0.5 (create-phasor 2.)))
+  (print-samples (-> (create-phasor 4.) (* 0.25)))
+  ; nested: a scaled sum, a sum of scaled signals, and n-ary scalar
+  ; arithmetic (with untyped literals) inside a signal
+  (print-samples (* (+ (create-phasor 1.) (create-phasor 2.)) 0.5))
+  (print-samples (+ (* 0.5 (create-phasor 1.))
+                    (* (create-phasor 2.) 0.25)
+                    (constant 1.)))
+  (print-samples (create-mix))
+  ; the builtin vector signatures beside the user overloads
+  (print (* (vec2f 1. 2.) 0.5 3.))
+  (print (+ 1. (vec3f 1. 2. 3.) 2.))
+  (print (* 2. 3. 4.)))

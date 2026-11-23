@@ -1,0 +1,34 @@
+; A signal built with user overloads of `+` and `*` on signals (as in
+; data/cpu/signal_operator_overloads.easl) as the audio entry: an n-ary sum
+; of signals, scaled by a number, through an effect doing n-ary scalar
+; arithmetic. Every signal the result captures is lifted to the audio
+; thread.
+(defn create-phasor [freq: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (% (+ phase (/ freq 8.)) 1.))
+      phase)))
+
+@associative
+(defn + [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (+ (a) (b))))
+
+(defn * [s: (Fn [] f32)
+         factor: f32]: (Fn [] f32)
+  (fn [] (* (s) factor)))
+
+(defn (apply T U)
+      [signal: (Fn [] T)
+       effect: (Fn [T] U)]: (Fn [] U)
+  (fn [] (effect (signal))))
+
+(defn create-mix []: (Fn [] f32)
+  (-> (+ (create-phasor 1.) (create-phasor 2.) (create-phasor 3.))
+      (* 0.25)
+      (apply (fn [x] (* 0.5 x 0.5 (+ 1 x 1.))))))
+
+@cpu
+(defn main []
+  (start-audio (create-mix))
+  (spawn-window (fn [] ())))

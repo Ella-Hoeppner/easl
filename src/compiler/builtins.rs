@@ -842,6 +842,10 @@ fn arithmetic_functions(
             && !assignment_fn
             && arg_vecs_or_scalars[0]
             && arg_vecs_or_scalars[1],
+          scalar_operands: associative
+            && !assignment_fn
+            && arg_vecs_or_scalars[0]
+            && arg_vecs_or_scalars[1],
           implementation: FunctionImplementationKind::Builtin {
             effect_type: EffectType::empty(),
             target_configuration: FunctionTargetConfiguration::Default,
