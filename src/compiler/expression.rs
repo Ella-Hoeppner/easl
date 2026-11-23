@@ -4507,6 +4507,7 @@ impl TypedExp {
                           {
                             return err(
                               UnsatisfiedTypeConstraint(
+                                generic_type.clone().into(),
                                 unsatisfied.clone().into(),
                               ),
                               source_trace.clone(),

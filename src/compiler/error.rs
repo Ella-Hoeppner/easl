@@ -298,8 +298,8 @@ pub enum CompileErrorKind {
   InvalidStructFieldType,
   #[error("Invalid type bound")]
   InvalidTypeConstraint,
-  #[error("Unsatisfied type constraint: {0}")]
-  UnsatisfiedTypeConstraint(TypeConstraintDescription),
+  #[error("`{0}` doesn't satisfy the bound `{1}`")]
+  UnsatisfiedTypeConstraint(TypeDescription, TypeConstraintDescription),
   #[error("Invalid for loop header")]
   InvalidForLoopHeader,
   #[error("Invalid while loop")]
@@ -987,9 +987,9 @@ impl PartialEq for CompileErrorKind {
         Self::EscapingClosureCapturesRefArg(r0),
       ) => l0 == r0,
       (
-        Self::UnsatisfiedTypeConstraint(l0),
-        Self::UnsatisfiedTypeConstraint(r0),
-      ) => l0 == r0,
+        Self::UnsatisfiedTypeConstraint(l0, l1),
+        Self::UnsatisfiedTypeConstraint(r0, r1),
+      ) => l0 == r0 && l1 == r1,
       (Self::MacroError(l0), Self::MacroError(r0)) => l0 == r0,
       (
         Self::CantShadowTopLevelBinding(l0),

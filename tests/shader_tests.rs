@@ -551,10 +551,13 @@ fn generated_bindings_every_hash_order() {
 success_test!(texture_load_integer_coordinates);
 error_test!(
   texture_load_float_coordinates_failure,
-  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
-    name: "Integer".into(),
-    args: vec![],
-  })
+  CompileErrorKind::UnsatisfiedTypeConstraint(
+    TypeDescription::F32,
+    TypeConstraintDescription {
+      name: "Integer".into(),
+      args: vec![],
+    }
+  )
 );
 success_test!(mixed_vec);
 success_test!(flowers);
@@ -1297,10 +1300,13 @@ error_test!(
 );
 error_test!(
   atomic_type_failure,
-  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
-    name: "Integer".into(),
-    args: vec![]
-  })
+  CompileErrorKind::UnsatisfiedTypeConstraint(
+    TypeDescription::F32,
+    TypeConstraintDescription {
+      name: "Integer".into(),
+      args: vec![]
+    }
+  )
 );
 
 error_test!(
@@ -1371,10 +1377,13 @@ error_test!(
 );
 error_test!(
   bitcast_failure,
-  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
-    name: "Scalar".into(),
-    args: vec![],
-  })
+  CompileErrorKind::UnsatisfiedTypeConstraint(
+    TypeDescription::Struct("vec4u".into()),
+    TypeConstraintDescription {
+      name: "Scalar".into(),
+      args: vec![],
+    }
+  )
 );
 
 error_test!(

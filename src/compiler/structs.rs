@@ -895,7 +895,10 @@ impl Struct {
         for constraint in constraints {
           if !generic_arg_type.satisfies_constraint(&constraint) {
             errors.log(CompileError::new(
-              UnsatisfiedTypeConstraint(constraint.clone().into()),
+              UnsatisfiedTypeConstraint(
+                generic_arg_type.clone().into(),
+                constraint.clone().into(),
+              ),
               source_trace.clone(),
             ));
           }

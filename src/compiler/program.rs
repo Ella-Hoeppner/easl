@@ -1403,7 +1403,10 @@ impl Program {
                   bounds.iter().find(|bound| !t.satisfies_constraint(bound))
               {
                 errors.log(CompileError::new(
-                  UnsatisfiedTypeConstraint(bound.clone().into()),
+                  UnsatisfiedTypeConstraint(
+                    t.clone().into(),
+                    bound.clone().into(),
+                  ),
                   exp.source_trace.clone(),
                 ));
               }

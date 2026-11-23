@@ -942,7 +942,10 @@ impl AbstractFunctionSignature {
             .find(|constraint| !generic_type.satisfies_constraint(constraint))
           {
             err(
-              UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
+              UnsatisfiedTypeConstraint(
+                generic_type.clone().into(),
+                unsatisfied_bound.clone().into(),
+              ),
               source_trace.clone(),
             )
           } else {
