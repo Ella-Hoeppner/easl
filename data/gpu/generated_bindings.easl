@@ -1,0 +1,70 @@
+; A shader reading many of the compiler's own bindings (window-info
+; queries, the sample rate, MIDI) beside the user's, each from its own
+; helper: every compile numbers them the same way, whatever order the
+; passes creating them visit the helpers in.
+(var out: [1: f32])
+
+@uniform
+(var scale: f32)
+
+(defn time-part []: f32
+  (window-time))
+
+(defn delta-part []: f32
+  (window-delta-time))
+
+(defn frame-part []: f32
+  (f32 (window-frame-index)))
+
+(defn resolution-part []: f32
+  (f32 (.x (window-resolution))))
+
+(defn mouse-part []: f32
+  (f32 (.x (mouse-coords))))
+
+(defn mouse-delta-part []: f32
+  (.x (mouse-delta)))
+
+(defn scroll-part []: f32
+  (.x (mouse-scroll-delta)))
+
+(defn down-part []: f32
+  (if (mouse-down?) 1. 0.))
+
+(defn present-part []: f32
+  (if (mouse-present?) 1. 0.))
+
+(defn a-part []: f32
+  (if (key-down? "a") 1. 0.))
+
+(defn shift-part []: f32
+  (if (key-down? "shift") 1. 0.))
+
+(defn space-part []: f32
+  (if (key-just-down? "space") 1. 0.))
+
+(defn rate-part []: f32
+  (sample-rate))
+
+(defn cc-part []: f32
+  (midi-cc 1u))
+
+@compute
+@{workgroup-size 1}
+(defn read []
+  (= (out 0u)
+     (+ (time-part)
+        (delta-part)
+        (frame-part)
+        (resolution-part)
+        (mouse-part)
+        (mouse-delta-part)
+        (scroll-part)
+        (down-part)
+        (present-part)
+        (a-part)
+        (shift-part)
+        (space-part)
+        (rate-part)
+        (cc-part)
+        scale)))

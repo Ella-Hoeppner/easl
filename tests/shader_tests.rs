@@ -522,6 +522,31 @@ success_test!(closure);
 success_test!(return_fn);
 success_test!(okhsl);
 success_test!(bitcast);
+success_test!(generated_bindings);
+/// The compiler's own bindings get the same numbers on every compile:
+/// each compile runs on a fresh thread, with fresh hash seeds, so the
+/// passes creating them meet them in a different order.
+#[test]
+fn generated_bindings_every_hash_order() {
+  let bindings = || {
+    std::thread::spawn(|| {
+      let wgsl = compile_shader("generated_bindings").unwrap();
+      let mut lines: Vec<String> = wgsl
+        .lines()
+        .filter(|line| line.starts_with("@group"))
+        .map(str::to_string)
+        .collect();
+      lines.sort();
+      lines
+    })
+    .join()
+    .unwrap()
+  };
+  let first = bindings();
+  for attempt in 0..16 {
+    assert_eq!(bindings(), first, "attempt {attempt}: bindings differ");
+  }
+}
 success_test!(texture_load_integer_coordinates);
 error_test!(
   texture_load_float_coordinates_failure,

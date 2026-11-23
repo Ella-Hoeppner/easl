@@ -7344,12 +7344,14 @@ impl Program {
   /// numbers were elided (`@[uniform]` in source, plus every
   /// compiler-created binding — window-info uniforms, dispatched-closure
   /// captures). Runs at the very end of validation, after all passes
-  /// that create implicit bindings: vars are visited in declaration
-  /// order and each elided binding takes the lowest free slot, filling
-  /// gaps between explicitly-numbered bindings, in group 0 first and
-  /// spilling to higher groups only if a group's 256 slots are
-  /// exhausted. After this pass no `BindingSpec::Elided` remains
-  /// anywhere.
+  /// that create implicit bindings: the user's vars are visited in
+  /// declaration order, then the compiler's in name order (the passes
+  /// creating them visit functions in hash order, and the numbers mustn't
+  /// change from one compile to the next), and each elided binding takes
+  /// the lowest free slot, filling gaps between explicitly-numbered
+  /// bindings, in group 0 first and spilling to higher groups only if a
+  /// group's 256 slots are exhausted. After this pass no
+  /// `BindingSpec::Elided` remains anywhere.
   pub(crate) fn assign_elided_bindings(&mut self) {
     let mut used: HashSet<GroupAndBinding> = self
       .top_level_vars
@@ -7366,7 +7368,13 @@ impl Program {
         }
       })
       .collect();
-    for var in self.top_level_vars.iter_mut() {
+    let mut order: Vec<&mut TopLevelVar> =
+      self.top_level_vars.iter_mut().collect();
+    // A stable sort: the user's vars keep their order.
+    order.sort_by_key(|var| {
+      (!var.directly_user_written).then(|| var.name.clone())
+    });
+    for var in order {
       if let TopLevelVariableKind::Var {
         group_and_binding: Some(binding_spec),
         ..
