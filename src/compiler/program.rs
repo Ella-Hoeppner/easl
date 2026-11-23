@@ -109,6 +109,9 @@ pub struct ValidationOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompilerTarget {
+  /// The C backend isn't fully supported right now. It'll probably be replaced
+  /// by an emitter from the VM backend rather than the current AST-based
+  /// approach
   C,
   WGSL,
   VM,
@@ -3771,6 +3774,9 @@ impl Program {
                 panic!()
               };
               args.push((arg_name.clone(), SourceTrace::empty()));
+              implementation
+                .arg_names
+                .push((arg_name.clone(), SourceTrace::empty()));
               implementation.expression.data.as_known_mut(|t| {
                 let Type::Function(signature) = t else {
                   panic!()

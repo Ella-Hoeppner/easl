@@ -1,0 +1,18 @@
+; A vertex shader calling `(vertex-index)` whose output holds a bool: the
+; entry is a wrapper around its body (it packs the bool for the fragment
+; shader), and the vertex index the call reads is a parameter of both.
+(struct Varying
+  @{builtin position} pos: vec4f
+  on: bool)
+
+@vertex
+(defn vert []: Varying
+  (let [i (vertex-index)]
+    (Varying (vec4f (f32 i) 0. 0. 1.)
+             (== i 0u))))
+
+@fragment
+(defn frag [v: Varying]: vec4f
+  (if v.on
+    (vec4f 1.)
+    (vec4f 0.)))

@@ -47,7 +47,10 @@ midir = { version = "0.10", optional = true }
 window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal", "dep:midir"]
 # `c_audio` swaps the audio thread's per-sample function from the bytecode VM
 # (the default, portable, no-external-deps path) to a JIT-compiled C dylib
-# loaded via `libloading`. Faster but requires `clang` on the host.
+# loaded via `libloading`. Faster but requires `clang` on the host. The C
+# backend is an unfinished proof of concept, not supported: much of the
+# language doesn't compile to C yet, and it's to be replaced by compiling the
+# VM's bytecode to C.
 c_audio = ["window", "dep:libloading"]
 # `video` adds MP4/etc video-frame decoding via the `ffmpeg` binary
 # (subprocess, `ffmpeg-sidecar`) — no linking, needs `ffmpeg` on PATH at

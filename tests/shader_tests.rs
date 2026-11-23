@@ -522,6 +522,7 @@ success_test!(closure);
 success_test!(return_fn);
 success_test!(okhsl);
 success_test!(bitcast);
+success_test!(bool_varying_vertex_index_call);
 success_test!(generated_bindings);
 /// The compiler's own bindings get the same numbers on every compile:
 /// each compile runs on a fresh thread, with fresh hash seeds, so the
