@@ -1368,6 +1368,7 @@ pub(crate) struct AudioInput {
 
 impl AudioInput {
   /// Makes frame `index` of the batch the current one.
+  #[cfg(feature = "window")]
   pub(crate) fn select_frame(&mut self, index: usize) {
     self.frame = index * self.channels;
     self.mix = None;
@@ -1733,6 +1734,7 @@ impl Code {
   /// Whether this code reads audio input (`audio-input`,
   /// `audio-input-channel-count`), so the audio driver must hand it the
   /// captured frames.
+  #[cfg(feature = "window")]
   pub(crate) fn reads_audio_input(&self) -> bool {
     self.function_instructions.iter().any(|instruction| {
       matches!(

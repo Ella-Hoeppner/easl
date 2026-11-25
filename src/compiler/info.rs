@@ -190,6 +190,11 @@ pub fn definition_signatures(
       continue;
     };
     let implementation = implementation.read().unwrap();
+    // The compiler's own functions (a multi-value variant's constructor)
+    // are shown as part of what they were generated for.
+    if !implementation.directly_user_written {
+      continue;
+    }
     let Some(position) = &implementation.name_source_trace.primary_position
     else {
       continue;
@@ -230,7 +235,20 @@ pub fn definition_signatures(
       format!("(defn {head} [{}]{return_type})", args.join(" ")),
     ));
   }
+  // The payload structs of variants holding several values, which are
+  // shown as the variants' values.
+  let payload_structs: Vec<&Arc<str>> = program
+    .typedefs
+    .enums
+    .iter()
+    .flat_map(|e| e.variants.iter())
+    .filter(|variant| variant.several_values)
+    .filter_map(|variant| payload_struct_name(&variant.inner_type))
+    .collect();
   for s in program.typedefs.structs.iter() {
+    if payload_structs.contains(&&s.name.0) {
+      continue;
+    }
     let Some(position) = &s.name.1.primary_position else {
       continue;
     };
@@ -266,7 +284,27 @@ pub fn definition_signatures(
             format!("\n  {variant_name}")
           }
           inner_type => {
-            format!("\n  ({variant_name} {})", inner_type.describe())
+            let values = variant
+              .several_values
+              .then(|| payload_struct_name(inner_type))
+              .flatten()
+              .and_then(|payload| {
+                program
+                  .typedefs
+                  .structs
+                  .iter()
+                  .find(|s| &s.name.0 == payload)
+              })
+              .map(|payload| {
+                payload
+                  .fields
+                  .iter()
+                  .map(|field| field.field_type.describe())
+                  .collect::<Vec<_>>()
+                  .join(" ")
+              })
+              .unwrap_or_else(|| inner_type.describe());
+            format!("\n  ({variant_name} {values})")
           }
         }
       })
@@ -297,6 +335,16 @@ pub fn definition_signatures(
   signatures
 }
 
+/// The name of the payload struct a variant holding several values has as
+/// its inner type.
+fn payload_struct_name(inner_type: &AbstractType) -> Option<&Arc<str>> {
+  match inner_type {
+    AbstractType::AbstractStruct(s) => Some(&s.name.0),
+    AbstractType::Type(Type::Struct(s)) => Some(&s.abstract_ancestor.name.0),
+    _ => None,
+  }
+}
+
 /// A type definition's name, applied to its generic parameters if it has
 /// any: `(Pair T U)`.
 fn type_head(
@@ -310,7 +358,8 @@ fn type_head(
   }
 }
 
-/// Generic parameters as declared: `T`, `N: u32`, `T: [Scalar]`.
+/// Generic parameters as declared: `T`, `N: u32`, `T: Scalar`,
+/// `T: [Scalar Integer]`.
 fn describe_generic_args(
   generic_args: &[(Arc<str>, GenericArgument, SourceTrace)],
 ) -> String {
@@ -318,20 +367,19 @@ fn describe_generic_args(
     .iter()
     .map(|(name, argument, _)| match argument {
       GenericArgument::Constant => format!("{name}: u32"),
-      GenericArgument::Type(constraints) if constraints.is_empty() => {
-        name.to_string()
-      }
-      GenericArgument::Type(constraints) => format!(
-        "{name}: [{}]",
-        constraints
+      GenericArgument::Type(constraints) => {
+        let bounds: Vec<String> = constraints
           .iter()
-          .map(
-            |constraint| TypeConstraintDescription::from(constraint.clone())
-              .name
-          )
-          .collect::<Vec<_>>()
-          .join(" ")
-      ),
+          .map(|constraint| {
+            TypeConstraintDescription::from(constraint.clone()).name
+          })
+          .collect();
+        match bounds.as_slice() {
+          [] => name.to_string(),
+          [bound] => format!("{name}: {bound}"),
+          bounds => format!("{name}: [{}]", bounds.join(" ")),
+        }
+      }
     })
     .collect::<Vec<_>>()
     .join(" ")
@@ -504,6 +552,71 @@ mod tests {
     );
     assert!(errors.is_empty(), "{errors:?}");
     program
+  }
+
+  /// Each signature `definition_signatures` gives `source`, with the name
+  /// it's keyed by as written, sorted.
+  fn signatures_by_name(source: &str) -> Vec<(String, String)> {
+    let mut document = parse_easl(source);
+    document.strip_comments();
+    let documents = EaslMultiDocument::from_singular_document(
+      document,
+      "main.easl".into(),
+      source.into(),
+    );
+    let (program, errors) =
+      Program::from_easl_documents(&documents, built_in_macros());
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut signatures: Vec<(String, String)> =
+      definition_signatures(&program, &documents)
+        .into_iter()
+        .map(|(position, signature)| {
+          (source[position.span].to_string(), signature)
+        })
+        .collect();
+    signatures.sort();
+    signatures
+  }
+
+  /// Definitions render as written: a variant holding several values shows
+  /// them (not its generated payload struct or constructor), and a generic
+  /// with one bound shows it bare. Each variant is keyed by its whole form,
+  /// where hovering any of it shows its enum.
+  #[test]
+  fn definition_signatures_render_as_written() {
+    let shape = "(enum Shape\n  (Circle f32)\n  (Rect f32 f32)\n  Empty)";
+    let pair = "(enum (Pair T)\n  (Two T T)\n  Nothing)";
+    let signature =
+      |name: &str, signature: &str| (name.to_string(), signature.to_string());
+    assert_eq!(
+      signatures_by_name(
+        "(enum Shape
+  (Circle f32)
+  (Rect f32 f32)
+  Empty)
+
+(enum (Pair T)
+  (Two T T)
+  Nothing)
+
+(defn (pick T: Scalar U) [a: T b: U]: T
+  a)
+
+(defn (twice T: [Scalar Integer]) [a: T]: T
+  (+ a a))"
+      ),
+      vec![
+        signature("(Circle f32)", shape),
+        signature("(Rect f32 f32)", shape),
+        signature("(Two T T)", pair),
+        signature("Empty", shape),
+        signature("Nothing", pair),
+        signature("Pair", pair),
+        signature("Shape", shape),
+        signature("pick", "(defn (pick T: Scalar U) [a: T b: U]: T)"),
+        signature("twice", "(defn (twice T: [Scalar Integer]) [a: T]: T)"),
+      ]
+    );
   }
 
   #[test]
