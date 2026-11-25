@@ -1,0 +1,11 @@
+; The harness feeds a stereo input, so channel 2 doesn't exist: reading it
+; is a runtime error, which stops the audio code (the rest of the batch is
+; silent) while the main thread keeps running.
+(defn listen []: f32
+  (audio-input 2))
+
+@cpu
+(defn main []
+  (start-listening)
+  (start-audio listen)
+  (spawn-window (fn [] ())))

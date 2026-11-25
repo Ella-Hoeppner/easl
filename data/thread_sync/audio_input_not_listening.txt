@@ -1,0 +1,5 @@
+start-audio: listen
+spawn-window
+frame 0
+audio-batch 0 x2
+samples: 0 0

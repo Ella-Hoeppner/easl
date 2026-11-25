@@ -411,6 +411,14 @@ pub enum Op {
   // sample count and rate are the program's own (`audio_samples`,
   // `audio_rate`). See `looped_audio_time`.
   LoopedAudioTime,
+  // Audio input, read from the program's `audio_input` (the current
+  // frame, which the audio driver selects before every sample):
+  // `(audio-input)`, the frame's downmix; `(audio-input channel)`, the
+  // channel's sample (the channel's slot is `arg_positions[0]`), a trap
+  // when the input has no such channel; `(audio-input-channel-count)`.
+  AudioInputMix,
+  AudioInputChannel,
+  AudioInputChannelCount,
 
   // MIDI output, in both modes: builds the message of kind
   // `MidiOutKind::from_u16(return_position)` (an immediate) from the
@@ -647,7 +655,8 @@ impl Instruction {
       Op::HeapPut => (a2 + r.max(1) - 1).max(a0).max(a1),
       Op::DynResize => a1,
       Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
-      Op::LoopedAudioTime => a0.max(r),
+      Op::LoopedAudioTime | Op::AudioInputChannel => a0.max(r),
+      Op::AudioInputMix | Op::AudioInputChannelCount => r,
       // The message kind in `return_position` is an immediate.
       Op::SendMidi => a0.max(a1).max(a2),
       // The var's slots are a global's, covered by the globals' range.
@@ -1294,6 +1303,11 @@ pub enum Trap {
   DivisionByZero,
   /// An integer `%` by zero. (A shader's gives 0, as WGSL defines.)
   RemainderByZero,
+  /// `(audio-input channel)` with a channel the input doesn't have.
+  AudioInputChannel {
+    channel: u32,
+    channels: u32,
+  },
 }
 
 impl std::fmt::Display for Trap {
@@ -1321,7 +1335,66 @@ impl std::fmt::Display for Trap {
       ),
       Trap::DivisionByZero => write!(f, "integer division by zero"),
       Trap::RemainderByZero => write!(f, "integer remainder by zero"),
+      Trap::AudioInputChannel {
+        channel,
+        channels: 0,
+      } => write!(
+        f,
+        "audio input channel {channel} doesn't exist: nothing is listening \
+         (see `start-listening`)"
+      ),
+      Trap::AudioInputChannel { channel, channels } => write!(
+        f,
+        "audio input channel {channel} doesn't exist: the input has \
+         {channels} channel{}",
+        if *channels == 1 { "" } else { "s" }
+      ),
     }
+  }
+}
+
+/// The audio input a program reads: a batch of frames (interleaved,
+/// `channels` samples each) the audio driver captured, and which of them
+/// is the current sample's.
+#[derive(Debug, Default)]
+pub(crate) struct AudioInput {
+  pub(crate) frames: Vec<f32>,
+  pub(crate) channels: usize,
+  /// Where the current frame starts in `frames`.
+  frame: usize,
+  /// The current frame's downmix, once `(audio-input)` has computed it.
+  mix: Option<f32>,
+}
+
+impl AudioInput {
+  /// Makes frame `index` of the batch the current one.
+  pub(crate) fn select_frame(&mut self, index: usize) {
+    self.frame = index * self.channels;
+    self.mix = None;
+  }
+
+  /// The current frame's sample on `channel`, or `None` when the input has
+  /// no such channel.
+  fn channel(&self, channel: u32) -> Option<f32> {
+    let channel = channel as usize;
+    (channel < self.channels)
+      .then(|| self.frames.get(self.frame + channel).copied().unwrap_or(0.))
+  }
+
+  /// The mean of the current frame's samples (0 with no input), computed
+  /// at its first read in a sample.
+  fn mix(&mut self) -> f32 {
+    *self.mix.get_or_insert_with(|| {
+      let frame = self
+        .frames
+        .get(self.frame..self.frame + self.channels)
+        .unwrap_or(&[]);
+      if frame.is_empty() {
+        0.
+      } else {
+        frame.iter().sum::<f32>() / frame.len() as f32
+      }
+    })
   }
 }
 
@@ -1657,6 +1730,17 @@ impl Code {
       .iter()
       .any(|instruction| instruction.op == Op::SendMidi)
   }
+  /// Whether this code reads audio input (`audio-input`,
+  /// `audio-input-channel-count`), so the audio driver must hand it the
+  /// captured frames.
+  pub(crate) fn reads_audio_input(&self) -> bool {
+    self.function_instructions.iter().any(|instruction| {
+      matches!(
+        instruction.op,
+        Op::AudioInputMix | Op::AudioInputChannel | Op::AudioInputChannelCount
+      )
+    })
+  }
   /// This program's encoding, for [`Code::from_bytes`].
   pub fn to_bytes(&self) -> Vec<u8> {
     postcard::to_allocvec(self).expect("serializing bytecode failed")
@@ -1845,6 +1929,10 @@ pub struct BytecodeProgram {
   /// before every sample; zero outside the audio thread.
   pub(crate) audio_samples: u64,
   pub(crate) audio_rate: f32,
+  /// The audio input the `AudioInput*` ops read: the audio driver's batch
+  /// of captured frames, and the current sample's frame. Empty outside the
+  /// audio thread.
+  pub(crate) audio_input: AudioInput,
   /// Where the last run that trapped or failed in a host call stopped: the
   /// instruction, then the call instruction of each function it was in,
   /// innermost first (see `Code::source_trace`).
@@ -1915,6 +2003,7 @@ impl BytecodeProgram {
       gpu_newer: vec![false; code.host_bindings.len()],
       audio_samples: 0,
       audio_rate: 0.,
+      audio_input: AudioInput::default(),
       trap_site: vec![],
       code,
     };
@@ -2040,6 +2129,7 @@ impl BytecodeProgram {
       gpu_newer,
       audio_samples,
       audio_rate,
+      audio_input,
       trap_site,
     } = self;
     // Heap helpers for the `Heap*` ops. `release` implements
@@ -2323,6 +2413,24 @@ impl BytecodeProgram {
             f32::from_bits(period),
           )
           .to_bits();
+        }
+        Op::AudioInputMix => {
+          stack[instruction.return_position as usize] =
+            audio_input.mix().to_bits();
+        }
+        Op::AudioInputChannel => {
+          let channel = stack[instruction.arg_positions[0] as usize];
+          let Some(sample) = audio_input.channel(channel) else {
+            trap!(Trap::AudioInputChannel {
+              channel,
+              channels: audio_input.channels as u32,
+            });
+          };
+          stack[instruction.return_position as usize] = sample.to_bits();
+        }
+        Op::AudioInputChannelCount => {
+          stack[instruction.return_position as usize] =
+            audio_input.channels as u32;
         }
         Op::SendMidi => {
           let [a, b, c] = instruction.arg_positions;

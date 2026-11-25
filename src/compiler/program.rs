@@ -2726,7 +2726,10 @@ impl Program {
                 ));
               }
               if let ExpKind::Name(applied_name) = &applied_f.kind
-                && matches!(&**applied_name, "audio-time" | "audio-input")
+                && matches!(
+                  &**applied_name,
+                  "audio-time" | "audio-input" | "audio-input-channel-count"
+                )
               {
                 violations.push((
                   exp.source_trace.clone(),
@@ -2842,9 +2845,9 @@ impl Program {
                     Effect::CPUExclusiveFunction(fn_name) => {
                       // dynamic-array constructor misuse on the GPU is
                       // already reported precisely by the runtime-sized
-                      // validation, and `(audio-time period)` by the
-                      // audio-info rule; the generic complaint would be
-                      // redundant noise there
+                      // validation, and `(audio-time period)` and the
+                      // audio-input builtins by the audio-info rule; the
+                      // generic complaint would be redundant noise there
                       let suppress_gpu = (runtime_sized_error_present
                         && matches!(
                           &**fn_name,
@@ -2857,7 +2860,12 @@ impl Program {
                             | "reverse"
                             | "subarray"
                         ))
-                        || &**fn_name == "audio-time";
+                        || matches!(
+                          &**fn_name,
+                          "audio-time"
+                            | "audio-input"
+                            | "audio-input-channel-count"
+                        );
                       // The dynamic-array constructors are VM-native, so
                       // audio code may call them (allocating on the audio
                       // hot path is the user's tradeoff to make); the
@@ -2982,7 +2990,7 @@ impl Program {
         return Ok(true);
       };
       if args.is_empty() {
-        // `audio-time` and `audio-input` are `@local` (per-execution-
+        // `audio-time` is `@local` (per-execution-
         // context, driver-authoritative). The sample rate is a uniform
         // and the MIDI vars storage-read bindings, with elided numbers,
         // so shader code can read them too: main's writes (the rate once
@@ -2999,9 +3007,6 @@ impl Program {
           ),
           "audio-time" => {
             ("easl_audio_time", VariableAddressSpace::Local, None)
-          }
-          "audio-input" => {
-            ("easl_audio_input", VariableAddressSpace::Local, None)
           }
           "midi-aftertouch" => (
             "easl_midi_aftertouch",

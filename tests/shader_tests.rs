@@ -485,6 +485,14 @@ error_test!(
     "reads the audio clock".to_string()
   ),
   CompileErrorKind::ImpureInitializer(
+    "level".to_string(),
+    "reads audio input".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
+    "input-channels".to_string(),
+    "reads audio input".to_string()
+  ),
+  CompileErrorKind::ImpureInitializer(
     "both".to_string(),
     "prints and writes `counter`".to_string()
   )
@@ -909,6 +917,15 @@ error_test!(
 error_test!(
   looped_audio_time_in_shader_failure,
   CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
+);
+error_test!(
+  audio_input_outside_audio_failure,
+  CompileErrorKind::AudioInfoOutsideAudio("audio-input".to_string()),
+  CompileErrorKind::AudioInfoOutsideAudio("audio-input".to_string()),
+  CompileErrorKind::AudioInfoOutsideAudio("audio-input".to_string()),
+  CompileErrorKind::AudioInfoOutsideAudio(
+    "audio-input-channel-count".to_string()
+  )
 );
 error_test!(
   easl_reserved_name_failure,

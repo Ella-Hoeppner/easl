@@ -1,0 +1,9 @@
+; Without `start-listening`, the input has no channels, and its downmix is
+; silence: each sample emits the downmix plus the channel count, 0.
+(defn listen []: f32
+  (+ (audio-input) (f32 (audio-input-channel-count))))
+
+@cpu
+(defn main []
+  (start-audio listen)
+  (spawn-window (fn [] ())))

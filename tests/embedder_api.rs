@@ -8,7 +8,7 @@ use std::path::Path;
 
 use easl::{
   CompilerTarget,
-  audio::{AudioRestart, AudioSource, VmAudioDriver},
+  audio::{AudioInputFrames, AudioRestart, AudioSource, VmAudioDriver},
   compiler::{error::ErrorLog, program::Program, types::Type},
   external::ExternalVars,
   interpreter::{
@@ -78,7 +78,11 @@ mod pistomp {
     let _: bool = driver.take_stop();
     let _ = driver.switch_entry("entry");
     driver.reset_time();
-    let _ = &driver.audio_input_override;
+    // The pedal host feeds its input through this, a block at a time.
+    driver.audio_input_override = Some(AudioInputFrames {
+      channels: 1,
+      samples: Default::default(),
+    });
     let _ = &driver.midi_override;
     let _ = AudioRestart::new;
     let _ = AudioRestart::driver;

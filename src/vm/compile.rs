@@ -1536,6 +1536,20 @@ impl BytecodeCompilationState {
       });
       return Some(dest);
     }
+    if f_name == "audio-input" || f_name == "audio-input-channel-count" {
+      let op = match (f_name, arg_positions) {
+        ("audio-input", []) => Op::AudioInputMix,
+        ("audio-input", _) => Op::AudioInputChannel,
+        _ => Op::AudioInputChannelCount,
+      };
+      let dest = self.take_stack_slot(1);
+      self.push_instruction(Instruction {
+        op,
+        arg_positions: [arg_positions.first().copied().unwrap_or(0), 0, 0],
+        return_position: dest,
+      });
+      return Some(dest);
+    }
     // MIDI output: the arguments in order, a missing one (a trailing
     // channel, a raw message's absent data bytes) reading as 0.
     if let Some(kind) = MidiOutKind::of_builtin(f_name, args.len()) {

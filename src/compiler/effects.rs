@@ -558,6 +558,8 @@ impl EffectType {
         | "subarray"
         | "audio-time"
         | "reset-audio-time"
+        | "audio-input"
+        | "audio-input-channel-count"
     ) || MidiOutKind::BUILTIN_NAMES.contains(&name)
   }
   pub(crate) fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {

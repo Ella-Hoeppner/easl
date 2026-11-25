@@ -1,0 +1,12 @@
+main-publish: seen
+start-audio: listen
+spawn-window
+frame 0
+print: [0. 0. 0. 0. 0.]
+audio-batch 0 x3
+audio-adopt: seen
+samples: -0.375 -0.25 0.75
+audio-publish: seen
+frame 1
+main-adopt: seen
+print: [-1. 0.5 -0.25 2. -0.5]

@@ -30,6 +30,8 @@
 
 (def knob: f32 (controller))
 (def clock: f32 (audio-time))
+(def level: f32 (audio-input 0u))
+(def input-channels: u32 (audio-input-channel-count))
 
 @local
 (var both: u32 (+ (shout 2u) (next-id)))

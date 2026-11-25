@@ -23,7 +23,7 @@ mod common;
 
 use std::sync::Arc;
 
-use easl::audio::{AudioRestart, AudioSource, VmAudioDriver};
+use easl::audio::{AudioInputFrames, AudioRestart, AudioSource, VmAudioDriver};
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::external::{ExternalVarError, ExternalVars};
@@ -182,10 +182,10 @@ struct ThreadSyncIO {
   /// When set, both the main thread's per-frame MIDI refresh and the
   /// stashed audio driver report this state instead of silence.
   spoofed_midi: Option<MidiState>,
-  /// When set, the stashed audio driver reads `(audio-input)` samples from
-  /// this instead of a real capture device — the deterministic input for
+  /// When set, the stashed audio driver reads its input frames from this
+  /// instead of a real capture device — the deterministic input for
   /// `audio-input` tests.
-  spoofed_audio_input: Option<std::collections::VecDeque<f32>>,
+  spoofed_audio_input: Option<AudioInputFrames>,
   /// Delegate for all GPU machinery (headless GpuCore, buffer readback,
   /// queued frame events). Its windowing loop is never used.
   inner: StdoutIO,
@@ -566,19 +566,26 @@ fn run_thread_sync_test_with_midi(
   run_thread_sync_test_inner(name, schedule, spoofed_midi, None)
 }
 
+/// Runs a test whose audio input has `channels` channels, its frames
+/// `samples` (interleaved).
 fn run_thread_sync_test_with_audio_input(
   name: &str,
   schedule: Vec<Step>,
-  spoofed_audio_input: std::collections::VecDeque<f32>,
+  channels: usize,
+  samples: &[f32],
 ) {
-  run_thread_sync_test_inner(name, schedule, None, Some(spoofed_audio_input))
+  let input = AudioInputFrames {
+    channels,
+    samples: samples.iter().copied().collect(),
+  };
+  run_thread_sync_test_inner(name, schedule, None, Some(input))
 }
 
 fn run_thread_sync_test_inner(
   name: &str,
   schedule: Vec<Step>,
   spoofed_midi: Option<MidiState>,
-  spoofed_audio_input: Option<std::collections::VecDeque<f32>>,
+  spoofed_audio_input: Option<AudioInputFrames>,
 ) {
   let expected = fs::read_to_string(format!("./data/thread_sync/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/thread_sync/{name}.txt"));
@@ -1157,15 +1164,42 @@ thread_sync_test!(audio_nested_alloc_shared, [Frame, AudioBatch(2), Frame]);
 
 /// Real-time audio input: a passthrough audio entry reads `(audio-input)`,
 /// so the emitted samples equal the (deterministically spoofed) captured
-/// input. Exercises the driver's per-sample `easl_audio_input` refresh.
+/// mono input. Exercises the driver's per-sample frame selection.
 #[test]
 fn audio_input_passthrough() {
   run_thread_sync_test_with_audio_input(
     "audio_input_passthrough",
     [Frame, AudioBatch(3)].to_vec(),
-    std::collections::VecDeque::from([0.5f32, -0.25, 0.75]),
+    1,
+    &[0.5, -0.25, 0.75],
   );
 }
+/// Stereo input: each channel of the current frame (by literal, and by a
+/// loop over the channel count), their downmix (read twice in a sample),
+/// and the channel count, seen by the audio entry and published to main.
+#[test]
+fn audio_input_channels() {
+  run_thread_sync_test_with_audio_input(
+    "audio_input_channels",
+    [Frame, AudioBatch(3), Frame].to_vec(),
+    2,
+    &[0.5, -0.25, 0.75, 0.25, -1., 0.5],
+  );
+}
+/// Reading a channel the input doesn't have stops the audio code with a
+/// runtime error naming the input's channel count.
+#[test]
+fn audio_input_missing_channel() {
+  run_thread_sync_test_with_audio_input(
+    "audio_input_missing_channel",
+    [Frame, AudioBatch(2)].to_vec(),
+    2,
+    &[0.5, -0.25, 0.75, 0.25],
+  );
+}
+/// With nothing listening, the input has no channels and its downmix is
+/// silence.
+thread_sync_test!(audio_input_not_listening, [Frame, AudioBatch(2)]);
 thread_sync_test!(
   gpu_write_cpu_read_audio_read,
   [

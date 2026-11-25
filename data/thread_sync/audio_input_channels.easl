@@ -1,0 +1,27 @@
+; Stereo input (the harness feeds the frames (0.5, -0.25), (0.75, 0.25),
+; and (-1, 0.5)): `(audio-input channel)` reads one channel of the current
+; frame, by a literal or a channel computed at runtime (the loop over every
+; channel), `(audio-input)` the mean of its channels, and
+; `(audio-input-channel-count)` how many channels the input has. Each
+; sample emits its frame's downmix minus its left channel, reading the
+; downmix twice, and records everything it read in `seen`, which main
+; prints after adopting the audio thread's last write.
+(var seen: [5: f32])
+
+(defn listen []: f32
+  (let [@var sum 0.]
+    (for [i (audio-input-channel-count)]
+      (+= sum (audio-input i)))
+    (= seen
+       [(audio-input 0)
+        (audio-input 1)
+        (audio-input)
+        (f32 (audio-input-channel-count))
+        sum])
+    (- (audio-input) (audio-input 0))))
+
+@cpu
+(defn main []
+  (start-listening)
+  (start-audio listen)
+  (spawn-window (fn [] (print seen))))

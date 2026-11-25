@@ -3263,17 +3263,45 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
-    // The current real-time audio-input sample (mono, roughly [-1, 1]),
-    // captured from the device selected by `start-listening`. Like
-    // `audio-time`, it's audio-context only and rewritten by
-    // `extract_audio_info` into a read of the implicit `@local`
-    // `easl_audio_input` var the audio driver writes each sample. Reads 0
-    // when nothing is listening.
+    // Real-time audio input, captured from the device selected by
+    // `start-listening` (samples roughly in [-1, 1]): `(audio-input)` is
+    // the current frame's downmix (the mean of its channels, 0 when nothing
+    // is listening), `(audio-input channel)` one channel's sample (a
+    // runtime error for a channel the input doesn't have), and
+    // `(audio-input-channel-count)` the input's channel count (0 when
+    // nothing is listening). The VM reads them from the frame the audio
+    // driver hands it each sample (`Op::AudioInput*`); they have no WGSL or
+    // C form, so they're CPU-exclusive (allowed in audio, their only
+    // context).
     AbstractFunctionSignature {
       name: "audio-input".into(),
       return_type: AbstractType::Type(Type::F32),
       implementation: FunctionImplementationKind::Builtin {
-        effect_type: EffectType::empty(),
+        effect_type: Effect::CPUExclusiveFunction("audio-input".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "audio-input".into(),
+      arg_types: vec![(AbstractType::Type(Type::U32), Ownership::Owned)],
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("audio-input".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "audio-input-channel-count".into(),
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction(
+          "audio-input-channel-count".into(),
+        )
+        .into(),
         target_configuration: FunctionTargetConfiguration::Default,
         target_specific_emulations: HashSet::new(),
       },

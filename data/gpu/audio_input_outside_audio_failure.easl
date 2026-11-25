@@ -1,0 +1,12 @@
+; Audio input is audio-only, like `audio-time`: each form of
+; `audio-input`, and `audio-input-channel-count`, in CPU code and in a
+; shader.
+@fragment
+(defn frag []: @{location 0} vec4f
+  (vec4f (audio-input 0)))
+
+@cpu
+(defn main []
+  (print (audio-input))
+  (print (audio-input 1))
+  (print (audio-input-channel-count)))

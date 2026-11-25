@@ -1,9 +1,9 @@
 ; Real-time audio input: `start-listening` opens the capture device and the
 ; audio entry reads the current input sample with `(audio-input)`. Here the
 ; entry is a passthrough, so the emitted samples are exactly the captured
-; input (the harness feeds a deterministic input buffer). `audio-input` is
-; per-execution-context `@local`, so it's never thread-shared — no
-; publish/adopt lines.
+; input (the harness feeds a deterministic mono input buffer). The audio
+; code reads its input from the frame the audio driver hands it, never a
+; thread-shared variable, so there are no publish/adopt lines.
 (defn passthrough []: f32
   (audio-input))
 

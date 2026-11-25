@@ -310,28 +310,67 @@ where
 // ===================== Real-time audio input =====================
 //
 // A process-global capture stream (started by `start-listening`) pushes
-// incoming samples — downmixed to mono — into a bounded FIFO. The output
-// audio driver drains one sample per output sample into the implicit
-// `easl_audio_input` var that `(audio-input)` reads (see
-// `Program::extract_audio_info`). This mirrors the MIDI listener: a
-// device-owned callback thread produces, the real-time output callback
-// consumes, and they meet only through a lock-guarded shared buffer.
+// incoming frames, every channel kept, into a bounded FIFO. The output
+// audio driver drains one frame per output sample into the program
+// (`BytecodeProgram::audio_input`), where `(audio-input channel)`,
+// `(audio-input)` (the frame's downmix), and `(audio-input-channel-count)`
+// read it. This mirrors the MIDI listener: a device-owned callback thread
+// produces, the real-time output callback consumes, and they meet only
+// through a lock-guarded shared buffer.
 //
 // Input and output are independent devices at possibly different rates; no
 // resampling is done, so a mismatch shows up as pitch/latency drift. The
 // common case (both on the default device at 48kHz) lines up.
 
-/// Max samples buffered before the input callback drops the oldest — caps
+/// Max frames buffered before the input callback drops the oldest — caps
 /// latency and prevents unbounded growth when nothing is consuming (e.g.
 /// `start-listening` called without any `start-audio` output stream).
 const AUDIO_INPUT_RING_CAPACITY: usize = 16384;
 
-/// FIFO of captured mono input samples. Created on the first
-/// `start-listening`; shared (via `Arc`) with the input stream's callback.
-static AUDIO_INPUT_RING: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
+/// Audio input frames, interleaved: `channels` samples each, in the
+/// device's channel order. The capture ring, and what a host supplies to a
+/// [`VmAudioDriver`] in place of the live capture
+/// (`VmAudioDriver::audio_input_override`).
+#[derive(Clone, Debug, Default)]
+pub struct AudioInputFrames {
+  pub channels: usize,
+  pub samples: VecDeque<f32>,
+}
 
-fn audio_input_ring() -> &'static Arc<Mutex<VecDeque<f32>>> {
-  AUDIO_INPUT_RING.get_or_init(|| Arc::new(Mutex::new(VecDeque::new())))
+impl AudioInputFrames {
+  /// Appends whole frames (interleaved, `channels` samples each), dropping
+  /// the oldest frames past `capacity` frames.
+  fn push_frames(
+    &mut self,
+    samples: impl IntoIterator<Item = f32>,
+    capacity: usize,
+  ) {
+    self.samples.extend(samples);
+    let max = capacity * self.channels;
+    if self.samples.len() > max {
+      let excess = self.samples.len() - max;
+      self.samples.drain(..excess);
+    }
+  }
+
+  /// Moves the next `frames` frames into `buffer` (replacing its contents),
+  /// padded with silence when fewer are buffered.
+  fn take_frames(&mut self, buffer: &mut Vec<f32>, frames: usize) {
+    let wanted = frames * self.channels;
+    buffer.clear();
+    buffer.extend(self.samples.drain(..wanted.min(self.samples.len())));
+    buffer.resize(wanted, 0.0);
+  }
+}
+
+/// The captured input frames. Created on the first `start-listening`;
+/// shared (via `Arc`) with the input stream's callback. Its channel count
+/// is the current stream's (0 until one starts).
+static AUDIO_INPUT_RING: OnceLock<Arc<Mutex<AudioInputFrames>>> =
+  OnceLock::new();
+
+fn audio_input_ring() -> &'static Arc<Mutex<AudioInputFrames>> {
+  AUDIO_INPUT_RING.get_or_init(Default::default)
 }
 
 /// The live capture stream, kept alive here (it's `!Send`, so — like
@@ -345,22 +384,19 @@ struct AudioInputState {
 unsafe impl Send for AudioInputState {}
 static AUDIO_INPUT_STREAM: Mutex<Option<AudioInputState>> = Mutex::new(None);
 
-/// Fills `buf` with the next `frames` captured input samples (mono),
-/// padding with silence on underrun and yielding all-silence when nothing
-/// is listening. Called once per output batch by the audio driver, so the
-/// ring is locked once per batch rather than once per sample.
-pub(crate) fn drain_audio_input(buf: &mut Vec<f32>, frames: usize) {
-  buf.clear();
-  buf.resize(frames, 0.0);
-  if let Some(ring) = AUDIO_INPUT_RING.get() {
-    let mut ring = ring.lock().unwrap();
-    for slot in buf.iter_mut() {
-      match ring.pop_front() {
-        Some(sample) => *slot = sample,
-        None => break,
-      }
-    }
-  }
+/// Fills `buffer` with the next `frames` captured input frames
+/// (interleaved), padding with silence on underrun, and returns their
+/// channel count: 0, with `buffer` empty, when nothing is listening. Called
+/// once per output batch by the audio driver, so the ring is locked once
+/// per batch rather than once per sample.
+pub(crate) fn drain_audio_input(buffer: &mut Vec<f32>, frames: usize) -> usize {
+  let Some(ring) = AUDIO_INPUT_RING.get() else {
+    buffer.clear();
+    return 0;
+  };
+  let mut ring = ring.lock().unwrap();
+  ring.take_frames(buffer, frames);
+  ring.channels
 }
 
 /// The names of the available audio input devices, sorted alphabetically
@@ -414,7 +450,7 @@ fn resolve_input_device(name: Option<&str>) -> Result<cpal::Device, String> {
 /// Starts (or replaces) the real-time audio-input capture stream. `None`
 /// uses the system default input device (typically the microphone); a name
 /// selects a specific device by substring (e.g. a line-in / audio jack).
-/// Incoming frames are downmixed to mono and pushed into the shared ring
+/// Incoming frames, every channel kept, are pushed into the shared ring
 /// that `(audio-input)` reads.
 pub fn start_audio_input(device_name: Option<&str>) -> Result<(), String> {
   let device = resolve_input_device(device_name)?;
@@ -425,54 +461,68 @@ pub fn start_audio_input(device_name: Option<&str>) -> Result<(), String> {
   let channels = supported.channels() as usize;
   let config: cpal::StreamConfig = supported.into();
   let ring = audio_input_ring().clone();
+  // The old stream stops before the ring takes the new one's channel
+  // count, so no frame of the old layout arrives after it.
+  *AUDIO_INPUT_STREAM.lock().unwrap() = None;
+  {
+    let mut ring = ring.lock().unwrap();
+    ring.channels = channels;
+    ring.samples.clear();
+  }
   let stream = build_input_stream_in_format(
     &device,
     &config,
     sample_format,
     channels,
-    ring,
-  )?;
-  stream
-    .play()
-    .map_err(|e| format!("start audio input capture: {e}"))?;
+    ring.clone(),
+  )
+  .and_then(|stream| {
+    stream
+      .play()
+      .map_err(|e| format!("start audio input capture: {e}"))?;
+    Ok(stream)
+  });
+  let stream = match stream {
+    Ok(stream) => stream,
+    Err(e) => {
+      ring.lock().unwrap().channels = 0;
+      return Err(e);
+    }
+  };
   *AUDIO_INPUT_STREAM.lock().unwrap() =
     Some(AudioInputState { _stream: stream });
   Ok(())
 }
 
 /// Builds the capture stream in the device's sample format, converting each
-/// frame to a single mono `f32` and pushing it into `ring` (dropping the
-/// oldest samples past the capacity bound).
+/// sample to `f32` and pushing whole frames into `ring` (dropping the
+/// oldest frames past the capacity bound).
 fn build_input_stream_in_format(
   device: &cpal::Device,
   config: &cpal::StreamConfig,
   format: cpal::SampleFormat,
   channels: usize,
-  ring: Arc<Mutex<VecDeque<f32>>>,
+  ring: Arc<Mutex<AudioInputFrames>>,
 ) -> Result<cpal::Stream, String> {
   fn typed<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
-    ring: Arc<Mutex<VecDeque<f32>>>,
+    ring: Arc<Mutex<AudioInputFrames>>,
   ) -> Result<cpal::Stream, String>
   where
     T: SizedSample,
     f32: FromSample<T>,
   {
-    let channel_divisor = channels.max(1) as f32;
     device
       .build_input_stream(
         config,
         move |input: &[T], _: &cpal::InputCallbackInfo| {
-          let mut ring = ring.lock().unwrap();
-          for frame in input.chunks(channels.max(1)) {
-            let sum: f32 = frame.iter().map(|&s| f32::from_sample_(s)).sum();
-            ring.push_back(sum / channel_divisor);
-          }
-          while ring.len() > AUDIO_INPUT_RING_CAPACITY {
-            ring.pop_front();
-          }
+          let whole_frames = input.len() / channels.max(1) * channels;
+          ring.lock().unwrap().push_frames(
+            input[..whole_frames].iter().map(|&s| f32::from_sample_(s)),
+            AUDIO_INPUT_RING_CAPACITY,
+          );
         },
         |err| eprintln!("audio input stream error: {err}"),
         None,
@@ -543,17 +593,14 @@ pub struct VmAudioDriver {
   midi_down_notes_region: Option<usize>,
   /// Base slot of the `get-midi-note` table (`[128: (Option MidiNote)]`).
   midi_notes_slot: Option<usize>,
-  /// Slot of the implicit `easl_audio_input` var, present iff the program
-  /// calls `(audio-input)`. Written every sample from the captured input
-  /// (one sample per output sample).
-  audio_input_slot: Option<usize>,
-  /// Reusable per-batch buffer the captured input samples are drained into
-  /// (so the input ring is locked once per batch, not once per sample).
-  audio_input_scratch: Vec<f32>,
-  /// When set, per-sample input reads pop from this instead of the live
-  /// capture ring — the deterministic path for tests (which must never
-  /// open a real input device). Padded with silence when exhausted.
-  pub audio_input_override: Option<VecDeque<f32>>,
+  /// Whether the program reads audio input. If so, each batch drains a
+  /// frame per sample from the capture ring (locking it once per batch) into
+  /// the program's `audio_input`.
+  reads_audio_input: bool,
+  /// When set, input frames come from this instead of the live capture
+  /// ring: tests (which must never open a real input device) and hosts with
+  /// their own input. Padded with silence when exhausted.
+  pub audio_input_override: Option<AudioInputFrames>,
   /// Generation of the MIDI snapshot last written into the replica —
   /// batches where no MIDI events arrived skip all refresh work.
   last_midi_generation: Option<u64>,
@@ -656,9 +703,7 @@ impl VmAudioDriver {
     let midi_notes_slot = program
       .get_global_slot("easl_midi_notes")
       .map(|(slot, _)| slot as usize);
-    let audio_input_slot = program
-      .get_global_slot("easl_audio_input")
-      .map(|(slot, _)| slot as usize);
+    let reads_audio_input = program.code.reads_audio_input();
     Ok(Self {
       program,
       function_names: function_names.to_vec(),
@@ -671,8 +716,7 @@ impl VmAudioDriver {
       midi_pitch_bend_slot,
       midi_down_notes_region,
       midi_notes_slot,
-      audio_input_slot,
-      audio_input_scratch: vec![],
+      reads_audio_input,
       audio_input_override: None,
       last_midi_generation: None,
       midi_override: None,
@@ -839,21 +883,17 @@ impl VmAudioDriver {
       self.program.stack[slot] = rate.to_bits();
     }
     self.refresh_midi();
-    // Pull this batch's captured input samples up front (one ring lock per
-    // batch), so the per-sample loop just reads from the scratch buffer.
-    if self.audio_input_slot.is_some() {
-      self.audio_input_scratch.clear();
-      self.audio_input_scratch.resize(frames, 0.0);
-      if let Some(override_samples) = self.audio_input_override.as_mut() {
-        for slot in self.audio_input_scratch.iter_mut() {
-          match override_samples.pop_front() {
-            Some(sample) => *slot = sample,
-            None => break,
-          }
+    // Pull this batch's captured input frames up front (one ring lock per
+    // batch); each sample then selects its frame.
+    if self.reads_audio_input {
+      let input = &mut self.program.audio_input;
+      input.channels = match self.audio_input_override.as_mut() {
+        Some(frames_override) => {
+          frames_override.take_frames(&mut input.frames, frames);
+          frames_override.channels
         }
-      } else {
-        drain_audio_input(&mut self.audio_input_scratch, frames);
-      }
+        None => drain_audio_input(&mut input.frames, frames),
+      };
     }
     for i in 0..frames {
       let t = self.sample_index as f32 / rate;
@@ -863,8 +903,8 @@ impl VmAudioDriver {
       if let Some(slot) = self.time_slot {
         self.program.stack[slot] = t.to_bits();
       }
-      if let Some(slot) = self.audio_input_slot {
-        self.program.stack[slot] = self.audio_input_scratch[i].to_bits();
+      if self.reads_audio_input {
+        self.program.audio_input.select_frame(i);
       }
       self.program.prepare_to_run_function(self.fn_index);
       let mut reset_time = false;
@@ -1269,5 +1309,27 @@ mod c_audio {
       }),
     });
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod audio_input_frames_tests {
+  use super::AudioInputFrames;
+
+  /// The capture ring keeps whole frames: past its capacity it drops the
+  /// oldest frames, and a batch wanting more frames than it holds gets the
+  /// rest as silence.
+  #[test]
+  fn frames_stay_whole() {
+    let mut input = AudioInputFrames {
+      channels: 2,
+      samples: Default::default(),
+    };
+    input.push_frames([1., -1., 2., -2., 3., -3.], 2);
+    assert_eq!(input.samples, [2., -2., 3., -3.]);
+    let mut buffer = vec![9.];
+    input.take_frames(&mut buffer, 3);
+    assert_eq!(buffer, [2., -2., 3., -3., 0., 0.]);
+    assert!(input.samples.is_empty());
   }
 }

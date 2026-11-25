@@ -418,7 +418,6 @@ pub(crate) const MIDI_VARS: &[&'static str] = &[
 const EASL_RESERVED_WORDS: &[&'static str] = &[
   "easl_audio_time",
   SAMPLE_RATE_VAR,
-  "easl_audio_input",
   "easl_fragment_position_offset",
   "easl_workgroup_size",
 ];

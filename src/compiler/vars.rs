@@ -598,10 +598,10 @@ impl Program {
 
 /// The builtins that read input the program receives while it runs, with
 /// what they read, and `sample-rate`, which reads the audio device's rate.
-/// `extract_audio_info` turns each into a read of a variable.
-const INPUT_BUILTINS: [(&str, &str); 8] = [
+const INPUT_BUILTINS: [(&str, &str); 9] = [
   ("audio-time", "the audio clock"),
   ("audio-input", "audio input"),
+  ("audio-input-channel-count", "audio input"),
   ("midi-cc", "MIDI input"),
   ("midi-aftertouch", "MIDI input"),
   ("midi-pitch-bend", "MIDI input"),
@@ -732,9 +732,11 @@ fn impure_description(effect: &Effect) -> Option<String> {
     // described by the more specific effects that come with them
     | Effect::Window
     | Effect::FileWrite => None,
+    // An input builtin's call is described by the input it reads.
     Effect::CPUExclusiveFunction(name)
       if PURE_CPU_BUILTINS.contains(&&**name)
-        || MidiOutKind::BUILTIN_NAMES.contains(&&**name) =>
+        || MidiOutKind::BUILTIN_NAMES.contains(&&**name)
+        || INPUT_BUILTINS.iter().any(|(builtin, _)| *builtin == &**name) =>
     {
       None
     }
